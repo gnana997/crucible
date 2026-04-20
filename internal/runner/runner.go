@@ -74,7 +74,20 @@ type Handle interface {
 
 	// Workdir returns the per-sandbox workdir this handle is using.
 	Workdir() string
+
+	// VSockPath returns the host unix socket path for the guest vsock
+	// device. Host-side code opens this socket and speaks Firecracker's
+	// hybrid vsock protocol (CONNECT <port>) to reach listeners inside
+	// the guest. Empty means the handle has no vsock configured (e.g.
+	// test stubs).
+	VSockPath() string
 }
+
+// DefaultGuestCID is the vsock CID assigned to every sandbox's guest.
+// CID 2 is reserved for the host; we assign 3 to all guests because
+// each VM has its own CID namespace — two sandboxes using 3 don't
+// collide, and the host distinguishes them by per-sandbox UDS paths.
+const DefaultGuestCID = 3
 
 // Runner starts Firecracker VMs.
 type Runner interface {

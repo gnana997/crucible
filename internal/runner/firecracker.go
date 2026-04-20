@@ -15,6 +15,7 @@ import (
 
 const (
 	apiSocketName       = "api.sock"
+	vsockSocketName     = "vsock.sock"
 	logFileName         = "firecracker.log"
 	rootfsDriveID       = "rootfs"
 	defaultReadyTimeout = 5 * time.Second
@@ -60,9 +61,11 @@ func (f *Firecracker) Start(ctx context.Context, spec Spec) (Handle, error) {
 	}
 
 	sockPath := filepath.Join(spec.Workdir, apiSocketName)
-	// Remove any stale socket left by a prior crashed firecracker that
+	vsockPath := filepath.Join(spec.Workdir, vsockSocketName)
+	// Remove any stale sockets left by a prior crashed firecracker that
 	// shared this workdir. firecracker will refuse to bind otherwise.
 	_ = os.Remove(sockPath)
+	_ = os.Remove(vsockPath)
 
 	logPath := filepath.Join(spec.Workdir, logFileName)
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
@@ -90,7 +93,7 @@ func (f *Firecracker) Start(ctx context.Context, spec Spec) (Handle, error) {
 	)
 	log.Info("firecracker process started")
 
-	h := newHandle(cmd, fcapi.NewClient(sockPath), logFile, spec.Workdir, sockPath, log)
+	h := newHandle(cmd, fcapi.NewClient(sockPath), logFile, spec.Workdir, sockPath, vsockPath, log)
 
 	// Anything past this point can fail; on failure we tear down the handle
 	// so the firecracker process and its log file don't leak.
@@ -137,6 +140,12 @@ func (f *Firecracker) configureAndBoot(ctx context.Context, h *fcHandle, spec Sp
 		MemSizeMiB: spec.MemoryMiB,
 	}); err != nil {
 		return fmt.Errorf("runner: put machine-config: %w", err)
+	}
+	if err := h.client.PutVsock(ctx, fcapi.VsockConfig{
+		GuestCID: DefaultGuestCID,
+		UDSPath:  h.vsockPath,
+	}); err != nil {
+		return fmt.Errorf("runner: put vsock: %w", err)
 	}
 	if err := h.client.InstanceStart(ctx); err != nil {
 		return fmt.Errorf("runner: instance-start: %w", err)
@@ -187,14 +196,15 @@ func waitReady(ctx context.Context, client *fcapi.Client) error {
 }
 
 // fcHandle implements Handle. It owns the firecracker process, the fcapi
-// client, and the workdir artifacts (log file + api socket).
+// client, and the workdir artifacts (log file + api socket + vsock socket).
 type fcHandle struct {
-	cmd      *exec.Cmd
-	client   *fcapi.Client
-	logFile  *os.File
-	workdir  string
-	sockPath string
-	log      *slog.Logger
+	cmd       *exec.Cmd
+	client    *fcapi.Client
+	logFile   *os.File
+	workdir   string
+	sockPath  string
+	vsockPath string
+	log       *slog.Logger
 
 	done    chan struct{} // closed when cmd.Wait returns
 	waitErr error         // result of cmd.Wait; read only after done is closed
@@ -205,15 +215,16 @@ type fcHandle struct {
 // newHandle spawns the background goroutine that calls cmd.Wait exactly
 // once and publishes its result via the done channel. This lets Shutdown
 // and Wait both observe exit without racing on cmd.Wait itself.
-func newHandle(cmd *exec.Cmd, client *fcapi.Client, logFile *os.File, workdir, sockPath string, log *slog.Logger) *fcHandle {
+func newHandle(cmd *exec.Cmd, client *fcapi.Client, logFile *os.File, workdir, sockPath, vsockPath string, log *slog.Logger) *fcHandle {
 	h := &fcHandle{
-		cmd:      cmd,
-		client:   client,
-		logFile:  logFile,
-		workdir:  workdir,
-		sockPath: sockPath,
-		log:      log,
-		done:     make(chan struct{}),
+		cmd:       cmd,
+		client:    client,
+		logFile:   logFile,
+		workdir:   workdir,
+		sockPath:  sockPath,
+		vsockPath: vsockPath,
+		log:       log,
+		done:      make(chan struct{}),
 	}
 	go func() {
 		h.waitErr = cmd.Wait()
@@ -224,6 +235,9 @@ func newHandle(cmd *exec.Cmd, client *fcapi.Client, logFile *os.File, workdir, s
 
 // Workdir implements Handle.
 func (h *fcHandle) Workdir() string { return h.workdir }
+
+// VSockPath implements Handle.
+func (h *fcHandle) VSockPath() string { return h.vsockPath }
 
 // Wait implements Handle. Safe to call multiple times; subsequent calls
 // return the same result as the first without re-invoking cmd.Wait.
@@ -265,11 +279,13 @@ func (h *fcHandle) Shutdown(ctx context.Context) error {
 	}
 }
 
-// finalize closes the log file and removes the api socket. Idempotent.
+// finalize closes the log file and removes the api + vsock sockets.
+// Idempotent.
 func (h *fcHandle) finalize() {
 	h.finalizeOnce.Do(func() {
 		_ = h.logFile.Close()
 		_ = os.Remove(h.sockPath)
+		_ = os.Remove(h.vsockPath)
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gnana997/crucible/internal/runner"
 )
@@ -82,7 +83,8 @@ func newStubHandle(workdir string) *stubHandle {
 	return &stubHandle{workdir: workdir, shutdown: make(chan struct{})}
 }
 
-func (h *stubHandle) Workdir() string { return h.workdir }
+func (h *stubHandle) Workdir() string   { return h.workdir }
+func (h *stubHandle) VSockPath() string { return "" } // stub handle has no vsock
 func (h *stubHandle) Shutdown(ctx context.Context) error {
 	select {
 	case <-h.shutdown:
@@ -277,6 +279,48 @@ func TestManagerCreateRunnerErrorLeavesMapClean(t *testing.T) {
 	}
 	if len(m.List()) != 0 {
 		t.Errorf("List returned %d entries, want 0", len(m.List()))
+	}
+}
+
+func TestManagerLifetimeTimeoutAutoDeletes(t *testing.T) {
+	m, _ := newTestManager(t)
+	// 1 second is the smallest granularity the CreateConfig exposes; use
+	// it directly so we're testing the real code path. Polling gives us
+	// slack for CI jitter.
+	s, err := m.Create(context.Background(), CreateConfig{TimeoutSec: 1})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := m.Get(s.ID); errors.Is(err, ErrNotFound) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sandbox %s still present after %v — lifetime timer never fired", s.ID, time.Since(s.CreatedAt))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func TestManagerLifetimeTimerExitsOnEarlyDelete(t *testing.T) {
+	// The timer goroutine should exit promptly when the sandbox is
+	// deleted by another path (no leak, no double-delete attempt).
+	// We can't directly observe the goroutine, but `-race` + a quick
+	// user-delete is enough to catch a bug here.
+	m, _ := newTestManager(t)
+	s, err := m.Create(context.Background(), CreateConfig{TimeoutSec: 60})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := m.Delete(context.Background(), s.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	// Second delete returns ErrNotFound regardless of whether the timer
+	// already fired — if we double-deleted we'd see test races under -race.
+	if err := m.Delete(context.Background(), s.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second Delete err = %v, want ErrNotFound", err)
 	}
 }
 

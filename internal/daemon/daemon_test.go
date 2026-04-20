@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
@@ -28,7 +30,8 @@ func newStubHandle(workdir string) *stubHandle {
 	return &stubHandle{workdir: workdir, shutdown: make(chan struct{})}
 }
 
-func (h *stubHandle) Workdir() string { return h.workdir }
+func (h *stubHandle) Workdir() string   { return h.workdir }
+func (h *stubHandle) VSockPath() string { return "" }
 func (h *stubHandle) Shutdown(context.Context) error {
 	select {
 	case <-h.shutdown:
@@ -289,6 +292,124 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestExecSandboxRouteValidatesID(t *testing.T) {
+	ts, _ := newTestServer(t)
+	body := strings.NewReader(`{"cmd":["/bin/true"]}`)
+	resp, err := http.Post(ts.URL+"/sandboxes/not-a-real-id/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestExecSandboxRouteSandboxNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	body := strings.NewReader(`{"cmd":["/bin/true"]}`)
+	// Valid-looking ID, but we haven't created it.
+	resp, err := http.Post(ts.URL+"/sandboxes/sbx_0000000000000/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestExecSandboxRouteRejectsEmptyCmd(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	// Create a sandbox first so the 400 check runs after the 404 check.
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var created sandboxResponse
+	decodeJSON(t, resp, &created)
+
+	body := strings.NewReader(`{"cmd":[]}`)
+	resp, err = http.Post(ts.URL+"/sandboxes/"+created.ID+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST /exec: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestExecSandboxRouteStubAgentSynthesizesExitFrame(t *testing.T) {
+	// The stub runner creates sandboxes with no vsock path, so
+	// Manager.Exec fails with a "no agent vsock path" error. The
+	// daemon must commit to a 200 + streamed body anyway and
+	// synthesize a terminal FrameExit that surfaces the error.
+	ts, _ := newTestServer(t)
+
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var created sandboxResponse
+	decodeJSON(t, resp, &created)
+
+	body := strings.NewReader(`{"cmd":["/bin/true"]}`)
+	resp, err = http.Post(ts.URL+"/sandboxes/"+created.ID+"/exec", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST /exec: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", ct)
+	}
+
+	// Read frames; expect exactly one FrameExit with Error populated.
+	var result agentwire.ExecResult
+	sawExit := false
+	for {
+		f, err := agentwire.ReadFrame(resp.Body)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("ReadFrame: %v", err)
+		}
+		if f.Type == agentwire.FrameExit {
+			if err := json.Unmarshal(f.Payload, &result); err != nil {
+				t.Fatalf("decode exit: %v", err)
+			}
+			sawExit = true
+		}
+	}
+	if !sawExit {
+		t.Fatal("no exit frame in response")
+	}
+	if result.ExitCode != -1 {
+		t.Errorf("ExitCode = %d, want -1", result.ExitCode)
+	}
+	if result.Error == "" {
+		t.Error("Error = empty, want populated")
+	}
+}
+
+func TestCreateSandboxTimeoutPassedThrough(t *testing.T) {
+	// We can't easily observe the lifetime timer from the HTTP layer
+	// (it fires in a goroutine), so just verify the field is accepted
+	// and the sandbox is created normally. Detailed timer behavior is
+	// covered in sandbox/sandbox_test.go.
+	ts, _ := newTestServer(t)
+	body := strings.NewReader(`{"timeout_s": 60}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status = %d, want 201", resp.StatusCode)
 	}
 }
 

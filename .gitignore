@@ -1,10 +1,14 @@
 # build artifacts
 /crucible
+/bin/
 /dist/
 /build/
 *.test
 *.out
 coverage.txt
+
+# rootfs / vm images built by scripts/build-rootfs.sh
+/assets/
 
 # editor / OS
 .vscode/

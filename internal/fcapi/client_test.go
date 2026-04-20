@@ -152,6 +152,28 @@ func TestPutMachineConfig(t *testing.T) {
 	}
 }
 
+func TestPutVsock(t *testing.T) {
+	var got VsockConfig
+	mux := http.NewServeMux()
+	mux.HandleFunc("/vsock", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		assertBody(t, r, &got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	sock := newMockServer(t, mux)
+
+	c := NewClient(sock)
+	want := VsockConfig{GuestCID: 3, UDSPath: "/tmp/sandbox-x/vsock.sock"}
+	if err := c.PutVsock(context.Background(), want); err != nil {
+		t.Fatalf("PutVsock: %v", err)
+	}
+	if got != want {
+		t.Errorf("body = %+v, want %+v", got, want)
+	}
+}
+
 func TestInstanceStart(t *testing.T) {
 	var got action
 	mux := http.NewServeMux()

@@ -19,11 +19,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/gnana997/crucible/internal/agentapi"
+	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/runner"
 )
 
@@ -34,6 +37,16 @@ const (
 	DefaultVCPUs     = 1
 	DefaultMemoryMiB = 512
 )
+
+// DefaultAgentReadyTimeout is the time Create will wait for the guest
+// agent's /healthz to start answering when WaitForAgent is enabled.
+// Bounded higher than a typical microVM boot (~2s) with slack for
+// systemd bring-up.
+const DefaultAgentReadyTimeout = 15 * time.Second
+
+// agentReadyPollInterval is how often Create re-polls /healthz between
+// failed attempts.
+const agentReadyPollInterval = 200 * time.Millisecond
 
 // ErrNotFound is returned by Get and Delete when no sandbox has the given
 // ID. Callers can errors.Is it.
@@ -49,9 +62,18 @@ type Sandbox struct {
 	VCPUs     int
 	MemoryMiB int
 	Workdir   string
+	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
-	handle runner.Handle
+	handle     runner.Handle
+	execClient *agentapi.Client // cached; nil when VSockPath is empty
+
+	// done is closed by Manager.Delete once this sandbox is removed
+	// from the map. Used by the lifetime-timeout goroutine to exit
+	// cleanly when the sandbox is deleted by other means. Callers
+	// must not close this themselves.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // CreateConfig is the input to Manager.Create. Zero-valued fields are
@@ -60,6 +82,12 @@ type CreateConfig struct {
 	VCPUs     int
 	MemoryMiB int
 	BootArgs  string // empty means use runner.DefaultBootArgs
+
+	// TimeoutSec, if > 0, is the sandbox's maximum lifetime in seconds.
+	// A background goroutine deletes the sandbox once the timeout fires.
+	// Zero disables the timeout (the sandbox lives until an explicit
+	// Delete or daemon shutdown).
+	TimeoutSec int
 }
 
 // ManagerConfig wires a Manager to its dependencies and defaults. The
@@ -75,6 +103,17 @@ type ManagerConfig struct {
 	// and per-sandbox overrides arrive in v0.2.
 	Kernel string
 	Rootfs string
+
+	// WaitForAgent, when true, makes Create block until the guest agent
+	// inside the VM responds on GET /healthz (via the vsock UDS). This
+	// is the right default for production use with a crucible-agent
+	// baked into the rootfs. Leave false when the rootfs doesn't have
+	// the agent (dev setups, Checkpoint-Zero-style tests, unit tests).
+	WaitForAgent bool
+
+	// AgentReadyTimeout bounds the readiness poll when WaitForAgent is
+	// true. Zero means DefaultAgentReadyTimeout.
+	AgentReadyTimeout time.Duration
 }
 
 // Manager owns the sandbox map and coordinates lifecycle operations.
@@ -141,14 +180,106 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
 		Workdir:   workdir,
+		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
 		handle:    handle,
+		done:      make(chan struct{}),
+	}
+	if s.VSockPath != "" {
+		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)
+	}
+
+	if m.cfg.WaitForAgent && s.execClient != nil {
+		if err := m.waitForAgent(ctx, s.execClient); err != nil {
+			// Tear the VM down so we don't leak an unusable sandbox.
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: agent not ready: %w", err)
+		}
 	}
 
 	m.mu.Lock()
 	m.sandboxes[id] = s
 	m.mu.Unlock()
+
+	if req.TimeoutSec > 0 {
+		m.startLifetimeTimer(s, req.TimeoutSec)
+	}
 	return s, nil
+}
+
+// startLifetimeTimer deletes s after sec seconds unless s is deleted
+// by some other path first. The goroutine exits as soon as s.done is
+// closed (which Delete does before shutting the handle down), so
+// there's no leak on early deletes.
+func (m *Manager) startLifetimeTimer(s *Sandbox, sec int) {
+	go func() {
+		timer := time.NewTimer(time.Duration(sec) * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			// Give the shutdown a comfortable deadline but don't
+			// inherit the caller's Create context (it's long gone
+			// by the time this fires).
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = m.Delete(ctx, s.ID)
+		case <-s.done:
+		}
+	}()
+}
+
+// waitForAgent polls /healthz on the guest agent until it responds or
+// the readiness deadline elapses. Errors before the deadline are
+// treated as "not ready yet" — the agent typically becomes reachable
+// only after systemd has brought up its service unit, which takes a
+// couple of seconds on top of the VM boot.
+func (m *Manager) waitForAgent(ctx context.Context, c *agentapi.Client) error {
+	deadline := m.cfg.AgentReadyTimeout
+	if deadline <= 0 {
+		deadline = DefaultAgentReadyTimeout
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	var lastErr error
+	for {
+		if err := c.GetHealthz(readyCtx); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-readyCtx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("%w (last poll: %v)", readyCtx.Err(), lastErr)
+			}
+			return readyCtx.Err()
+		case <-time.After(agentReadyPollInterval):
+		}
+	}
+}
+
+// Exec runs a command inside the sandbox via its guest agent and
+// streams stdout/stderr to the given writers. The final ExecResult is
+// returned after the agent writes its exit frame.
+//
+// Fails fast with ErrNotFound for unknown IDs, or a clear error when
+// the sandbox has no agent client (e.g. test stubs). Cancelling ctx
+// terminates the command on the guest side.
+func (m *Manager) Exec(
+	ctx context.Context,
+	id string,
+	req agentwire.ExecRequest,
+	stdout, stderr io.Writer,
+) (agentwire.ExecResult, error) {
+	s, err := m.Get(id)
+	if err != nil {
+		return agentwire.ExecResult{}, err
+	}
+	if s.execClient == nil {
+		return agentwire.ExecResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
+	}
+	return s.execClient.Exec(ctx, req, stdout, stderr)
 }
 
 // Get returns the sandbox with the given ID, or ErrNotFound.
@@ -205,6 +336,10 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 	delete(m.sandboxes, id)
 	m.mu.Unlock()
+
+	// Signal any lifetime-timer goroutine to exit before we block on
+	// shutdown. Safe to call more than once; doneOnce guards the close.
+	s.doneOnce.Do(func() { close(s.done) })
 
 	if err := s.handle.Shutdown(ctx); err != nil {
 		// Best-effort workdir cleanup even if shutdown reported an error

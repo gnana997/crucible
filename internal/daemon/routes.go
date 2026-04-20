@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -24,6 +25,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sandboxes", s.handleListSandboxes)
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
+	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
 	return mux
 }
 
@@ -35,6 +37,10 @@ type createSandboxRequest struct {
 	VCPUs     int    `json:"vcpus,omitempty"`
 	MemoryMiB int    `json:"memory_mib,omitempty"`
 	BootArgs  string `json:"boot_args,omitempty"`
+	// TimeoutSec sets a maximum lifetime for the sandbox in seconds.
+	// Zero means no timeout; the sandbox lives until an explicit
+	// DELETE or daemon shutdown.
+	TimeoutSec int `json:"timeout_s,omitempty"`
 }
 
 // sandboxResponse is the JSON shape returned for a single sandbox. Kept
@@ -88,9 +94,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
-		VCPUs:     req.VCPUs,
-		MemoryMiB: req.MemoryMiB,
-		BootArgs:  req.BootArgs,
+		VCPUs:      req.VCPUs,
+		MemoryMiB:  req.MemoryMiB,
+		BootArgs:   req.BootArgs,
+		TimeoutSec: req.TimeoutSec,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
@@ -141,6 +148,89 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleExecSandbox runs a command inside the sandbox via the guest
+// agent and streams its output back to the HTTP client. The response
+// body is a sequence of agentwire frames — identical in shape to what
+// the agent itself produces, so clients can parse it the same way.
+//
+// Error handling has two phases:
+//   - Before the 200 is sent: validation errors come back as plain 4xx
+//     JSON ({"error": "..."}).
+//   - After the 200 is sent: we've committed to a streamed body, so
+//     any error (failed to reach the agent, connection died) is
+//     reported as a synthesized FrameExit with ExitCode=-1 and Error
+//     populated. This keeps the framing contract intact.
+func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req agentwire.ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
+		return
+	}
+	if len(req.Cmd) == 0 {
+		writeError(w, http.StatusBadRequest, errors.New("cmd is required"))
+		return
+	}
+
+	// Validate the sandbox exists before committing to a streamed
+	// response — gives us a clean 404 for the common mistake.
+	if _, err := s.cfg.Manager.Get(id); err != nil {
+		if errors.Is(err, sandbox.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+
+	// Commit to streaming.
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+
+	flusher, _ := w.(http.Flusher)
+	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
+
+	stdoutStream := fw.Stream(agentwire.FrameStdout)
+	stderrStream := fw.Stream(agentwire.FrameStderr)
+
+	result, err := s.cfg.Manager.Exec(r.Context(), id, req, stdoutStream, stderrStream)
+	if err != nil {
+		// Exec plumbing broke (agent unreachable, connection died,
+		// etc.). Synthesize an exit frame so the client still sees a
+		// well-formed stream.
+		result = agentwire.ExecResult{ExitCode: -1, Error: err.Error()}
+	}
+
+	payload, jerr := json.Marshal(result)
+	if jerr != nil {
+		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, jerr.Error()))
+	}
+	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+}
+
+// flushOnWrite forwards every Write to w and flushes the underlying
+// chunked response so frames appear on the wire byte-for-byte as the
+// agent produces them. Without the Flush the stdlib would buffer and
+// the client would only see output when the command exits.
+type flushOnWrite struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (f flushOnWrite) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if err == nil && f.flusher != nil {
+		f.flusher.Flush()
+	}
+	return n, err
 }
 
 // --- small helpers ----------------------------------------------------

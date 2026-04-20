@@ -6,7 +6,7 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-> **Status.** `crucible daemon` boots Firecracker microVMs and manages their lifecycle over HTTP — you can `POST /sandboxes` and get a running VM back. You can't run commands *inside* the VM yet — exec support via vsock lands next. Don't use this for anything real.
+> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, and runs commands inside them over vsock with stdout/stderr streaming back. Quotas beyond wallclock timeouts, snapshots, default-deny networking, and the Python SDK still to come. Don't use this for anything real.
 
 ## Why this exists
 
@@ -23,13 +23,14 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Go module + CLI skeleton | ✅ done |
 | Firecracker runner (boot VM from config) | ✅ done |
 | HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
+| HTTP API — exec inside sandbox via vsock (streaming stdout/stderr) | ✅ done |
+| Sandbox lifetime timeout + per-exec deadline | ✅ done |
 | JSON lifecycle logs (`--log-format=json`) | ✅ done |
 | Graceful SIGTERM drain of active sandboxes | ✅ done |
-| HTTP API — exec inside sandbox (via vsock) | 🔨 next |
-| Resource quotas (beyond VM sizing) | ⏳ planned |
+| Structured execution record | 🔨 partial — exit_code, duration_ms, signal, timed_out (no resource stats yet) |
 | Snapshot + fork primitives | ⏳ planned |
 | Default-deny network + allowlist | ⏳ planned |
-| Structured execution record per exec | ⏳ planned |
+| Resource quotas (CPU / memory / disk / IO) | ⏳ planned |
 | Prometheus `/metrics` endpoint | ⏳ planned |
 | Python SDK | ⏳ planned |
 | Install script + systemd unit | ⏳ planned |
@@ -41,40 +42,69 @@ Full trajectory through v1.0: [docs/ROADMAP.md](docs/ROADMAP.md).
 Requirements:
 
 - Linux host with KVM (x86_64). `ls /dev/kvm` succeeds and is readable.
-- Go 1.24+ (to build).
-- Firecracker v1.15+ binary, a guest kernel (uncompressed `vmlinux`), and a rootfs (`.ext4`). See the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md) for obtaining the kernel and rootfs, or pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/).
+- Go 1.25+ (to build), plus `fakeroot`, `squashfs-tools`, `e2fsprogs` on the host (to bake the rootfs).
+- Firecracker v1.15+ binary, a guest kernel (uncompressed `vmlinux`), and a base rootfs (`.squashfs`). Pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/) or see the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md).
 
-Build and start the daemon:
+### Build everything
 
 ```bash
+# Daemon binary
 make build
+
+# Guest agent (static linux/amd64 ELF) + an ext4 rootfs with the agent
+# baked in and enabled as a systemd service.
+make rootfs BASE_ROOTFS=/path/to/ubuntu-24.04.squashfs OUT_ROOTFS=assets/rootfs.ext4
+```
+
+The rootfs build uses `fakeroot + mkfs.ext4 -d` under the hood — no sudo needed.
+
+### Start the daemon
+
+```bash
 ./crucible daemon \
   --firecracker-bin /path/to/firecracker \
   --kernel           /path/to/vmlinux \
-  --rootfs           /path/to/rootfs.ext4
+  --rootfs           assets/rootfs.ext4
 # listens on 127.0.0.1:7878 by default
 ```
 
-Exercise it from another terminal:
+### Exercise the API
 
 ```bash
-# Create a sandbox (body optional; defaults are 1 vCPU, 512 MiB)
+# Create a sandbox (body optional; defaults: 1 vCPU, 512 MiB, no timeout).
 curl -sS -X POST http://127.0.0.1:7878/sandboxes \
   -H 'Content-Type: application/json' \
-  -d '{"vcpus": 2, "memory_mib": 512}'
+  -d '{"vcpus": 2, "memory_mib": 512, "timeout_s": 60}'
 # → {"id":"sbx_...","vcpus":2,"memory_mib":512,"workdir":"...","created_at":"..."}
 
 # List all
 curl -sS http://127.0.0.1:7878/sandboxes
 
-# Get one
-curl -sS http://127.0.0.1:7878/sandboxes/sbx_...
+# Run a command inside the sandbox — response body is a stream of framed
+# stdout / stderr / exit records; the last frame carries the ExecResult
+# (exit_code, duration_ms, signal, timed_out).
+curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../exec \
+  -H 'Content-Type: application/json' \
+  -d '{"cmd":["/bin/uname","-a"]}' \
+  --output /tmp/exec.bin
 
 # Tear down
 curl -sS -X DELETE http://127.0.0.1:7878/sandboxes/sbx_...
 ```
 
-Each sandbox gets its own workdir under `--work-base` (default `/tmp/crucible/run/`) containing the Firecracker API socket and `firecracker.log` — the guest kernel + userspace serial console stream into that log file so you can tail it while developing. `Ctrl-C` / `SIGTERM` on the daemon gracefully drains active sandboxes before exiting.
+Parse the framed exec output in Python:
+
+```python
+import struct, json
+with open('/tmp/exec.bin', 'rb') as f:
+    while hdr := f.read(8):
+        typ, size = hdr[0], struct.unpack('>I', hdr[4:8])[0]
+        body = f.read(size)
+        name = {1: 'stdout', 2: 'stderr', 3: 'exit'}.get(typ, f'type{typ}')
+        print(name, json.loads(body) if typ == 3 else body.decode())
+```
+
+Each sandbox gets its own workdir under `--work-base` (default `/tmp/crucible/run/`) containing the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` — the guest kernel + userspace serial console streams into that log file, so you can tail it while developing. `Ctrl-C` / `SIGTERM` on the daemon gracefully drains active sandboxes before exiting.
 
 ## Development
 
@@ -90,28 +120,40 @@ make build
 Make targets:
 
 ```bash
-make test    # go test ./...
-make race    # with -race
-make vet     # go vet
-make fmt     # gofmt -s -w .
-make lint    # golangci-lint run  (requires golangci-lint installed)
-make tidy    # go mod tidy
-make clean   # rm built binary
+make build    # daemon binary
+make agent    # guest agent (static linux/amd64 ELF under bin/)
+make rootfs   # bake agent into an ext4 rootfs (needs BASE_ROOTFS=...)
+make test     # go test ./...
+make race     # with -race
+make vet      # go vet
+make fmt      # gofmt -s -w .
+make lint     # golangci-lint run  (requires golangci-lint installed)
+make tidy     # go mod tidy
+make clean    # rm built binaries
 ```
 
 Repository layout:
 
 ```
-cmd/crucible/       CLI entry + subcommand wiring
-internal/fcapi/     hand-written Firecracker HTTP-over-UDS client
-internal/runner/    firecracker process lifecycle
-internal/sandbox/   ID generation + Manager (lifecycle, concurrency-safe)
-internal/daemon/    HTTP server, routes, middleware
-internal/version/   ldflags-settable build version
-docs/               VISION.md + ROADMAP.md
+cmd/crucible/         CLI entry + subcommand wiring (daemon)
+cmd/crucible-agent/   guest-side binary (vsock listener + /exec handler)
+internal/fcapi/       hand-written Firecracker HTTP-over-UDS client
+internal/runner/      firecracker process lifecycle
+internal/sandbox/     ID generation + Manager (lifecycle, exec, timers)
+internal/daemon/      HTTP server, routes, middleware
+internal/agentwire/   shared protocol (frame format, ExecRequest/Result)
+internal/agentapi/    host-side HTTP client over hybrid-vsock UDS
+internal/version/     ldflags-settable build version
+scripts/              rootfs builder
+docs/                 VISION.md + ROADMAP.md
 ```
 
-Zero external dependencies — all HTTP, JSON, concurrency, and process handling is stdlib. The Firecracker API client is hand-written rather than using the official SDK; see [docs/VISION.md](docs/VISION.md) for the rationale.
+Direct dependencies (kept small on purpose):
+
+- `golang.org/x/sys` — raw Linux syscalls for runner + agent
+- `github.com/mdlayher/vsock` — AF_VSOCK listener in the guest agent; we tried rolling our own via `net.FileConn` first, but Go's stdlib doesn't recognize AF_VSOCK sockaddrs
+
+Everything else (HTTP, JSON, concurrency, Firecracker API, host-side hybrid-vsock handshake, frame protocol) is stdlib + hand-written. See [docs/VISION.md](docs/VISION.md) for the rationale.
 
 CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
 

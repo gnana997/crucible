@@ -36,14 +36,16 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-		addr      = fs.String("listen", "127.0.0.1:7878", "HTTP listen address")
-		fcBin     = fs.String("firecracker-bin", "", "path to the firecracker binary (required)")
-		kernel    = fs.String("kernel", "", "path to the guest kernel image — uncompressed vmlinux (required)")
-		rootfs    = fs.String("rootfs", "", "path to the guest root filesystem image (required)")
-		workBase  = fs.String("work-base", "/tmp/crucible/run", "directory where per-sandbox workdirs are created")
-		logFormat = fs.String("log-format", "text", "log format: text|json")
-		logLevel  = fs.String("log-level", "info", "log level: debug|info|warn|error")
-		drainStr  = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
+		addr         = fs.String("listen", "127.0.0.1:7878", "HTTP listen address")
+		fcBin        = fs.String("firecracker-bin", "", "path to the firecracker binary (required)")
+		kernel       = fs.String("kernel", "", "path to the guest kernel image — uncompressed vmlinux (required)")
+		rootfs       = fs.String("rootfs", "", "path to the guest root filesystem image (required)")
+		workBase     = fs.String("work-base", "/tmp/crucible/run", "directory where per-sandbox workdirs are created")
+		logFormat    = fs.String("log-format", "text", "log format: text|json")
+		logLevel     = fs.String("log-level", "info", "log level: debug|info|warn|error")
+		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
+		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
+		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -110,6 +112,11 @@ Required flags:
 		fmt.Fprintf(stderr, "error: --drain-timeout: %v\n", err)
 		return 2
 	}
+	agentReady, err := time.ParseDuration(*agentTimeout)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: --agent-ready-timeout: %v\n", err)
+		return 2
+	}
 
 	logger.Info("crucible starting",
 		"addr", *addr,
@@ -124,10 +131,12 @@ Required flags:
 	fc.Logger = logger
 
 	mgr, err := sandbox.NewManager(sandbox.ManagerConfig{
-		Runner:   fc,
-		WorkBase: *workBase,
-		Kernel:   *kernel,
-		Rootfs:   *rootfs,
+		Runner:            fc,
+		WorkBase:          *workBase,
+		Kernel:            *kernel,
+		Rootfs:            *rootfs,
+		WaitForAgent:      !*noWaitAgent,
+		AgentReadyTimeout: agentReady,
 	})
 	if err != nil {
 		logger.Error("manager init failed", "err", err)
