@@ -28,8 +28,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "crucible %s\n", version.String())
 		return 0
 	case "daemon":
-		fmt.Fprintln(stderr, "crucible daemon: not yet implemented (wk1 target)")
-		return 1
+		return runDaemon(args[1:], stdout, stderr)
 	case "run":
 		fmt.Fprintln(stderr, "crucible run: not yet implemented (wk2 target)")
 		return 1
