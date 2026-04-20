@@ -1,0 +1,22 @@
+# build artifacts
+/crucible
+/dist/
+/build/
+*.test
+*.out
+coverage.txt
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# local env
+.env
+.env.local
+.envrc
+
+# spike/ firecracker binaries (large, reproducible downloads)
+# kept at parent level for Checkpoint Zero; never commit here.
+/spike/
