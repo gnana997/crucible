@@ -3,7 +3,6 @@
 package dhcp
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -31,10 +30,20 @@ type Config struct {
 	// responder binds UDP/67 inside.
 	Netns string
 
-	// ClientMAC is the one MAC the responder will answer. Packets
-	// from any other MAC are ignored — this is strict because we
-	// know exactly who our client is and we don't want to chain
-	// into random DHCP traffic a buggy client might send.
+	// BindDevice pins the socket to a specific L3 interface via
+	// SO_BINDTODEVICE. Required: our sandbox netns has no default
+	// route, so WriteTo(255.255.255.255:68) would otherwise fail
+	// with ENETUNREACH. Binding to the bridge (or tap) lets the
+	// kernel egress broadcasts without a route lookup. Callers
+	// pass the in-netns bridge name.
+	BindDevice string
+
+	// ClientMAC is the guest's expected MAC, used in logs for
+	// "which sandbox is this?" correlation. We no longer drop
+	// packets whose source MAC differs (forks restore from
+	// snapshot and inherit the source's MAC; dropping would make
+	// their DHCP fail). Netns isolation + SO_BINDTODEVICE are
+	// sufficient containment.
 	ClientMAC [6]byte
 
 	// OfferedIP is the single IP we hand out. Every OFFER/ACK
@@ -64,6 +73,9 @@ type Config struct {
 func (c Config) validate() error {
 	if c.Netns == "" {
 		return errors.New("dhcp: Netns required")
+	}
+	if c.BindDevice == "" {
+		return errors.New("dhcp: BindDevice required")
 	}
 	if !c.OfferedIP.Is4() {
 		return errors.New("dhcp: OfferedIP must be IPv4")
@@ -151,6 +163,17 @@ func Start(cfg Config) (*Responder, error) {
 			return
 		}
 
+		// Pin the socket to the in-netns bridge (or tap) interface.
+		// The netns has no default route, so the kernel's route
+		// lookup for 255.255.255.255 would fail with ENETUNREACH.
+		// SO_BINDTODEVICE sidesteps the route lookup and sends the
+		// frame directly out the named device.
+		if err := bindToDevice(conn, cfg.BindDevice); err != nil {
+			_ = conn.Close()
+			ch <- bound{err: fmt.Errorf("dhcp: SO_BINDTODEVICE %s: %w", cfg.BindDevice, err)}
+			return
+		}
+
 		ch <- bound{conn: conn}
 		r.serve(conn)
 	}()
@@ -222,14 +245,14 @@ func (r *Responder) handle(conn net.PacketConn, addr net.Addr, packet []byte) {
 	if m.Op != opBootRequest {
 		return // only answer BOOTREQUEST, never reply to our own replies
 	}
-	mac, err := m.ClientMAC()
-	if err != nil {
+	// We intentionally don't filter by cfg.ClientMAC. The per-
+	// sandbox netns + bridge already guarantees a single client
+	// on this responder's wire; adding a MAC filter is defense-
+	// in-depth that breaks forks, which restore from snapshot and
+	// therefore carry the *source's* MAC in the guest's eth0 (MAC
+	// is baked into snapshot state).
+	if _, err := m.ClientMAC(); err != nil {
 		r.log.Debug("dhcp unexpected HLen", "hlen", m.HLen)
-		return
-	}
-	if !bytes.Equal(mac[:], r.cfg.ClientMAC[:]) {
-		r.log.Debug("dhcp ignored foreign MAC",
-			"got", macString(mac), "expected", macString(r.cfg.ClientMAC))
 		return
 	}
 	mt, ok := m.MessageType()
@@ -338,6 +361,31 @@ func enableBroadcast(conn net.PacketConn) error {
 	var setErr error
 	cerr := sc.Control(func(fd uintptr) {
 		setErr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_BROADCAST, 1)
+	})
+	if cerr != nil {
+		return cerr
+	}
+	return setErr
+}
+
+// bindToDevice pins the socket to a named L3 interface via
+// SO_BINDTODEVICE. This scopes ingress *and* egress to that
+// device and makes the kernel skip its routing-table lookup on
+// send, which is what lets us broadcast to 255.255.255.255 inside
+// a netns that has no default route. Requires CAP_NET_RAW (our
+// daemon runs as root).
+func bindToDevice(conn net.PacketConn, iface string) error {
+	uc, ok := conn.(*net.UDPConn)
+	if !ok {
+		return fmt.Errorf("dhcp: unexpected conn type %T", conn)
+	}
+	sc, err := uc.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var setErr error
+	cerr := sc.Control(func(fd uintptr) {
+		setErr = unix.SetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE, iface)
 	})
 	if cerr != nil {
 		return cerr

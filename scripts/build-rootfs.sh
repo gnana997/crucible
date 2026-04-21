@@ -102,31 +102,113 @@ fi
 echo "--> installing /usr/local/bin/crucible-agent"
 install -Dm755 "$AGENT" "$tmp/root/usr/local/bin/crucible-agent"
 
-# Install a netplan config that tells systemd-networkd to DHCP on
-# eth0. Without this file, eth0 comes up without an IP and our
-# per-netns DHCP responder never hears from the guest.
+# Locate systemd-networkd. systemd-resolved is NOT required — we
+# use a static /etc/resolv.conf pointing at the daemon's DNS
+# anycast IP, which keeps the rootfs working on minimal base
+# images that ship systemd-networkd without resolved.
+NETWORKD_UNIT=""
+for p in /usr/lib/systemd/system/systemd-networkd.service /lib/systemd/system/systemd-networkd.service; do
+    if [[ -f "$tmp/root\$p" ]]; then NETWORKD_UNIT="\$p"; break; fi
+done
+[[ -n "\$NETWORKD_UNIT" ]] || { echo "systemd-networkd.service not found in rootfs" >&2; exit 1; }
+
+NETWORKD_SOCK=""
+for p in /usr/lib/systemd/system/systemd-networkd.socket /lib/systemd/system/systemd-networkd.socket; do
+    if [[ -f "$tmp/root\$p" ]]; then NETWORKD_SOCK="\$p"; break; fi
+done
+[[ -n "\$NETWORKD_SOCK" ]] || { echo "systemd-networkd.socket not found in rootfs" >&2; exit 1; }
+
+echo "    systemd-networkd.service at \$NETWORKD_UNIT"
+
+# Drop a systemd-networkd .network file that tells it to DHCP on
+# eth0. Bypasses netplan entirely — netplan would require
+# `netplan generate` at boot (cloud-init or a custom service).
+# Writing the .network file directly saves a translation layer.
+echo "--> installing systemd-networkd eth0 DHCP config"
+mkdir -p "$tmp/root/etc/systemd/network"
+cat > "$tmp/root/etc/systemd/network/20-crucible-eth0.network" <<'NETWORK'
+# Managed by crucible's rootfs build.
+# systemd-networkd runs DHCP on eth0 at boot and re-runs it when
+# the link bounces. POST /network/refresh on the agent does
+# `ip link set eth0 down/up` so forks with stale snapshotted IP
+# state re-DHCP to their per-netns-assigned address.
+[Match]
+Name=eth0
+
+[Network]
+DHCP=ipv4
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+
+# UseDNS=no tells networkd NOT to override our static
+# /etc/resolv.conf with the DHCP-offered DNS servers. They happen
+# to be the same IP either way (our responder hands out DNS =
+# 10.20.255.254), but declaring it statically makes the resolver
+# path independent of DHCP state — queries work even if DHCP
+# hasn't finished yet.
+[DHCP]
+UseDNS=no
+NETWORK
+
+# Enable systemd-networkd via the manual-symlink pattern
+# systemctl enable uses under the hood (we can't run systemctl
+# from inside the build — no active systemd at rootfs-bake time).
+echo "--> enabling systemd-networkd"
+mkdir -p "$tmp/root/etc/systemd/system/multi-user.target.wants"
+mkdir -p "$tmp/root/etc/systemd/system/sockets.target.wants"
+ln -sf "..\$NETWORKD_UNIT" \\
+    "$tmp/root/etc/systemd/system/multi-user.target.wants/systemd-networkd.service"
+ln -sf "..\$NETWORKD_SOCK" \\
+    "$tmp/root/etc/systemd/system/sockets.target.wants/systemd-networkd.socket"
+
+# Write a static /etc/resolv.conf pointing at the daemon's DNS
+# anycast IP. The daemon's default is 10.20.255.254; operators
+# who change it via --dns-anycast (not exposed in v0.1) would
+# need to rebuild the rootfs. This keeps the guest resolver
+# working without systemd-resolved.
+echo "--> installing CA certificate bundle"
+# The minimal Firecracker CI squashfs ships without ca-certificates,
+# so HTTPS clients in the guest (python ssl, curl, wget) fail with
+# "unable to get local issuer certificate". We copy the host's
+# system CA bundle in rather than apt-install ca-certificates inside
+# a fakeroot — the host bundle is the same upstream Mozilla set and
+# avoids dragging in apt/dpkg machinery inside this script.
 #
-# systemd-networkd is Ubuntu's default DHCP client since ~18.04;
-# netplan is the standard frontend that generates its config at
-# boot. Dropping a .yaml here is the whole setup — netplan
-# regenerates systemd-networkd files before multi-user.target.
-echo "--> writing netplan eth0 DHCP config"
-mkdir -p "$tmp/root/etc/netplan"
-cat > "$tmp/root/etc/netplan/60-crucible-eth0.yaml" <<'NETPLAN'
-# Managed by crucible-agent's rootfs build.
-# systemd-networkd handles eth0 DHCP; POST /network/refresh on the
-# agent bounces the link so systemd-networkd restarts DHCP to pick
-# up a fork's per-netns-assigned IP.
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    eth0:
-      dhcp4: true
-NETPLAN
-# netplan warns if its configs are world-readable; 600 is the
-# conventional mode for /etc/netplan/*.yaml.
-chmod 600 "$tmp/root/etc/netplan/60-crucible-eth0.yaml"
+# Python's ssl module (via OpenSSL) checks its OPENSSLDIR cert.pem
+# (/usr/lib/ssl/cert.pem → /etc/ssl/cert.pem) AND the cert directory
+# (/etc/ssl/certs/) for c_rehash-hashed files. A lone bundle at
+# ca-certificates.crt isn't enough by itself, so we:
+#   1. place the bundle at the canonical path
+#   2. symlink /etc/ssl/cert.pem → the bundle (what OpenSSL reads by default)
+#   3. export SSL_CERT_FILE globally so anything that ignores the
+#      OpenSSL defaults still finds it
+HOST_CA=""
+for candidate in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+    if [[ -r "\$candidate" ]]; then HOST_CA="\$candidate"; break; fi
+done
+if [[ -z "\$HOST_CA" ]]; then
+    echo "build-rootfs: warning: no host CA bundle found; HTTPS will fail in the guest" >&2
+else
+    install -Dm644 "\$HOST_CA" "$tmp/root/etc/ssl/certs/ca-certificates.crt"
+    ln -sf certs/ca-certificates.crt "$tmp/root/etc/ssl/cert.pem"
+    mkdir -p "$tmp/root/etc"
+    cat > "$tmp/root/etc/environment" <<'ENV'
+SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+SSL_CERT_DIR=/etc/ssl/certs
+REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+ENV
+fi
+
+echo "--> writing static /etc/resolv.conf → 10.20.255.254"
+rm -f "$tmp/root/etc/resolv.conf"
+cat > "$tmp/root/etc/resolv.conf" <<'RESOLV'
+# Managed by crucible's rootfs build. Points at the daemon's
+# DNS anycast address; the daemon's DNS proxy enforces the
+# sandbox's allowlist before forwarding to upstream.
+nameserver 10.20.255.254
+options edns0
+RESOLV
 
 echo "--> writing systemd unit"
 mkdir -p "$tmp/root/etc/systemd/system"
@@ -142,6 +224,14 @@ Type=simple
 ExecStart=/usr/local/bin/crucible-agent
 Restart=on-failure
 RestartSec=1
+# SSL_CERT_FILE + siblings so the agent's exec'd children (python,
+# curl, node, etc.) find the CA bundle we installed. systemd doesn't
+# auto-source /etc/environment for services; setting them on the
+# unit is the definitive path and survives any rewrite of /etc.
+Environment=SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+Environment=SSL_CERT_DIR=/etc/ssl/certs
+Environment=REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+Environment=CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 # journal+console so wk2 boot-log debugging is visible on ttyS0; will
 # drop the console suffix once the agent path is stable.
 StandardOutput=journal+console
@@ -169,8 +259,14 @@ debugfs -R "stat /usr/local/bin/crucible-agent" "$OUT" >/dev/null 2>&1 \
     || die "agent not present in output rootfs"
 debugfs -R "stat /etc/systemd/system/multi-user.target.wants/crucible-agent.service" "$OUT" >/dev/null 2>&1 \
     || die "systemd enable symlink missing in output rootfs"
-debugfs -R "stat /etc/netplan/60-crucible-eth0.yaml" "$OUT" >/dev/null 2>&1 \
-    || die "netplan config missing in output rootfs (dropped during ext4 pack?)"
+debugfs -R "stat /etc/systemd/network/20-crucible-eth0.network" "$OUT" >/dev/null 2>&1 \
+    || die "systemd-networkd eth0 config missing in output rootfs"
+debugfs -R "stat /etc/systemd/system/multi-user.target.wants/systemd-networkd.service" "$OUT" >/dev/null 2>&1 \
+    || die "systemd-networkd not enabled in output rootfs"
+debugfs -R "stat /etc/resolv.conf" "$OUT" >/dev/null 2>&1 \
+    || die "static /etc/resolv.conf missing in output rootfs"
+debugfs -R "stat /etc/ssl/certs/ca-certificates.crt" "$OUT" >/dev/null 2>&1 \
+    || die "CA certificate bundle missing in output rootfs"
 
 ls -lh "$OUT"
 echo "==> ok: $OUT"

@@ -154,7 +154,7 @@ func TestJailerValidateRestore(t *testing.T) {
 
 func TestJailerBuildSpecSanitizesID(t *testing.T) {
 	jr := NewJailerRunner("/usr/bin/jailer", "/usr/bin/firecracker", "/srv/jailer", 10000, 10000)
-	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_abc123", Quotas{})
+	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_abc123", Quotas{}, "")
 	if err != nil {
 		t.Fatalf("buildJailerSpec: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestJailerBuildSpecPlumbsQuotas(t *testing.T) {
 		MemoryMaxBytes: 1 << 30, // 1 GiB
 		PIDsMax:        256,
 	}
-	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_x", q)
+	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_x", q, "")
 	if err != nil {
 		t.Fatalf("buildJailerSpec: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestJailerBuildSpecPlumbsQuotas(t *testing.T) {
 func TestJailerBuildSpecDisablePIDNS(t *testing.T) {
 	jr := NewJailerRunner("/usr/bin/jailer", "/usr/bin/firecracker", "/srv/jailer", 10000, 10000)
 	jr.DisablePIDNS = true
-	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_x", Quotas{})
+	js, err := jr.buildJailerSpec("/var/run/crucible/sbx_x", Quotas{}, "")
 	if err != nil {
 		t.Fatalf("buildJailerSpec: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestJailerBuildSpecDisablePIDNS(t *testing.T) {
 func TestJailerBuildSpecRejectsInvalidID(t *testing.T) {
 	jr := NewJailerRunner("/usr/bin/jailer", "/usr/bin/firecracker", "/srv/jailer", 10000, 10000)
 	// Empty workdir → empty ID → jailer.Spec.Validate fails.
-	_, err := jr.buildJailerSpec("", Quotas{})
+	_, err := jr.buildJailerSpec("", Quotas{}, "")
 	if err == nil {
 		t.Fatal("expected error for empty workdir producing invalid jailer ID")
 	}

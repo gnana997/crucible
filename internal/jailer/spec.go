@@ -74,6 +74,14 @@ type Spec struct {
 	// removes host pid visibility for anything inside the VM.
 	NewPIDNS bool
 
+	// NetNSPath, when non-empty, is passed to jailer as --netns.
+	// Jailer joins that network namespace before execing
+	// firecracker, so the VM's network-interfaces end up bound to
+	// host-side devices inside that netns rather than the daemon's
+	// root netns. Empty means jailer doesn't touch network
+	// namespacing — firecracker inherits the daemon's netns.
+	NetNSPath string
+
 	// Quotas are enforced via cgroup v2 knobs written before exec.
 	// Zero-valued fields are omitted (no limit on that dimension).
 	Quotas Quotas

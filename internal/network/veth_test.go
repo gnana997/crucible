@@ -15,7 +15,7 @@ func makeLease(t *testing.T, prefix string) Lease {
 	gw := p.Addr().As4()
 	gw[3]++
 	guest := p.Addr().As4()
-	guest[3] += 3
+	guest[3] += 2
 	return Lease{
 		Prefix:  p,
 		Gateway: netip.AddrFrom4(gw),
@@ -25,26 +25,27 @@ func makeLease(t *testing.T, prefix string) Lease {
 
 func TestVethSpecInterfaceNames(t *testing.T) {
 	s := VethSpec{SandboxID: "sbx-abc"}
-	if got := s.HostVeth(); got != "vh-sbx-abc" {
-		t.Errorf("HostVeth = %q", got)
+	// Names = prefix + ifaceSuffix(SandboxID). Compute the
+	// expected hash at runtime so the assertion stays stable if
+	// someone changes ifaceHashLen later.
+	hash := ifaceSuffix("sbx-abc")
+	if got, want := s.HostVeth(), "vh-"+hash; got != want {
+		t.Errorf("HostVeth = %q, want %q", got, want)
 	}
-	if got := s.GuestVeth(); got != "vg-sbx-abc" {
-		t.Errorf("GuestVeth = %q", got)
+	if got, want := s.GuestVeth(), "vg-"+hash; got != want {
+		t.Errorf("GuestVeth = %q, want %q", got, want)
 	}
-	if got := s.BridgeName(); got != "br-sbx-abc" {
-		t.Errorf("BridgeName = %q", got)
+	if got, want := s.BridgeName(), "br-"+hash; got != want {
+		t.Errorf("BridgeName = %q, want %q", got, want)
 	}
-	if got := s.TapName(); got != "tap-sbx-abc" {
-		t.Errorf("TapName = %q", got)
+	if got := s.Tap(); got != TapName {
+		t.Errorf("Tap = %q, want fixed %q", got, TapName)
 	}
-}
-
-func TestVethSpecBridgeIP(t *testing.T) {
-	s := VethSpec{
-		Lease: makeLease(t, "10.20.7.0/30"),
-	}
-	if got, want := s.BridgeIP().String(), "10.20.7.2"; got != want {
-		t.Errorf("BridgeIP = %s, want %s", got, want)
+	// All names must fit IFNAMSIZ.
+	for _, n := range []string{s.HostVeth(), s.GuestVeth(), s.BridgeName(), s.Tap()} {
+		if len(n) > ifnameMaxLen {
+			t.Errorf("name %q exceeds IFNAMSIZ (%d > %d)", n, len(n), ifnameMaxLen)
+		}
 	}
 }
 
@@ -70,11 +71,6 @@ func TestVethSpecValidate(t *testing.T) {
 			name:    "bad id chars",
 			mutate:  func(s *VethSpec) { s.SandboxID = "bad id" },
 			wantErr: "invalid characters",
-		},
-		{
-			name:    "id too long",
-			mutate:  func(s *VethSpec) { s.SandboxID = strings.Repeat("a", idMaxLenForIface+1) },
-			wantErr: "too long",
 		},
 		{
 			name:    "empty netns",
@@ -110,13 +106,33 @@ func TestVethSpecValidate(t *testing.T) {
 }
 
 func TestIfnameBudget(t *testing.T) {
-	// Sanity: our longest prefix + max ID suffix must still fit
-	// in Linux's IFNAMSIZ. If this ever fails, shorten prefixes.
-	maxID := strings.Repeat("a", idMaxLenForIface)
-	s := VethSpec{SandboxID: maxID}
-	for _, name := range []string{s.HostVeth(), s.GuestVeth(), s.BridgeName(), s.TapName()} {
+	// Regression guard: derived interface names must fit IFNAMSIZ
+	// regardless of the sandbox ID's length. The hash-based
+	// suffix makes this deterministic — any ID hashes to the same
+	// number of hex chars — but the assertion catches us if
+	// someone ever reverts to embedding the raw ID.
+	veryLong := strings.Repeat("a", 128)
+	s := VethSpec{SandboxID: veryLong}
+	for _, name := range []string{s.HostVeth(), s.GuestVeth(), s.BridgeName(), s.Tap()} {
 		if len(name) > ifnameMaxLen {
-			t.Errorf("interface name %q exceeds IFNAMSIZ (%d > %d)", name, len(name), ifnameMaxLen)
+			t.Errorf("interface name %q exceeds IFNAMSIZ (%d > %d)",
+				name, len(name), ifnameMaxLen)
+		}
+	}
+}
+
+func TestIfaceSuffixDeterministic(t *testing.T) {
+	// Setup derives names from SandboxID; Teardown derives again
+	// from the same SandboxID. They must match byte-for-byte or
+	// we leak interfaces.
+	for _, id := range []string{"sbx-abc", "sbx-r1qovql7buvo2", "x", strings.Repeat("z", 60)} {
+		a := ifaceSuffix(id)
+		b := ifaceSuffix(id)
+		if a != b {
+			t.Errorf("ifaceSuffix(%q) not deterministic: %q vs %q", id, a, b)
+		}
+		if len(a) != ifaceHashLen {
+			t.Errorf("ifaceSuffix(%q) length = %d, want %d", id, len(a), ifaceHashLen)
 		}
 	}
 }

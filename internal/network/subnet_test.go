@@ -192,7 +192,7 @@ func TestLeaseGatewayAndGuestIPLayout(t *testing.T) {
 	if got, want := l.Gateway.String(), "10.20.7.1"; got != want {
 		t.Errorf("Gateway = %s, want %s", got, want)
 	}
-	if got, want := l.GuestIP.String(), "10.20.7.3"; got != want {
+	if got, want := l.GuestIP.String(), "10.20.7.2"; got != want {
 		t.Errorf("GuestIP = %s, want %s", got, want)
 	}
 }

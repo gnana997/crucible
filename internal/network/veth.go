@@ -2,26 +2,53 @@ package network
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"net/netip"
 	"regexp"
 )
 
 // Interface name constraints:
-//   - Linux caps interface names at 15 chars (IFNAMSIZ = 16 with
-//     the terminator). We keep our prefixes short to leave room
-//     for the sandbox ID suffix.
-//   - The sandbox ID is sanitized (underscores → hyphens, max 64
-//     chars); we truncate here if needed and ensure uniqueness
-//     by construction since IDs are random base32.
+//
+// Linux caps interface names at IFNAMSIZ (15 chars + NUL = 16).
+// Sandbox IDs are 17 chars (prefix `sbx-` + 13 base32 random),
+// which doesn't fit inside IFNAMSIZ even with a single-char
+// prefix. Rather than forcing sandbox IDs to be shorter (they
+// have other consumers — logs, URLs, netns names — that benefit
+// from their current length), we hash the sandbox ID down to 8
+// hex chars (32 bits, ~4B space) for the interface-name layer
+// only. The readable sandbox ID lives alongside in the netns
+// name, nft chain/set names, and every log line.
 const (
-	vethHostPrefix   = "vh-" // "veth host"; 3 chars + id → 12 chars budget for id
-	vethGuestPrefix  = "vg-"
-	bridgePrefix     = "br-"
-	tapPrefix        = "tap-"
-	ifnameMaxLen     = 15
-	idMaxLenForIface = ifnameMaxLen - 4 // "vh-" is 3, "tap-" is 4 — use the larger
+	vethHostPrefix  = "vh-" // "veth host"
+	vethGuestPrefix = "vg-"
+	bridgePrefix    = "br-"
+
+	// TapName is the single tap device name every sandbox netns
+	// uses. Fixed (not per-sandbox) because Firecracker records
+	// the host_dev_name in snapshot state; a fork restoring from
+	// a snapshot would fail if the tap lived under a different
+	// name in the fork's netns. Each sandbox has its own netns,
+	// so "tap0" doesn't collide.
+	TapName = "tap0"
+
+	ifnameMaxLen = 15
+
+	// ifaceHashLen is the number of hex chars we take from the
+	// sandbox-ID hash. 8 hex = 32 bits of entropy, comfortable
+	// for any realistic single-host sandbox concurrency.
+	ifaceHashLen = 8
 )
+
+// ifaceSuffix derives a short, collision-resistant identifier
+// embeddable in interface names within IFNAMSIZ. Deterministic so
+// Teardown computes the same name as Setup without threading
+// state.
+func ifaceSuffix(sandboxID string) string {
+	sum := sha1.Sum([]byte(sandboxID))
+	return hex.EncodeToString(sum[:])[:ifaceHashLen]
+}
 
 // validIfaceSuffix restricts the characters that can follow our
 // prefix. Matches jailer's sanitized ID alphabet.
@@ -63,10 +90,6 @@ func (s VethSpec) Validate() error {
 	if !validIfaceSuffix.MatchString(s.SandboxID) {
 		return fmt.Errorf("network: VethSpec.SandboxID %q contains invalid characters", s.SandboxID)
 	}
-	if len(s.SandboxID) > idMaxLenForIface {
-		return fmt.Errorf("network: VethSpec.SandboxID %q too long for interface names (max %d chars)",
-			s.SandboxID, idMaxLenForIface)
-	}
 	if s.Netns == "" {
 		return fmt.Errorf("network: VethSpec.Netns required")
 	}
@@ -79,32 +102,37 @@ func (s VethSpec) Validate() error {
 	return nil
 }
 
-// Interface names derived from the sandbox ID. Deterministic so
-// teardown can compute them from the same spec.
-func (s VethSpec) HostVeth() string   { return vethHostPrefix + s.SandboxID }
-func (s VethSpec) GuestVeth() string  { return vethGuestPrefix + s.SandboxID }
-func (s VethSpec) BridgeName() string { return bridgePrefix + s.SandboxID }
-func (s VethSpec) TapName() string    { return tapPrefix + s.SandboxID }
+// Interface names derived from the sandbox ID via ifaceSuffix.
+// Deterministic so Teardown reconstructs the same names as Setup.
+// Length = prefix (3) + hash (8) = 11 chars, well within
+// IFNAMSIZ.
+func (s VethSpec) HostVeth() string   { return vethHostPrefix + ifaceSuffix(s.SandboxID) }
+func (s VethSpec) GuestVeth() string  { return vethGuestPrefix + ifaceSuffix(s.SandboxID) }
+func (s VethSpec) BridgeName() string { return bridgePrefix + ifaceSuffix(s.SandboxID) }
 
-// BridgeIP is the /30 address .2 (neither gateway nor guest). We
-// assign it to the bridge inside the netns so the bridge is
-// L3-addressable, which keeps the kernel happy when forwarding
-// between veth-g and tap.
-func (s VethSpec) BridgeIP() netip.Addr {
-	gw := s.Lease.Gateway
-	b := gw.As4()
-	b[3]++ // .1 → .2
-	return netip.AddrFrom4(b)
-}
+// Tap returns the fixed tap name every sandbox's netns uses. Same
+// across sandboxes; netns isolation makes that safe and lets
+// snapshot/restore work without host_dev_name rewriting.
+func (s VethSpec) Tap() string { return TapName }
 
 // Setup creates every host-side object for a sandbox, in order:
 //
 //  1. veth pair (host end + guest end, both in root netns)
 //  2. Move guest end into the sandbox netns
 //  3. Assign host-side IP (gateway) and bring it up
-//  4. Inside the netns: bring up lo; assign bridge IP; create
-//     bridge; enslave veth-g and tap to bridge; bring all up
-//  5. Inside the netns: route the DNS anycast IP via the gateway
+//  4. Inside the netns: bring up lo; create L3-less bridge;
+//     enslave veth-g and tap to bridge; bring all up
+//
+// The bridge is intentionally address-less — a /30 only has two
+// usable host addresses (.1 = gateway on the host-side veth,
+// .2 = guest via DHCP) so there's no slot left for the bridge,
+// and bridges don't need an L3 address to forward L2 frames.
+// The DHCP responder reaches the bridge via SO_BINDTODEVICE, not
+// by IP, so address-less is fine.
+//
+// The sandbox netns has no IPv4 routing table entries — it's a
+// pure L2 bridge. All L3 handling (DNS anycast dummy iface,
+// masquerade, forward filter) lives in root netns.
 //
 // On any error, Setup rolls back the host-visible veth (deleting
 // the host-side end auto-removes the guest-side end too, and the
@@ -161,41 +189,36 @@ func Setup(ctx context.Context, spec VethSpec) error {
 	}
 
 	// Create the tap device.
-	if err := runCmd(ctx, nsExec("ip", "tuntap", "add", spec.TapName(), "mode", "tap")...); err != nil {
+	if err := runCmd(ctx, nsExec("ip", "tuntap", "add", spec.Tap(), "mode", "tap")...); err != nil {
 		return fmt.Errorf("create tap: %w", err)
 	}
 
-	// Create the bridge and assign it the .2 address. L3 addr on
-	// the bridge lets the kernel route between veth-g and tap even
-	// though we only want L2 forwarding; leaving the bridge
-	// address-less works on most kernels but is fragile.
+	// Create the bridge L3-less. A /30 only has two usable host
+	// addresses; .1 is the gateway on the host-side veth and .2
+	// is the guest via DHCP — no slot left for the bridge, and
+	// bridges don't need an L3 address to forward L2 frames.
 	if err := runCmd(ctx, nsExec("ip", "link", "add", spec.BridgeName(), "type", "bridge")...); err != nil {
 		return fmt.Errorf("create bridge: %w", err)
 	}
-	brAddr := fmt.Sprintf("%s/%d", spec.BridgeIP(), spec.Lease.Prefix.Bits())
-	if err := runCmd(ctx, nsExec("ip", "addr", "add", brAddr, "dev", spec.BridgeName())...); err != nil {
-		return fmt.Errorf("assign bridge IP: %w", err)
-	}
 
 	// Enslave veth-g and tap to the bridge; bring everything up.
-	for _, iface := range []string{spec.GuestVeth(), spec.TapName()} {
+	for _, iface := range []string{spec.GuestVeth(), spec.Tap()} {
 		if err := runCmd(ctx, nsExec("ip", "link", "set", iface, "master", spec.BridgeName())...); err != nil {
 			return fmt.Errorf("attach %s to bridge: %w", iface, err)
 		}
 	}
-	for _, iface := range []string{spec.GuestVeth(), spec.TapName(), spec.BridgeName()} {
+	for _, iface := range []string{spec.GuestVeth(), spec.Tap(), spec.BridgeName()} {
 		if err := runCmd(ctx, nsExec("ip", "link", "set", iface, "up")...); err != nil {
 			return fmt.Errorf("bring up %s: %w", iface, err)
 		}
 	}
 
-	// 5. Route the DNS anycast IP via the gateway. Without this
-	// the guest's queries to the anycast would have no route.
-	if err := runCmd(ctx, nsExec("ip", "route", "add",
-		fmt.Sprintf("%s/32", spec.DNSAnycast), "via", spec.Lease.Gateway.String(),
-	)...); err != nil {
-		return fmt.Errorf("add anycast route: %w", err)
-	}
+	// Sandbox netns has no routing table entries of its own — it's
+	// a pure L2 bridge. The guest receives its default gateway and
+	// DNS server from DHCP and reaches 10.20.255.254 via its own
+	// eth0 → tap0 → bridge → veth-g → vh-XXX path. Packets only
+	// hit L3 in root netns, where the anycast dummy iface + nft
+	// rules live.
 
 	success = true
 	return nil

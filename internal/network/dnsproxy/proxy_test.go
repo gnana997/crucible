@@ -5,15 +5,55 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
-
-	"github.com/gnana997/crucible/internal/network"
 )
+
+// stubMatcher satisfies the Matcher interface for tests, matching
+// if the query name is in a pre-configured set (case-insensitive,
+// trailing-dot-tolerant). Keeps this package test-only so we
+// don't need to import the parent network package (which would
+// create a cycle).
+type stubMatcher struct {
+	allowed map[string]bool
+}
+
+func newStubMatcher(patterns ...string) *stubMatcher {
+	m := &stubMatcher{allowed: make(map[string]bool, len(patterns))}
+	for _, p := range patterns {
+		m.allowed[strings.TrimSuffix(strings.ToLower(p), ".")] = true
+	}
+	return m
+}
+
+func (m *stubMatcher) Matches(name string) bool {
+	key := strings.TrimSuffix(strings.ToLower(name), ".")
+	if m.allowed[key] {
+		return true
+	}
+	// Cheap single-label wildcard: for each pattern like
+	// "*.suffix.com", accept anything ending ".suffix.com"
+	// (exactly one extra label).
+	for p := range m.allowed {
+		if !strings.HasPrefix(p, "*.") {
+			continue
+		}
+		suffix := p[1:] // ".suffix.com"
+		if !strings.HasSuffix(key, suffix) {
+			continue
+		}
+		head := strings.TrimSuffix(key, suffix)
+		if head != "" && !strings.Contains(head, ".") {
+			return true
+		}
+	}
+	return false
+}
 
 // Tests use three different 127.x.x.x loopback addresses:
 //
@@ -107,13 +147,9 @@ func startTestProxy(t *testing.T, upstream string, patterns []string) (*Proxy, s
 	}
 	t.Cleanup(func() { _ = p.Stop() })
 
-	al, err := network.New(patterns)
-	if err != nil {
-		t.Fatalf("allowlist: %v", err)
-	}
 	p.Register(mustAddr(t, guestIP), &Policy{
 		SandboxID: "sbx-test",
-		Allowlist: al,
+		Allowlist: newStubMatcher(patterns...),
 	})
 
 	return p, proxyAddr, recorder

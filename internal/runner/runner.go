@@ -67,6 +67,41 @@ type Spec struct {
 	// see, so PIDsMax is a fork-bomb guard for firecracker itself,
 	// not for guest code.
 	Quotas Quotas
+
+	// NetNS, when non-empty, names the host path of a network
+	// namespace Firecracker (under jailer) should join before
+	// it starts. Used by the network feature: each sandbox has
+	// its own netns set up by internal/network, and this field
+	// plumbs that path through to jailer's --netns flag.
+	//
+	// Only meaningful under JailerRunner. Direct-exec ignores it.
+	NetNS string
+
+	// Net, when non-nil, configures Firecracker's virtio-net
+	// device post-boot and pre-InstanceStart. Zero value (nil)
+	// leaves the VM without a NIC — the default-deny story for
+	// the network feature.
+	Net *NetConfig
+}
+
+// NetConfig describes the guest network interface Firecracker
+// attaches. Only populated when the sandbox has network enabled;
+// absent means "no NIC at all".
+type NetConfig struct {
+	// IfaceID is the Firecracker iface_id — always "eth0" in
+	// v0.1 since we support exactly one NIC per VM.
+	IfaceID string
+
+	// HostDev is the host-side TAP device name (inside the
+	// sandbox's netns). Fixed across all sandboxes because
+	// snapshot state records this name; having it constant
+	// lets forks restore without a host_dev_name rewrite.
+	HostDev string
+
+	// GuestMAC is the MAC the guest sees on eth0. Locally-
+	// administered (first byte's bit 1 set) so we never collide
+	// with real-world OUIs.
+	GuestMAC string
 }
 
 // Quotas is the cross-runner shape for host-side resource limits.
@@ -162,6 +197,14 @@ type RestoreSpec struct {
 	// match the one used by the source sandbox at snapshot time.
 	// Callers manage this via symlinks or deliberate path reuse.
 	RootfsPath string
+
+	// NetNS, when non-empty, names the host path of a network
+	// namespace to place the restored Firecracker process into.
+	// Each fork gets its own netns even though they share a
+	// snapshot — the recorded TAP name (see NetConfig.HostDev)
+	// is the same across netns, so snapshot restore works
+	// without host_dev_name rewriting.
+	NetNS string
 }
 
 // Runner starts Firecracker VMs — either from a cold boot (Start) or

@@ -6,7 +6,7 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, runs commands inside them over vsock with stdout/stderr streaming back, captures snapshots, and forks them end-to-end under jailer with cgroup v2 quotas. Don't use this for anything real.
+> **Status.** `crucible daemon` boots Firecracker microVMs under jailer (chroot + cgroup v2 quotas), manages their lifecycle over HTTP, runs commands over vsock with stdout/stderr streaming and structured execution records (exit code, rusage, OOM kill), captures snapshots, forks end-to-end (each fork in its own netns with its own DHCP-assigned IP), and enforces per-sandbox default-deny egress with a hostname-based allowlist. Don't use this for anything real.
 
 ## Why this exists
 
@@ -39,7 +39,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Structured execution record | ✅ done — exit metadata (exit_code, duration_ms, signal, timed_out, oom_killed) + nested `usage` with CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes |
 | IO quotas (cgroup `io.max`) | ⏳ deferred — needs per-host block-device discovery |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now |
-| Default-deny network + allowlist | 🔨 next — per-sandbox netns + nftables egress + hand-rolled DNS proxy for hostname-based allowlist |
+| Default-deny network + allowlist | ✅ done — per-sandbox netns + nftables egress + hand-rolled DNS proxy; exact-match + `*.domain` wildcards; AAAA records stripped (sandboxes are IPv4-only) |
 | Prometheus `/metrics` endpoint | ⏳ planned for v0.1 |
 | Install script + systemd unit | ⏳ planned for v0.1 |
 | Python SDK | ⏳ deferred to v0.2 — the HTTP API is stable and directly usable from any language |
@@ -53,6 +53,7 @@ Requirements:
 - Linux host with KVM (x86_64). `ls /dev/kvm` succeeds and is readable.
 - Go 1.25+ (to build), plus `fakeroot`, `squashfs-tools`, `e2fsprogs` on the host (to bake the rootfs).
 - Firecracker v1.15+ binary, a guest kernel (uncompressed `vmlinux`), and a base rootfs (`.squashfs`). Pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/) or see the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md).
+- `iproute2`, `nftables`, and `iptables` in `$PATH` when running the daemon with networking enabled — the daemon shells out to them to create netns / veth pairs, manage nft rules, and insert `FORWARD` ACCEPTs that coexist with Docker's default `FORWARD DROP`. All three are stock on Ubuntu/Debian.
 
 ### Build everything
 
@@ -88,16 +89,26 @@ sudo ./crucible daemon \
   --kernel          /path/to/vmlinux \
   --rootfs          assets/rootfs.ext4 \
   --chroot-base     /srv/jailer \
-  --jail-uid 10000 --jail-gid 10000
+  --jail-uid 10000 --jail-gid 10000 \
+  --network-egress-iface eth0   # or wlp3s0 / ens1 — whichever reaches the internet
 ```
 
 With `--jailer-bin` set, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, its own cgroup v2 slice (for resource quotas), and firecracker itself runs as the unprivileged `--jail-uid`. This is the pattern AWS Lambda and Fly.io use — see the [upstream jailer docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md) for the mechanics.
 
+With `--network-egress-iface` set, every sandbox created with a `network` block gets its own netns, a `/30` out of the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs resolved through the daemon's DNS proxy for allowlisted names. At startup the daemon also installs two `iptables FORWARD ACCEPT` rules scoped to our `vh-+` veth prefix so traffic survives the default `FORWARD DROP` that Docker sets on many hosts. For the data-plane details — why the bridge is L3-less, why AAAA is stripped, why the DHCP responder uses `SO_BINDTODEVICE` — see [docs/network-bringup-journal.md](docs/network-bringup-journal.md).
+
 At startup the daemon reaps any orphan chroots left by a previous run (crashed or killed without clean shutdown), so you don't have to babysit `/srv/jailer` between restarts.
 
-### End-to-end smoke test
+### End-to-end smoke tests
 
-After you have a jailer-capable environment wired up, [scripts/smoke_fork.sh](scripts/smoke_fork.sh) drives the full flow: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker, tear everything down. Run as root.
+Two harnesses, both run as root (jailer + network need `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`):
+
+- [scripts/smoke_fork.sh](scripts/smoke_fork.sh) — minimal fork correctness check: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker, tear everything down.
+- [scripts/smoke_e2e.sh](scripts/smoke_e2e.sh) — 15-test battery covering exec roundtrip, exit codes, exec timeouts, OOM kill, structured rusage, default-deny network, hostname allowlist (allowed / denied / IP-literal / `*.domain` wildcard), snapshot + 5-fork with per-fork networking, orphan reap.
+
+Per-test artifacts land under `/tmp/crucible-smoke-YYYYMMDD-HHMMSS/test-NN-*/` — stdout, stderr, and the parsed exit frame for every step — so you can inspect any failing assertion without rerunning.
+
+For single-issue diagnostics there's also [scripts/debug_dns.sh](scripts/debug_dns.sh), which spins up one sandbox and dumps both guest-side (`ip addr`, `resolv.conf`, `ip neigh`, `getent`) and host-side (`nft list`, `bridge fdb`, netns routing) state in one shot.
 
 ### Performance (and why your filesystem matters)
 
@@ -183,25 +194,29 @@ make clean    # rm built binaries
 Repository layout:
 
 ```
-cmd/crucible/         CLI entry + subcommand wiring (daemon)
-cmd/crucible-agent/   guest-side binary (vsock listener + /exec handler)
-internal/fcapi/       hand-written Firecracker HTTP-over-UDS client
-internal/fsutil/      Clone (FICLONE reflink / copy), Move (rename + xdev fallback)
-internal/jailer/      argv builder, chroot staging, cleanup, orphan reap
-internal/runner/      firecracker + jailer process lifecycle
-internal/sandbox/     ID generation + Manager (lifecycle, exec, snapshot, fork, timers)
-internal/daemon/      HTTP server, routes, middleware
-internal/agentwire/   shared protocol (frame format, ExecRequest/Result)
-internal/agentapi/    host-side HTTP client over hybrid-vsock UDS
-internal/version/     ldflags-settable build version
-scripts/              rootfs builder, smoke_fork.sh (end-to-end jailer test)
-docs/                 VISION.md + ROADMAP.md
+cmd/crucible/               CLI entry + subcommand wiring (daemon)
+cmd/crucible-agent/         guest-side binary (vsock listener, /exec, /network/refresh)
+internal/fcapi/             hand-written Firecracker HTTP-over-UDS client
+internal/fsutil/            Clone (FICLONE reflink / copy), Move (rename + xdev fallback)
+internal/jailer/            argv builder, chroot staging, cleanup, orphan reap
+internal/runner/            firecracker + jailer process lifecycle
+internal/sandbox/           ID generation + Manager (lifecycle, exec, snapshot, fork, timers)
+internal/daemon/            HTTP server, routes, middleware, network adapter
+internal/agentwire/         shared protocol (frame format, ExecRequest/Result)
+internal/agentapi/          host-side HTTP client over hybrid-vsock UDS
+internal/network/           Manager + subnet pool, per-sandbox netns + veth + L3-less bridge + tap, nft base/per-sandbox rules, iptables FORWARD ACCEPT for vh-+
+internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned to the bridge, no MAC filter so forks work)
+internal/network/dnsproxy/  shared DNS proxy (allowlist enforcement, AAAA stripping, nft set updates on each A record)
+internal/version/           ldflags-settable build version
+scripts/                    rootfs builder, smoke_fork.sh, smoke_e2e.sh, debug_dns.sh
+docs/                       VISION.md, ROADMAP.md, network-bringup-journal.md
 ```
 
 Direct dependencies (kept small on purpose):
 
-- `golang.org/x/sys` — raw Linux syscalls for runner + agent
+- `golang.org/x/sys` — raw Linux syscalls for runner + agent (rusage, setns, SO_BINDTODEVICE)
 - `github.com/mdlayher/vsock` — AF_VSOCK listener in the guest agent; we tried rolling our own via `net.FileConn` first, but Go's stdlib doesn't recognize AF_VSOCK sockaddrs
+- `github.com/miekg/dns` — DNS message parsing + upstream exchange in the proxy; hand-rolling the wire format would have been a weekend of yak-shaving, and miekg/dns is the stable, widely audited choice
 
 Everything else (HTTP, JSON, concurrency, Firecracker API, host-side hybrid-vsock handshake, frame protocol) is stdlib + hand-written. See [docs/VISION.md](docs/VISION.md) for the rationale.
 

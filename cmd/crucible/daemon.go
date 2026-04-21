@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/jailer"
+	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
@@ -55,6 +57,13 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		chrootBase = fs.String("chroot-base", "/srv/jailer", "parent dir for per-VM jailer chroots (used only when --jailer-bin is set)")
 		jailUID    = fs.Uint("jail-uid", 10000, "unprivileged uid jailer drops to before exec'ing firecracker")
 		jailGID    = fs.Uint("jail-gid", 10000, "unprivileged gid jailer drops to before exec'ing firecracker")
+		// Network flags: when --network-egress-iface is set AND
+		// --jailer-bin is set, the daemon can provision per-sandbox
+		// netns + nft + DHCP + DNS proxy. Without both, sandbox
+		// requests with network={enabled:true} are rejected at Create.
+		netEgressIface = fs.String("network-egress-iface", "", "host interface to masquerade outbound sandbox traffic on (e.g. eth0); enables network feature when set")
+		netSubnetPool  = fs.String("network-subnet-pool", "10.20.0.0/16", "base CIDR for per-sandbox /30 allocations")
+		dnsUpstream    = fs.String("dns-upstream", "system", `upstream DNS resolver for sandboxes. "system" reads first nameserver from /etc/resolv.conf (falls back to 1.1.1.1); otherwise specify "ip" or "ip:port"`)
 	)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -171,14 +180,58 @@ Required flags:
 		logger.Info("runner mode: direct firecracker (no jailer)")
 	}
 
-	mgr, err := sandbox.NewManager(sandbox.ManagerConfig{
+	// Network is opt-in at daemon startup: we start it only when
+	// the operator has configured the egress interface AND we're
+	// running under jailer (per-netns setup requires netns +
+	// capabilities that direct-exec doesn't have). Sandboxes can
+	// still be created without network — that's the default-deny
+	// story. Attempting `network={enabled:true}` in a request when
+	// this block didn't run results in a clean 400 from the
+	// Manager, not a silent fallback.
+	var netMgr *network.Manager
+	if *netEgressIface != "" && *jailerBin != "" {
+		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
+		if perr != nil {
+			fmt.Fprintf(stderr, "error: --network-subnet-pool: %v\n", perr)
+			return 2
+		}
+		nmgr, nerr := network.Start(context.Background(), network.ManagerConfig{
+			SubnetPool:  subnetPool,
+			DNSAnycast:  network.DefaultDNSAnycast,
+			EgressIface: *netEgressIface,
+			DNSUpstream: *dnsUpstream,
+			Logger:      logger,
+		})
+		if nerr != nil {
+			logger.Error("network init failed", "err", nerr)
+			return 1
+		}
+		netMgr = nmgr
+		logger.Info("network enabled",
+			"egress_iface", *netEgressIface,
+			"subnet_pool", *netSubnetPool,
+			"dns_upstream", *dnsUpstream,
+		)
+	} else if *netEgressIface != "" && *jailerBin == "" {
+		// Half-configured — operator asked for network but not
+		// jailer. That's a structural mismatch, not a usage
+		// error we can work around; reject loudly at startup.
+		fmt.Fprintln(stderr, "error: --network-egress-iface requires --jailer-bin (network needs per-sandbox netns)")
+		return 2
+	}
+
+	mgrCfg := sandbox.ManagerConfig{
 		Runner:            r,
 		WorkBase:          *workBase,
 		Kernel:            *kernel,
 		Rootfs:            *rootfs,
 		WaitForAgent:      !*noWaitAgent,
 		AgentReadyTimeout: agentReady,
-	})
+	}
+	if netMgr != nil {
+		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
+	}
+	mgr, err := sandbox.NewManager(mgrCfg)
 	if err != nil {
 		logger.Error("manager init failed", "err", err)
 		return 1

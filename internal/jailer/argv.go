@@ -57,6 +57,10 @@ func BuildArgs(spec Spec, fcArgs []string) []string {
 		args = append(args, "--new-pid-ns")
 	}
 
+	if spec.NetNSPath != "" {
+		args = append(args, "--netns", spec.NetNSPath)
+	}
+
 	if len(fcArgs) > 0 {
 		args = append(args, "--")
 		args = append(args, fcArgs...)

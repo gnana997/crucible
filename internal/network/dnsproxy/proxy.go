@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
-
-	"github.com/gnana997/crucible/internal/network"
 )
 
 // AllowIPFunc is the hook the proxy calls after a successful
@@ -65,6 +63,18 @@ const (
 	DefaultAllowIPTimeout  = 2 * time.Second
 )
 
+// Matcher is the minimal interface the DNS proxy needs to
+// decide whether a query is allowed. Defined here (not imported
+// from internal/network) to keep this package dependency-free
+// on its parent — the parent is free to import back without
+// creating a cycle.
+//
+// In production the implementation is *network.Allowlist; in
+// tests it's commonly a custom stub.
+type Matcher interface {
+	Matches(name string) bool
+}
+
 // Policy is the per-sandbox state the proxy consults on every
 // query from that sandbox's source IP.
 type Policy struct {
@@ -74,7 +84,7 @@ type Policy struct {
 
 	// Allowlist answers "is this name allowed?" in O(labels).
 	// The proxy does not mutate it.
-	Allowlist *network.Allowlist
+	Allowlist Matcher
 }
 
 // Proxy is a running DNS enforcement server. Construct with
@@ -183,6 +193,10 @@ func (p *Proxy) Stop() error {
 // Calling Register twice with the same IP replaces the previous
 // policy — useful when the guest's allowlist is updated without
 // tearing down the proxy entry.
+//
+// pol.Allowlist must satisfy Matcher; a nil Allowlist is rejected
+// (would silently deny everything, which callers can express more
+// clearly by simply not Registering).
 func (p *Proxy) Register(guestIP netip.Addr, pol *Policy) {
 	if pol == nil || pol.Allowlist == nil {
 		return
@@ -249,6 +263,17 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// the client will see TC=1 and can retry itself.
 	}
 
+	// Strip AAAA records from the reply. The sandbox network is
+	// IPv4-only (nft allowlist is ipv4_addr-only, veth + tap have
+	// no IPv6), so returning AAAA would actively hurt: glibc's
+	// gethostbyname2/getaddrinfo prefers IPv6 when both families
+	// are available, so clients would attempt unreachable IPv6
+	// and never fall back to the A records that actually work.
+	// Stripping AAAA makes the guest believe the host has no IPv6
+	// and use IPv4 unconditionally.
+	reply.Answer = filterOutAAAA(reply.Answer)
+	reply.Extra = filterOutAAAA(reply.Extra)
+
 	// Walk the answer section for A records, feeding each to the
 	// nft set with the record's TTL. Errors are logged but do
 	// not fail the DNS response; a missed nft update is better
@@ -277,6 +302,19 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if err := w.WriteMsg(reply); err != nil {
 		p.log.Debug("write reply failed", "err", err)
 	}
+}
+
+// filterOutAAAA returns rrs with every *dns.AAAA removed. Other
+// RR types pass through untouched.
+func filterOutAAAA(rrs []dns.RR) []dns.RR {
+	out := rrs[:0]
+	for _, rr := range rrs {
+		if _, isAAAA := rr.(*dns.AAAA); isAAAA {
+			continue
+		}
+		out = append(out, rr)
+	}
+	return out
 }
 
 // --- helpers ----------------------------------------------------

@@ -84,6 +84,11 @@ type Sandbox struct {
 	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
+	// Network is nil when the sandbox has no NIC attached (default).
+	// Non-nil carries everything the daemon needs to teardown and
+	// to echo back in sandboxResponse.
+	Network *NetworkHandle
+
 	handle     runner.Handle
 	execClient *agentapi.Client // cached; nil when VSockPath is empty
 
@@ -107,6 +112,36 @@ type CreateConfig struct {
 	// Zero disables the timeout (the sandbox lives until an explicit
 	// Delete or daemon shutdown).
 	TimeoutSec int
+
+	// Network, when non-nil, provisions the sandbox with its own
+	// network namespace + per-sandbox DHCP / DNS / firewall
+	// policy. Absent (nil) means no NIC at all — default-deny.
+	//
+	// Enabling this requires the daemon to have a configured
+	// ManagerConfig.Network; otherwise Create returns an error
+	// rather than silently falling back to no-network.
+	Network *NetworkConfig
+}
+
+// NetworkConfig declares the per-sandbox network intent. Exactly
+// one of Allowlist / nil is meaningful; an empty slice is valid
+// (explicit deny of everything except the implicit DNS path).
+type NetworkConfig struct {
+	// Allowlist must be a validated network.Allowlist; the
+	// daemon layer parses the user-supplied patterns and hands
+	// the typed value through. Required when NetworkConfig is
+	// non-nil.
+	Allowlist NetworkAllowlist
+}
+
+// NetworkAllowlist decouples sandbox.Manager from internal/network's
+// Allowlist type, which keeps the packages' import graph clean.
+// In production, the daemon passes *network.Allowlist (which
+// satisfies both Matches and Patterns); in tests we use a small
+// stub.
+type NetworkAllowlist interface {
+	Matches(name string) bool
+	Patterns() []string
 }
 
 // ManagerConfig wires a Manager to its dependencies and defaults. The
@@ -138,6 +173,66 @@ type ManagerConfig struct {
 	// AgentReadyTimeout bounds the readiness poll when WaitForAgent is
 	// true. Zero means DefaultAgentReadyTimeout.
 	AgentReadyTimeout time.Duration
+
+	// Network, when non-nil, enables per-sandbox networking. Only
+	// sandboxes whose CreateConfig.Network is non-nil actually use
+	// it; when the field itself is nil here, any request with
+	// Network set is rejected at Create time.
+	Network NetworkProvisioner
+}
+
+// NetworkProvisioner is the narrow slice of internal/network.Manager
+// that sandbox.Manager depends on. Stated as an interface so the
+// two packages stay unordered in the import graph and so tests can
+// substitute a trivial stub.
+type NetworkProvisioner interface {
+	Setup(ctx context.Context, req NetworkSetupRequest) (*NetworkHandle, error)
+	Teardown(ctx context.Context, h *NetworkHandle) error
+}
+
+// NetworkSetupRequest is the argument to NetworkProvisioner.Setup.
+// Mirrors internal/network.SandboxSetup but lives here so
+// sandbox.Manager doesn't import the network package directly.
+type NetworkSetupRequest struct {
+	SandboxID string
+	Allowlist NetworkAllowlist
+}
+
+// NetworkHandle is the return value of NetworkProvisioner.Setup,
+// kept in the Sandbox record so Teardown can be called on Delete.
+// The production value is a wrapper constructed by the daemon
+// around *network.SandboxHandle; fields here capture what
+// sandbox.Manager reads back from it.
+type NetworkHandle struct {
+	// NetnsPath is the host path of the namespace Firecracker
+	// should join (plumbed into runner.Spec.NetNS).
+	NetnsPath string
+
+	// TapName is the host device Firecracker attaches to.
+	TapName string
+
+	// GuestMAC formatted as "02:ab:cd:ef:01:23".
+	GuestMAC string
+
+	// GuestIP is the IP DHCP will hand to the guest. Exposed so
+	// the daemon can echo it back to callers in sandboxResponse.
+	GuestIP string
+
+	// Gateway is the host-side veth IP (guest's default route).
+	Gateway string
+
+	// Allowlist is the matcher used at setup time. Retained on
+	// the handle because snapshots copy it onto Snapshot.Network
+	// so forks can re-register an identical policy without the
+	// daemon having to re-parse patterns. Matchers are
+	// immutable; sharing a single instance across source + forks
+	// is safe.
+	Allowlist NetworkAllowlist
+
+	// Impl is an opaque reference to the network package's own
+	// handle type, carried along so Teardown can pass the same
+	// pointer back. sandbox.Manager never dereferences it.
+	Impl any
 }
 
 // Snapshot is a frozen reference point captured from a running sandbox.
@@ -153,6 +248,12 @@ type Snapshot struct {
 	MemPath    string // memory.file
 	RootfsPath string // rootfs.ext4 (frozen clone at snapshot time)
 	CreatedAt  time.Time
+
+	// Network captures the source sandbox's network intent so
+	// forks can be provisioned with matching network state.
+	// Nil means the source had no network, and forks get none
+	// either.
+	Network *NetworkConfig
 }
 
 // Manager owns the sandbox + snapshot registries and coordinates
@@ -228,14 +329,37 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		return nil, fmt.Errorf("sandbox: clone rootfs template: %w", err)
 	}
 
-	handle, err := m.cfg.Runner.Start(ctx, runner.Spec{
+	// Network setup (optional). Must happen before runner.Start
+	// because the runner needs the netns path + tap name for
+	// Firecracker's PUT /network-interfaces.
+	netHandle, err := m.provisionNetwork(ctx, id, req.Network)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if !success && netHandle != nil {
+			_ = m.cfg.Network.Teardown(context.Background(), netHandle)
+		}
+	}()
+
+	runnerSpec := runner.Spec{
 		Workdir:   workdir,
 		Kernel:    m.cfg.Kernel,
 		Rootfs:    sbxRootfs,
 		BootArgs:  req.BootArgs,
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
-	})
+	}
+	if netHandle != nil {
+		runnerSpec.NetNS = netHandle.NetnsPath
+		runnerSpec.Net = &runner.NetConfig{
+			IfaceID:  "eth0",
+			HostDev:  netHandle.TapName,
+			GuestMAC: netHandle.GuestMAC,
+		}
+	}
+
+	handle, err := m.cfg.Runner.Start(ctx, runnerSpec)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: start %s: %w", id, err)
 	}
@@ -247,6 +371,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		Workdir:   workdir,
 		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
+		Network:   netHandle,
 		handle:    handle,
 		done:      make(chan struct{}),
 	}
@@ -292,6 +417,53 @@ func (m *Manager) startLifetimeTimer(s *Sandbox, sec int) {
 		case <-s.done:
 		}
 	}()
+}
+
+// provisionNetwork is the single place Create and Fork hand off to
+// the network provisioner. Returns:
+//
+//   - (nil, nil) when req is nil — the sandbox wants no network,
+//     which is the default-deny case.
+//   - (nil, error) when req is non-nil but the daemon lacks a
+//     configured NetworkProvisioner. Explicit failure is better
+//     than silently attaching nothing and letting the guest boot
+//     without the network the caller asked for.
+//   - (handle, nil) on success — caller must Teardown on
+//     rollback + on Delete.
+func (m *Manager) provisionNetwork(ctx context.Context, sandboxID string, req *NetworkConfig) (*NetworkHandle, error) {
+	if req == nil {
+		return nil, nil
+	}
+	if m.cfg.Network == nil {
+		return nil, errors.New("sandbox: network requested but daemon has no network provisioner configured")
+	}
+	if req.Allowlist == nil {
+		return nil, errors.New("sandbox: NetworkConfig.Allowlist required")
+	}
+	h, err := m.cfg.Network.Setup(ctx, NetworkSetupRequest{
+		SandboxID: sanitizeNetworkID(sandboxID),
+		Allowlist: req.Allowlist,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: network setup: %w", err)
+	}
+	return h, nil
+}
+
+// sanitizeNetworkID mirrors runner/jailer's sanitizeJailerID:
+// underscores → hyphens, so "sbx_abc" → "sbx-abc". The network
+// layer uses this ID in interface names + netns names + nft chain
+// names, all of which reject underscores.
+func sanitizeNetworkID(id string) string {
+	out := make([]byte, len(id))
+	for i := 0; i < len(id); i++ {
+		if id[i] == '_' {
+			out[i] = '-'
+			continue
+		}
+		out[i] = id[i]
+	}
+	return string(out)
 }
 
 // waitForAgent polls /healthz on the guest agent until it responds or
@@ -473,6 +645,15 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 		RootfsPath: snapRootfs,
 		CreatedAt:  time.Now().UTC(),
 	}
+	// Record the source's network intent so forks reconstruct a
+	// matching config. Matchers are immutable, so sharing the
+	// same instance across source + forks is safe — simpler than
+	// re-parsing patterns for every fork.
+	if src.Network != nil && src.Network.Allowlist != nil {
+		snap.Network = &NetworkConfig{
+			Allowlist: src.Network.Allowlist,
+		}
+	}
 
 	m.mu.Lock()
 	m.snapshots[snapID] = snap
@@ -624,12 +805,30 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		return nil, fmt.Errorf("clone snapshot memory: %w", err)
 	}
 
-	handle, err := m.cfg.Runner.Restore(ctx, runner.RestoreSpec{
+	// Network for the fork, if the source had one. The
+	// provisioner gives us a fresh netns + subnet + MAC even
+	// though the allowlist (policy) is the same as the source.
+	netHandle, err := m.provisionNetwork(ctx, id, snap.Network)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if !success && netHandle != nil {
+			_ = m.cfg.Network.Teardown(context.Background(), netHandle)
+		}
+	}()
+
+	restoreSpec := runner.RestoreSpec{
 		Workdir:    workdir,
 		StatePath:  snap.StatePath,
 		MemPath:    forkMem,
 		RootfsPath: forkRootfs,
-	})
+	}
+	if netHandle != nil {
+		restoreSpec.NetNS = netHandle.NetnsPath
+	}
+
+	handle, err := m.cfg.Runner.Restore(ctx, restoreSpec)
 	if err != nil {
 		return nil, fmt.Errorf("runner restore: %w", err)
 	}
@@ -641,6 +840,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		Workdir:   workdir,
 		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
+		Network:   netHandle,
 		handle:    handle,
 		done:      make(chan struct{}),
 	}
@@ -659,6 +859,24 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		}
 	}
 
+	// If the fork has network, ask the guest to bounce eth0 so
+	// systemd-networkd runs a fresh DHCP cycle and picks up the
+	// fork's per-netns-assigned IP. The guest's kernel restored
+	// from a snapshot where eth0 holds the source's IP; without
+	// this, the fork is dark until systemd-networkd's next
+	// renewal cycle. Failures here are non-fatal — the fork
+	// still boots, it just has a slower first DHCP.
+	if netHandle != nil && s.execClient != nil {
+		refreshCtx, cancel := context.WithTimeout(ctx, networkRefreshTimeout)
+		if err := s.execClient.RefreshNetwork(refreshCtx); err != nil {
+			// Log-and-continue: the guest recovers on its own
+			// within one DHCP renewal cycle (~30s given our 60s
+			// lease).
+			_ = err
+		}
+		cancel()
+	}
+
 	m.mu.Lock()
 	m.sandboxes[id] = s
 	m.mu.Unlock()
@@ -666,6 +884,12 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	success = true
 	return s, nil
 }
+
+// networkRefreshTimeout bounds the post-resume RefreshNetwork RPC.
+// Must be at least as long as the agent's own internal timeout
+// (10s for the down→up→wait dance) plus slack for the vsock
+// round-trip.
+const networkRefreshTimeout = 15 * time.Second
 
 // Delete shuts the sandbox down and removes it from the manager. It is
 // idempotent: deleting an unknown ID returns ErrNotFound; deleting twice
@@ -688,11 +912,25 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	// shutdown. Safe to call more than once; doneOnce guards the close.
 	s.doneOnce.Do(func() { close(s.done) })
 
-	if err := s.handle.Shutdown(ctx); err != nil {
-		// Best-effort workdir cleanup even if shutdown reported an error
-		// (the process may have been killed).
+	shutdownErr := s.handle.Shutdown(ctx)
+
+	// Tear down the network whether or not Shutdown cleanly exited —
+	// leaving netns/nft/DHCP state behind on a failed shutdown would
+	// block future Create calls that want the same subnet. The
+	// provisioner's Teardown is idempotent + best-effort.
+	if s.Network != nil && m.cfg.Network != nil {
+		if err := m.cfg.Network.Teardown(ctx, s.Network); err != nil {
+			// Log-equivalent: we don't fail Delete on teardown
+			// errors because we've already committed to removing
+			// the sandbox from the registry. Operators see the
+			// warning in the daemon log.
+			_ = err // logged by the network.Manager itself
+		}
+	}
+
+	if shutdownErr != nil {
 		_ = os.RemoveAll(s.Workdir)
-		return fmt.Errorf("sandbox: shutdown %s: %w", id, err)
+		return fmt.Errorf("sandbox: shutdown %s: %w", id, shutdownErr)
 	}
 	if err := os.RemoveAll(s.Workdir); err != nil {
 		return fmt.Errorf("sandbox: remove workdir %s: %w", s.Workdir, err)

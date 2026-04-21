@@ -140,6 +140,21 @@ func EnsureBaseTable(ctx context.Context, egressIface string) error {
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		return fmt.Errorf("install base table: %w", err)
 	}
+
+	// Install iptables FORWARD ACCEPT rules for our veth pattern.
+	// Docker (among others) sets `iptables -P FORWARD DROP` to
+	// isolate its own bridges; that policy ALSO drops our masqueraded
+	// sandbox traffic because netfilter evaluates every registered
+	// chain at a given hook — an ACCEPT in our nft chain doesn't
+	// override a DROP policy in iptables' chain. Explicit ACCEPTs
+	// scoped to vh-+ (our veth prefix) let our traffic through
+	// without touching the host's unrelated FORWARD rules.
+	if err := ensureIptablesForward(ctx); err != nil {
+		// Best-effort roll-back of our nft table so we don't leave
+		// half-state behind.
+		_ = runCmd(context.Background(), "nft", "delete", "table", "inet", NftTableName)
+		return fmt.Errorf("install iptables forward accept: %w", err)
+	}
 	return nil
 }
 
@@ -147,11 +162,56 @@ func EnsureBaseTable(ctx context.Context, egressIface string) error {
 // orphan reap at startup before EnsureBaseTable installs a fresh
 // copy.
 func TeardownBaseTable(ctx context.Context) error {
+	// Remove iptables ACCEPTs first; best-effort (ignore missing).
+	_ = removeIptablesForward(ctx)
+
 	if err := runCmd(ctx, "nft", "delete", "table", "inet", NftTableName); err != nil {
 		if isNoSuchTable(err) {
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+// iptablesForwardComment tags our rules so we can find and remove
+// them idempotently. A distinctive string keeps us out of the way
+// of any hand-authored iptables rules.
+const iptablesForwardComment = "crucible-accept-veth"
+
+// ensureIptablesForward installs `-i vh-+ -j ACCEPT` and
+// `-o vh-+ -j ACCEPT` at the top of the FORWARD chain. Idempotent:
+// removes any prior copies first so repeated daemon starts don't
+// accumulate duplicates.
+//
+// Uses the wildcard interface match `vh-+` (iptables' syntax for
+// "any interface whose name starts with vh-") so we don't have to
+// rewrite rules per sandbox.
+func ensureIptablesForward(ctx context.Context) error {
+	_ = removeIptablesForward(ctx)
+	for _, dir := range []string{"-i", "-o"} {
+		if err := runCmd(ctx, "iptables", "-I", "FORWARD", "1",
+			dir, vethHostPrefix+"+", "-m", "comment", "--comment", iptablesForwardComment,
+			"-j", "ACCEPT"); err != nil {
+			return fmt.Errorf("iptables -I FORWARD %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
+// removeIptablesForward deletes any FORWARD rules carrying our
+// comment. Loops until no more match so repeated daemon runs that
+// accumulated duplicates all get cleaned up.
+func removeIptablesForward(ctx context.Context) error {
+	for _, dir := range []string{"-i", "-o"} {
+		for {
+			err := runCmd(ctx, "iptables", "-D", "FORWARD",
+				dir, vethHostPrefix+"+", "-m", "comment", "--comment", iptablesForwardComment,
+				"-j", "ACCEPT")
+			if err != nil {
+				break
+			}
+		}
 	}
 	return nil
 }

@@ -13,18 +13,26 @@ import (
 // errors.Is at call sites.
 var ErrPoolExhausted = errors.New("network: subnet pool exhausted")
 
-// Lease is one /30 handed out of the Pool. The three important
-// addresses are pre-computed so callers don't duplicate the
-// arithmetic everywhere:
+// Lease is one /30 handed out of the Pool. A /30 has exactly two
+// usable host addresses (.1 and .2); .0 is the network and .3 is
+// the subnet broadcast. We map them:
 //
-//   - Prefix:  the whole /30, e.g. 10.20.7.0/30 (4 addresses total)
-//   - Gateway: .1 — lives on the host-side veth, also the guest's
-//     default gateway and its route target for the DNS anycast
-//   - GuestIP: .3 — assigned to the guest's eth0 by DHCP
+//   - Prefix:  the whole /30, e.g. 10.20.7.0/30
+//   - Gateway: .1 — lives on the host-side veth (in root netns)
+//     and is the guest's default gateway
+//   - GuestIP: .2 — assigned to the guest's eth0 by DHCP
 //
-// The .0 address is the subnet identifier and .2 is reserved as
-// the guest-side bridge address; neither is exposed on the Lease
-// because callers don't need to reason about them individually.
+// The in-netns bridge is deliberately L3-less: a Linux bridge
+// only needs an IP if something wants to talk to the bridge
+// itself, and nothing does (the DHCP responder reaches the bridge
+// via SO_BINDTODEVICE, not by IP). Address-less bridges are a
+// standard pattern (libvirt's default network among many).
+//
+// Earlier revisions tried to fit three endpoints (gateway, bridge,
+// guest) into a /30 by putting the guest on .3, which collided
+// with the /30 broadcast — Linux then treated unicast traffic to
+// the guest as broadcast and rp_filter/broadcast-handling dropped
+// it. Mapping .1/.2 avoids that entirely.
 type Lease struct {
 	Prefix  netip.Prefix
 	Gateway netip.Addr
@@ -181,7 +189,7 @@ func (p *Pool) leaseAt(idx int) Lease {
 	binary.BigEndian.PutUint32(buf[:], blockBase+1)
 	gateway := netip.AddrFrom4(buf)
 
-	binary.BigEndian.PutUint32(buf[:], blockBase+3)
+	binary.BigEndian.PutUint32(buf[:], blockBase+2)
 	guest := netip.AddrFrom4(buf)
 
 	return Lease{Prefix: prefix, Gateway: gateway, GuestIP: guest}

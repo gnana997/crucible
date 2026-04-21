@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -56,6 +57,57 @@ type createSandboxRequest struct {
 	// For v0.1 both Path and OCI return 501 — callers must leave
 	// Image unset and rely on daemon-level --rootfs.
 	Image *ImageRef `json:"image,omitempty"`
+
+	// Network, when non-nil, attaches a NIC to the sandbox with
+	// an explicit allowlist of hostnames the guest can reach. Nil
+	// means no network (default-deny). See NetworkRequest for the
+	// allowed shapes.
+	Network *NetworkRequest `json:"network,omitempty"`
+}
+
+// NetworkRequest is the per-sandbox network policy on the wire.
+// See docs/network.md for the full semantics.
+type NetworkRequest struct {
+	// Enabled = false (or the field absent from the parent) is
+	// treated as "no network". When true, Allowlist must be
+	// non-empty.
+	Enabled bool `json:"enabled"`
+
+	// Allowlist is the hostname-pattern list enforced by the
+	// host-side DNS proxy + nftables. Each entry is either an
+	// exact hostname ("pypi.org") or a single-label wildcard
+	// ("*.npmjs.org"). Bare "*" is rejected at validation time.
+	Allowlist []string `json:"allowlist,omitempty"`
+}
+
+// validate enforces v0.1 semantics and returns the parsed
+// allowlist on success. The caller passes the typed value into
+// sandbox.Manager.Create.
+//
+// Rules:
+//   - enabled=false with allowlist populated → 400 (inconsistent)
+//   - enabled=true with empty allowlist → 400 (default-deny
+//     ethos: full-internet requires an explicit opt-in we don't
+//     yet implement)
+//   - enabled=true with invalid allowlist pattern → 400 with the
+//     pattern-level error wrapped in
+func (r *NetworkRequest) validate() (*network.Allowlist, int, error) {
+	if !r.Enabled {
+		if len(r.Allowlist) > 0 {
+			return nil, http.StatusBadRequest,
+				errors.New("network.allowlist set but network.enabled is false")
+		}
+		return nil, 0, nil
+	}
+	if len(r.Allowlist) == 0 {
+		return nil, http.StatusBadRequest,
+			errors.New("network.enabled=true requires a non-empty allowlist (full-internet egress is not supported in v0.1)")
+	}
+	al, err := network.New(r.Allowlist)
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("network.allowlist: %w", err)
+	}
+	return al, 0, nil
 }
 
 // ImageRef identifies the rootfs to mount into a sandbox. Exactly one
@@ -96,21 +148,42 @@ func (r *ImageRef) validate() (status int, err error) {
 // separate from sandbox.Sandbox so the daemon can shape the public
 // surface without coupling to the manager's internal struct.
 type sandboxResponse struct {
-	ID        string    `json:"id"`
-	VCPUs     int       `json:"vcpus"`
-	MemoryMiB int       `json:"memory_mib"`
-	Workdir   string    `json:"workdir"`
-	CreatedAt time.Time `json:"created_at"`
+	ID        string           `json:"id"`
+	VCPUs     int              `json:"vcpus"`
+	MemoryMiB int              `json:"memory_mib"`
+	Workdir   string           `json:"workdir"`
+	CreatedAt time.Time        `json:"created_at"`
+	Network   *networkResponse `json:"network,omitempty"`
+}
+
+// networkResponse is the applied network policy echoed back to the
+// client after Create. Nil when the sandbox has no NIC.
+type networkResponse struct {
+	Enabled   bool     `json:"enabled"`
+	GuestIP   string   `json:"guest_ip,omitempty"`
+	Gateway   string   `json:"gateway,omitempty"`
+	Allowlist []string `json:"allowlist,omitempty"`
 }
 
 func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
-	return sandboxResponse{
+	resp := sandboxResponse{
 		ID:        sb.ID,
 		VCPUs:     sb.VCPUs,
 		MemoryMiB: sb.MemoryMiB,
 		Workdir:   sb.Workdir,
 		CreatedAt: sb.CreatedAt,
 	}
+	if sb.Network != nil {
+		resp.Network = &networkResponse{
+			Enabled: true,
+			GuestIP: sb.Network.GuestIP,
+			Gateway: sb.Network.Gateway,
+		}
+		if sb.Network.Allowlist != nil {
+			resp.Network.Allowlist = sb.Network.Allowlist.Patterns()
+		}
+	}
+	return resp
 }
 
 // listResponse wraps the sandbox list so the response shape can grow
@@ -187,11 +260,27 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Network validation — parses the allowlist into a matcher or
+	// rejects with 400. Passed into sandbox.Manager as a typed
+	// NetworkConfig; nil means no NIC.
+	var netCfg *sandbox.NetworkConfig
+	if req.Network != nil {
+		al, status, err := req.Network.validate()
+		if err != nil {
+			writeError(w, status, err)
+			return
+		}
+		if al != nil {
+			netCfg = &sandbox.NetworkConfig{Allowlist: al}
+		}
+	}
+
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
 		VCPUs:      req.VCPUs,
 		MemoryMiB:  req.MemoryMiB,
 		BootArgs:   req.BootArgs,
 		TimeoutSec: req.TimeoutSec,
+		Network:    netCfg,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

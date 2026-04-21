@@ -142,7 +142,7 @@ func (j *JailerRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 		return nil, fmt.Errorf("runner: create workdir: %w", err)
 	}
 
-	jSpec, err := j.buildJailerSpec(spec.Workdir, spec.Quotas)
+	jSpec, err := j.buildJailerSpec(spec.Workdir, spec.Quotas, spec.NetNS)
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		return nil, fmt.Errorf("runner: create workdir: %w", err)
 	}
 
-	jSpec, err := j.buildJailerSpec(spec.Workdir, Quotas{})
+	jSpec, err := j.buildJailerSpec(spec.Workdir, Quotas{}, spec.NetNS)
 	if err != nil {
 		return nil, err
 	}
@@ -270,11 +270,11 @@ func (j *JailerRunner) launch(jSpec jailer.Spec, workdir string) (*exec.Cmd, *os
 	return cmd, logFile, nil
 }
 
-// buildJailerSpec turns a Workdir path + Quotas into a jailer.Spec.
-// The jailer ID is derived from the workdir's basename (which the
-// sandbox manager sets to the sandbox ID, e.g. "sbx_abc") and
-// sanitized: jailer's regex forbids underscores.
-func (j *JailerRunner) buildJailerSpec(workdir string, q Quotas) (jailer.Spec, error) {
+// buildJailerSpec turns a Workdir path + Quotas + optional netns
+// path into a jailer.Spec. The jailer ID is derived from the
+// workdir's basename (sandbox ID, e.g. "sbx_abc") and sanitized
+// because jailer's regex forbids underscores.
+func (j *JailerRunner) buildJailerSpec(workdir string, q Quotas, netnsPath string) (jailer.Spec, error) {
 	id := sanitizeJailerID(filepath.Base(workdir))
 	spec := jailer.Spec{
 		ID:         id,
@@ -283,6 +283,7 @@ func (j *JailerRunner) buildJailerSpec(workdir string, q Quotas) (jailer.Spec, e
 		GID:        j.GID,
 		ChrootBase: j.ChrootBase,
 		NewPIDNS:   !j.DisablePIDNS,
+		NetNSPath:  netnsPath,
 		Quotas: jailer.Quotas{
 			CPUMax:         q.CPUMax,
 			MemoryMaxBytes: q.MemoryMaxBytes,
@@ -353,6 +354,18 @@ func (j *JailerRunner) configureAndBoot(ctx context.Context, h *fcHandle, spec S
 		UDSPath:  chrootVsockPath,
 	}); err != nil {
 		return fmt.Errorf("runner: put vsock: %w", err)
+	}
+	// Network interface — only when the sandbox opted in.
+	// Firecracker's PUT /network-interfaces is pre-boot only, so
+	// this must happen before InstanceStart.
+	if spec.Net != nil {
+		if err := h.client.PutNetworkInterface(ctx, fcapi.NetworkInterface{
+			IfaceID:     spec.Net.IfaceID,
+			HostDevName: spec.Net.HostDev,
+			GuestMAC:    spec.Net.GuestMAC,
+		}); err != nil {
+			return fmt.Errorf("runner: put network-interface: %w", err)
+		}
 	}
 	if err := h.client.InstanceStart(ctx); err != nil {
 		return fmt.Errorf("runner: instance-start: %w", err)
