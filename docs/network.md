@@ -97,13 +97,23 @@ Order matters — each step assumes the previous has succeeded; failures trigger
 
 ### Guest IP configuration: per-netns DHCP + agent-driven refresh on fork
 
-**Initial boot:** guest runs `dhclient` (baked into the rootfs alongside `crucible-agent`). A hand-rolled DHCP responder per netns answers DISCOVER/REQUEST for the guest's known MAC with the sandbox's pre-assigned IP + gateway + DNS (10.20.255.254) + a short lease (60s). Responder enters the target netns via `runtime.LockOSThread` + `unix.Setns(CLONE_NEWNET)` before binding UDP/67.
+**DHCP client in the guest: systemd-networkd.** Modern Ubuntu (since ~18.04) and Debian ship with systemd-networkd as the default DHCP client; `isc-dhcp-client` is deprecated and no longer in base images. The crucible rootfs ships a small netplan config at `/etc/netplan/60-crucible-eth0.yaml` that tells systemd-networkd to DHCP on eth0 — that's the entire guest-side setup. iproute2's `ip` binary (for the link-bounce at fork time) is always present.
 
-**Fork resume:** snapshot captures the source's eth0 config (source's IP, source's gateway). After the fork's Firecracker completes `LoadSnapshot` and the VM resumes, the guest thinks it still has the source's IP in the source's subnet — neither of which is reachable from the fork's new netns. Without intervention, the guest is "dark" until dhclient's next scheduled renewal (up to 30s).
+**Initial boot:** systemd-networkd brings eth0 up, sends DHCPDISCOVER, gets an OFFER from the per-netns responder, REQUESTs, ACKs, configures eth0. The per-netns DHCP responder is hand-rolled (one MAC, one lease, short TTL), enters the target netns via `runtime.LockOSThread` + `unix.Setns(CLONE_NEWNET)` before binding UDP/67, and answers for the sandbox's pre-assigned IP + gateway + DNS (10.20.255.254) + a 60s lease.
 
-We fix this by having **`crucible-agent` expose a `POST /network/refresh` endpoint over vsock**. The host's `sandbox.Manager.Fork` invokes this immediately after resume; the agent runs `dhclient -r eth0` (release) followed by `dhclient -1 eth0` (one-shot acquire), which DISCOVER/OFFER/REQUEST/ACKs against the fork's per-netns DHCP responder and reconfigures eth0 with the fork's assigned IP + gateway + DNS. Adds roughly one DHCP round-trip (~100–300 ms) to fork cost — invisible next to the existing snapshot-restore overhead.
+**Fork resume:** snapshot captures the source's eth0 config (source's IP, source's gateway). After the fork's Firecracker completes `LoadSnapshot` and the VM resumes, the guest thinks it still has the source's IP in the source's subnet — neither of which is reachable from the fork's new netns. Without intervention, the guest is "dark" until systemd-networkd's next renewal cycle.
 
-Failure mode: if the agent isn't available (old rootfs without dhclient) or the RPC fails, `Manager.Fork` logs a warning and moves on. Fork's guest will recover via the normal 60s lease-renewal timer.
+We fix this by having **`crucible-agent` expose a `POST /network/refresh` endpoint over vsock**. The host's `sandbox.Manager.Fork` invokes this immediately after resume; the agent runs:
+
+1. `ip link set eth0 down` — kernel flushes eth0's config, emits a link-down event.
+2. `ip link set eth0 up` — link comes back; systemd-networkd sees the link-up event and starts a fresh DHCP cycle from scratch (DISCOVER, not a renewal of the stale lease).
+3. Poll `net.InterfaceByName("eth0")` for a non-link-local IPv4, bounded by the 10s handler timeout. Returns once the address is configured, i.e. once systemd-networkd has completed the exchange with our responder.
+
+Adds roughly one DHCP round-trip (~100–300 ms) to fork cost — invisible next to the existing snapshot-restore overhead.
+
+**Fork-REQUEST NAK path:** if systemd-networkd sends a REQUEST carrying the source's IP (can happen if it retained the lease before the link bounce), our DHCP responder compares requested-IP to offered-IP and replies NAK; systemd-networkd falls back to DISCOVER and lands on the fork's correct address on the next exchange.
+
+Failure mode: if the agent isn't available (VM still booting, vsock not yet ready) or the RPC fails, `Manager.Fork` logs a warning and moves on. The fork's guest will recover via systemd-networkd's own renewal cycle.
 
 ## Packet flow
 

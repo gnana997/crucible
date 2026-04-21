@@ -46,6 +46,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("POST /exec", handleExec)
+	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
 
 	// No Read/Write timeouts on the server: exec responses can stream for
 	// as long as the command takes. Per-request deadlines come from

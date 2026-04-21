@@ -89,8 +89,44 @@ set -e
 echo "--> extracting base rootfs"
 unsquashfs -q -d "$tmp/root" "$BASE"
 
+# Verify iproute2's `ip` is present — the crucible-agent's
+# POST /network/refresh endpoint shells out to it to bounce eth0,
+# which prompts systemd-networkd to run a fresh DHCP cycle. It's
+# part of every Ubuntu/Debian base by default; this check catches
+# an unusually minimal image early.
+echo "--> verifying iproute2 (ip) is present"
+if ! [[ -x "$tmp/root/bin/ip" || -x "$tmp/root/usr/bin/ip" || -x "$tmp/root/sbin/ip" || -x "$tmp/root/usr/sbin/ip" ]]; then
+    die "iproute2 'ip' binary not found in base rootfs (install 'iproute2' package)"
+fi
+
 echo "--> installing /usr/local/bin/crucible-agent"
 install -Dm755 "$AGENT" "$tmp/root/usr/local/bin/crucible-agent"
+
+# Install a netplan config that tells systemd-networkd to DHCP on
+# eth0. Without this file, eth0 comes up without an IP and our
+# per-netns DHCP responder never hears from the guest.
+#
+# systemd-networkd is Ubuntu's default DHCP client since ~18.04;
+# netplan is the standard frontend that generates its config at
+# boot. Dropping a .yaml here is the whole setup — netplan
+# regenerates systemd-networkd files before multi-user.target.
+echo "--> writing netplan eth0 DHCP config"
+mkdir -p "$tmp/root/etc/netplan"
+cat > "$tmp/root/etc/netplan/60-crucible-eth0.yaml" <<'NETPLAN'
+# Managed by crucible-agent's rootfs build.
+# systemd-networkd handles eth0 DHCP; POST /network/refresh on the
+# agent bounces the link so systemd-networkd restarts DHCP to pick
+# up a fork's per-netns-assigned IP.
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      dhcp4: true
+NETPLAN
+# netplan warns if its configs are world-readable; 600 is the
+# conventional mode for /etc/netplan/*.yaml.
+chmod 600 "$tmp/root/etc/netplan/60-crucible-eth0.yaml"
 
 echo "--> writing systemd unit"
 mkdir -p "$tmp/root/etc/systemd/system"
@@ -133,6 +169,8 @@ debugfs -R "stat /usr/local/bin/crucible-agent" "$OUT" >/dev/null 2>&1 \
     || die "agent not present in output rootfs"
 debugfs -R "stat /etc/systemd/system/multi-user.target.wants/crucible-agent.service" "$OUT" >/dev/null 2>&1 \
     || die "systemd enable symlink missing in output rootfs"
+debugfs -R "stat /etc/netplan/60-crucible-eth0.yaml" "$OUT" >/dev/null 2>&1 \
+    || die "netplan config missing in output rootfs (dropped during ext4 pack?)"
 
 ls -lh "$OUT"
 echo "==> ok: $OUT"

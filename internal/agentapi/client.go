@@ -73,6 +73,41 @@ func (c *Client) GetHealthz(ctx context.Context) error {
 	return nil
 }
 
+// RefreshNetwork asks the guest agent to bounce eth0 so
+// systemd-networkd runs a fresh DHCP cycle. Called by
+// sandbox.Manager.Fork immediately after the fork VM resumes —
+// the guest's eth0 restored-from-snapshot holds the *source's*
+// IP, and we want the fork's assigned IP in place without
+// waiting for a renewal-timer cycle.
+//
+// Returns nil on success. Non-success cases the caller should
+// handle but not treat as fatal to Fork:
+//
+//   - Agent unreachable (VM still booting, vsock not ready):
+//     surfaces as a dial error. Log and continue; the guest will
+//     eventually recover via systemd-networkd's renewal cycle.
+//   - Agent reports 500: body identifies which step failed
+//     (down / up / wait). Typical causes: rootfs missing the
+//     netplan eth0-DHCP config, or the per-netns DHCP responder
+//     never answered within the wait timeout.
+func (c *Client) RefreshNetwork(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/network/refresh", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentapi: network refresh: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agentapi: network refresh returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // dial is http.Transport.DialContext: open the UDS, do the hybrid-vsock
 // handshake, return the stream for HTTP to use. All errors mean the
 // caller gets a dial-level failure — http.Client won't retry HTTP-level

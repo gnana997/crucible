@@ -344,3 +344,84 @@ func TestHandshakeReaderDoesNotOverRead(t *testing.T) {
 		t.Errorf("remaining = %q; bytes past \\n were consumed", rest)
 	}
 }
+
+// --- RefreshNetwork tests ---------------------------------------
+
+func TestRefreshNetworkHappy(t *testing.T) {
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /network/refresh", func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	if err := c.RefreshNetwork(context.Background()); err != nil {
+		t.Fatalf("RefreshNetwork: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("handler hit count = %d, want 1", hits.Load())
+	}
+}
+
+func TestRefreshNetworkServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /network/refresh", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "dhclient acquire failed: no DHCPOFFER received", http.StatusInternalServerError)
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	err := c.RefreshNetwork(context.Background())
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("err = %v, want to mention 500", err)
+	}
+	if !strings.Contains(err.Error(), "DHCPOFFER") {
+		t.Errorf("err = %v, want to include server's body", err)
+	}
+}
+
+func TestRefreshNetworkDialFailure(t *testing.T) {
+	// Point at a non-existent UDS so the hybrid-vsock dial fails.
+	// Callers should get a wrapped error they can distinguish from
+	// an HTTP-level failure.
+	sock := filepath.Join(t.TempDir(), "does-not-exist.sock")
+	c := NewClient(sock, 52)
+	err := c.RefreshNetwork(context.Background())
+	if err == nil {
+		t.Fatal("expected dial error")
+	}
+	if !strings.Contains(err.Error(), "network refresh") {
+		t.Errorf("err = %v, want to mention 'network refresh'", err)
+	}
+}
+
+func TestRefreshNetworkContextCancel(t *testing.T) {
+	// If the caller's ctx is already canceled, the client should
+	// surface the cancellation promptly rather than waiting on
+	// the default handshake timeout.
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /network/refresh", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled
+	err := c.RefreshNetwork(ctx)
+	if err == nil {
+		t.Fatal("expected error from canceled context")
+	}
+	// Don't assert on the exact error text — it varies by Go
+	// runtime (net.OpError wrapping context.Canceled). We just
+	// want it to surface something.
+	if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "context") {
+		t.Errorf("err = %v, want context cancellation to surface", err)
+	}
+}
