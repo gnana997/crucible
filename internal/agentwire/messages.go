@@ -43,8 +43,70 @@ type ExecResult struct {
 	// TimeoutSec elapsed.
 	TimedOut bool `json:"timed_out,omitempty"`
 
+	// OomKilled is a best-effort heuristic: true when the process was
+	// killed by SIGKILL (and not by us via timeout) AND its peak RSS
+	// reached at least 95% of the guest's total memory. Close to
+	// correct in practice but not bulletproof — a precise answer
+	// requires per-exec cgroup v2 memory.events, which lands with
+	// per-exec cgroups in a later weekend.
+	OomKilled bool `json:"oom_killed,omitempty"`
+
 	// Error is an agent-side failure string. Populated when the agent
 	// could not start or reap the command (e.g. "command not found",
 	// "permission denied"). When Error is non-empty, ExitCode is -1.
 	Error string `json:"error,omitempty"`
+
+	// Usage carries CPU, memory, and I/O counters for this exec.
+	// Nil when the agent didn't collect stats (e.g. the process
+	// couldn't be started) so callers can distinguish "no data"
+	// from "zeroes". All fields use explicit SI units in their name
+	// so clients don't have to guess.
+	Usage *ResourceUsage `json:"usage,omitempty"`
+}
+
+// ResourceUsage captures per-exec resource counters. Most fields come
+// from wait4's Rusage via ProcessState.SysUsage; the I/O counters
+// come from polling /proc/<pid>/io while the child runs.
+//
+// All counters are cumulative for the lifetime of the direct child.
+// Grandchildren reaped by the child are included in CPU/memory stats
+// (kernel accounting) but NOT in I/O stats (Linux's /proc/<pid>/io
+// is per-process). Full process-tree accounting requires per-exec
+// cgroups, which we don't set up in v0.1.
+type ResourceUsage struct {
+	// CPUUserMs is user-land CPU time consumed by the process.
+	CPUUserMs int64 `json:"cpu_user_ms"`
+
+	// CPUSysMs is kernel CPU time consumed on behalf of the process.
+	CPUSysMs int64 `json:"cpu_sys_ms"`
+
+	// PeakMemoryBytes is the largest resident set size observed
+	// during exec. Derived from Rusage.Maxrss (Linux reports it in
+	// kilobytes; we multiply by 1024 before shipping).
+	PeakMemoryBytes int64 `json:"peak_memory_bytes"`
+
+	// PageFaultsMajor is the number of hard page faults — faults
+	// that required reading a page from backing storage. A high
+	// number correlates with disk-bound workloads.
+	PageFaultsMajor int64 `json:"page_faults_major"`
+
+	// ContextSwitchesInvoluntary is the number of times the process
+	// was preempted by the scheduler (as opposed to yielding
+	// voluntarily via a blocking syscall). High values indicate CPU
+	// contention — either with other tenants or with host work.
+	ContextSwitchesInvoluntary int64 `json:"context_switches_involuntary"`
+
+	// IOReadBytes is the number of bytes actually read from the
+	// storage layer (post-page-cache) by this process, per
+	// /proc/<pid>/io read_bytes.
+	//
+	// Note on accuracy: the agent polls /proc/<pid>/io at a fixed
+	// cadence while the process is alive. For very short-lived
+	// processes (tens of milliseconds) the last poll may miss I/O
+	// that happened between the most recent read and process exit.
+	// Treat these counters as approximate for sub-100ms commands.
+	IOReadBytes int64 `json:"io_read_bytes"`
+
+	// IOWriteBytes is the mirror of IOReadBytes for writes.
+	IOWriteBytes int64 `json:"io_write_bytes"`
 }

@@ -34,7 +34,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
 | Resource quotas — CPU (cpu.max), memory (memory.max), PIDs (pids.max) via cgroup v2 | ✅ done under jailer |
 | Startup orphan-chroot reap after a crashed daemon | ✅ done |
-| Structured execution record | 🔨 partial — exit_code, duration_ms, signal, timed_out (no resource stats yet) |
+| Structured execution record | ✅ done — exit metadata (exit_code, duration_ms, signal, timed_out, oom_killed) + nested `usage` with CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes |
 | IO quotas (cgroup `io.max`) | ⏳ deferred — needs per-host block-device discovery |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now |
 | Default-deny network + allowlist | ⏳ planned |
@@ -130,8 +130,12 @@ curl -sS -X POST http://127.0.0.1:7878/sandboxes \
 curl -sS http://127.0.0.1:7878/sandboxes
 
 # Run a command inside the sandbox — response body is a stream of framed
-# stdout / stderr / exit records; the last frame carries the ExecResult
-# (exit_code, duration_ms, signal, timed_out).
+# stdout / stderr / exit records; the last frame carries an ExecResult
+# JSON payload with exit_code, duration_ms, signal, timed_out,
+# oom_killed, and a nested `usage` object (CPU user/sys ms, peak RSS,
+# major page faults, involuntary context switches, I/O bytes
+# read/written). Usage is populated from wait4's Rusage plus a
+# /proc/<pid>/io poller running alongside the child.
 curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../exec \
   -H 'Content-Type: application/json' \
   -d '{"cmd":["/bin/uname","-a"]}' \

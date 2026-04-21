@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -75,9 +76,31 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	// whole group (the command + any children it spawns) on timeout.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	runErr := cmd.Run()
+	// Use Start + Wait rather than Run so we can run a /proc/<pid>/io
+	// poller alongside the child. Start failures (ENOENT, EACCES,
+	// etc.) skip straight to the error path — no child, no stats.
+	if err := cmd.Start(); err != nil {
+		result := resultFromError(err, cmd, cmdCtx.Err(), time.Since(start))
+		writeExitFrame(fw, result)
+		return
+	}
+
+	// Spawn the I/O poller. last holds the most recent successful
+	// /proc/<pid>/io snapshot; stop closes when cmd.Wait returns so
+	// the goroutine exits promptly; done signals the goroutine has
+	// finished so we can safely read last.
+	var lastIO atomic.Pointer[procIOStats]
+	stopPoll := make(chan struct{})
+	pollDone := make(chan struct{})
+	go pollIO(cmd.Process.Pid, &lastIO, stopPoll, pollDone)
+
+	runErr := cmd.Wait()
+	close(stopPoll)
+	<-pollDone
 
 	result := resultFromError(runErr, cmd, cmdCtx.Err(), time.Since(start))
+	attachUsage(&result, cmd.ProcessState, lastIO.Load())
+
 	writeExitFrame(fw, result)
 
 	slog.Info("exec completed",
@@ -85,7 +108,24 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		"exit_code", result.ExitCode,
 		"duration_ms", result.DurationMs,
 		"timed_out", result.TimedOut,
+		"oom_killed", result.OomKilled,
 	)
+}
+
+// attachUsage populates result.Usage and result.OomKilled from the
+// child's Rusage + the final /proc/<pid>/io snapshot. Safe to call
+// with a nil ProcessState (it just becomes a no-op), for parity
+// with start-failure paths.
+func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *procIOStats) {
+	if ps == nil {
+		return
+	}
+	ru, ok := ps.SysUsage().(*syscall.Rusage)
+	if !ok || ru == nil {
+		return
+	}
+	result.Usage = buildUsage(ru, ioStats)
+	result.OomKilled = detectOOM(ps, result.TimedOut, result.Usage.PeakMemoryBytes, guestMemTotalBytes())
 }
 
 // buildEnv composes the command's environment. The agent's own env is
