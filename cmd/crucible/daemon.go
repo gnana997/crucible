@@ -46,6 +46,14 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
 		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
 		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
+		// Jailer flags: when --jailer-bin is set, the daemon wraps every
+		// firecracker instance in its own jailer chroot + mount/pid
+		// namespace + cgroup v2 slice, and drops to --jail-uid/--jail-gid
+		// before exec. Requires the daemon to run as root.
+		jailerBin  = fs.String("jailer-bin", "", "path to jailer binary; when set, run firecracker under jailer (requires root)")
+		chrootBase = fs.String("chroot-base", "/srv/jailer", "parent dir for per-VM jailer chroots (used only when --jailer-bin is set)")
+		jailUID    = fs.Uint("jail-uid", 10000, "unprivileged uid jailer drops to before exec'ing firecracker")
+		jailGID    = fs.Uint("jail-gid", 10000, "unprivileged gid jailer drops to before exec'ing firecracker")
 	)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -127,11 +135,34 @@ Required flags:
 	)
 
 	// --- wiring -----------------------------------------------------------
-	fc := runner.New(*fcBin)
-	fc.Logger = logger
+	// Pick a runner. --jailer-bin is the switch: unset = dev-friendly
+	// direct exec (no sudo required, no chroot), set = production mode
+	// with jailer isolation + cgroup v2 quotas + privilege drop. Both
+	// paths implement runner.Runner, so the manager is oblivious.
+	var r runner.Runner
+	if *jailerBin != "" {
+		if _, err := os.Stat(*jailerBin); err != nil {
+			fmt.Fprintf(stderr, "error: --jailer-bin %q: %v\n", *jailerBin, err)
+			return 2
+		}
+		jr := runner.NewJailerRunner(*jailerBin, *fcBin, *chrootBase, uint32(*jailUID), uint32(*jailGID))
+		jr.Logger = logger
+		r = jr
+		logger.Info("runner mode: jailer",
+			"jailer_bin", *jailerBin,
+			"chroot_base", *chrootBase,
+			"uid", *jailUID,
+			"gid", *jailGID,
+		)
+	} else {
+		fc := runner.New(*fcBin)
+		fc.Logger = logger
+		r = fc
+		logger.Info("runner mode: direct firecracker (no jailer)")
+	}
 
 	mgr, err := sandbox.NewManager(sandbox.ManagerConfig{
-		Runner:            fc,
+		Runner:            r,
 		WorkBase:          *workBase,
 		Kernel:            *kernel,
 		Rootfs:            *rootfs,

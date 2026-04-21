@@ -178,6 +178,84 @@ func TestCreateSandboxWithBody(t *testing.T) {
 	}
 }
 
+func TestCreateSandboxImageRefRejectsBothSet(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"image":{"path":"/a.ext4","oci":"ghcr.io/x/y:1"}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (mutually exclusive)", resp.StatusCode)
+	}
+	var e errorResponse
+	decodeJSON(t, resp, &e)
+	if !strings.Contains(e.Error, "mutually exclusive") {
+		t.Errorf("error = %q, want 'mutually exclusive' substring", e.Error)
+	}
+}
+
+func TestCreateSandboxImageRefRejectsEmpty(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"image":{}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (must set one)", resp.StatusCode)
+	}
+}
+
+func TestCreateSandboxImageRefOCIReturns501(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"image":{"oci":"ghcr.io/x/y:1"}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501", resp.StatusCode)
+	}
+	var e errorResponse
+	decodeJSON(t, resp, &e)
+	if !strings.Contains(e.Error, "not implemented") {
+		t.Errorf("error = %q, want 'not implemented' substring", e.Error)
+	}
+}
+
+func TestCreateSandboxImageRefPathReturns501(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"image":{"path":"/a.ext4"}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501 (per-sandbox path override not implemented in v0.1)", resp.StatusCode)
+	}
+}
+
+// Image field absent → sandbox created normally with daemon default
+// rootfs. Locks in the wire-compat promise: adding the field must not
+// break existing clients that omit it.
+func TestCreateSandboxImageRefAbsentStillWorks(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	body := bytes.NewBufferString(`{"vcpus":2}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
 func TestCreateSandboxBadJSON(t *testing.T) {
 	ts, _ := newTestServer(t)
 	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", strings.NewReader(`{not json`))

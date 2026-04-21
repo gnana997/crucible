@@ -47,6 +47,49 @@ type createSandboxRequest struct {
 	// Zero means no timeout; the sandbox lives until an explicit
 	// DELETE or daemon shutdown.
 	TimeoutSec int `json:"timeout_s,omitempty"`
+
+	// Image, when set, overrides the daemon's default rootfs for this
+	// sandbox. See ImageRef for the field shape.
+	//
+	// WIRE CONTRACT LOCK (wk3): the shape is frozen now so the OCI
+	// client landing in wk7/wk8 doesn't force a breaking API change.
+	// For v0.1 both Path and OCI return 501 — callers must leave
+	// Image unset and rely on daemon-level --rootfs.
+	Image *ImageRef `json:"image,omitempty"`
+}
+
+// ImageRef identifies the rootfs to mount into a sandbox. Exactly one
+// of Path / OCI must be set; neither-set and both-set are invalid.
+//
+//   - Path is an absolute host path to a pre-built ext4 image. Same
+//     semantics as the daemon's --rootfs flag, but per-sandbox.
+//   - OCI is an OCI image reference (e.g. "ghcr.io/you/python:3.12").
+//     The daemon will pull + convert it to ext4 at handler time.
+//
+// Neither is implemented in v0.1 — the field lives here as a wire
+// contract so later weekends can add behavior without breaking
+// existing clients.
+type ImageRef struct {
+	Path string `json:"path,omitempty"`
+	OCI  string `json:"oci,omitempty"`
+}
+
+// validate enforces the "exactly one of Path/OCI" rule. v0.1 returns
+// (501, <stub error>) for any set reference so callers get a clear
+// signal rather than silent fallback to the daemon default.
+func (r *ImageRef) validate() (status int, err error) {
+	pathSet := r.Path != ""
+	ociSet := r.OCI != ""
+	switch {
+	case pathSet && ociSet:
+		return http.StatusBadRequest, errors.New("image.path and image.oci are mutually exclusive")
+	case !pathSet && !ociSet:
+		return http.StatusBadRequest, errors.New("image must set either path or oci")
+	case ociSet:
+		return http.StatusNotImplemented, errors.New("image.oci not implemented in v0.1 (tracked for wk7/wk8)")
+	default: // pathSet only
+		return http.StatusNotImplemented, errors.New("image.path per-sandbox override not implemented in v0.1 (use daemon --rootfs flag)")
+	}
 }
 
 // sandboxResponse is the JSON shape returned for a single sandbox. Kept
@@ -134,6 +177,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
 			return
 		}
+	}
+
+	// ImageRef validation — field is frozen as wire contract now but
+	// any populated value returns a stub error in v0.1. See ImageRef.
+	if req.Image != nil {
+		status, err := req.Image.validate()
+		writeError(w, status, err)
+		return
 	}
 
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{

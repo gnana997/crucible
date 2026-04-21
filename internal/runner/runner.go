@@ -56,6 +56,36 @@ type Spec struct {
 
 	// MemoryMiB is the guest RAM in mebibytes. Must be > 0.
 	MemoryMiB int
+
+	// Quotas are host-side cgroup v2 limits the runner applies to the
+	// firecracker process tree. Enforced only by runners that wrap
+	// firecracker in jailer; the direct-exec runner ignores them.
+	//
+	// Zero-valued fields mean "no limit on that dimension." Memory
+	// and pid limits apply to the VMM's HOST cgroup; guest processes
+	// live in a separate pid namespace that the host cgroup can't
+	// see, so PIDsMax is a fork-bomb guard for firecracker itself,
+	// not for guest code.
+	Quotas Quotas
+}
+
+// Quotas is the cross-runner shape for host-side resource limits.
+// Mirrors jailer.Quotas (kept duplicated so the runner package has no
+// dependency on jailer internals for the common Spec type).
+type Quotas struct {
+	// CPUMax is the cpu.max cgroup v2 entry: "<quota> <period>" in
+	// microseconds. Example: "20000 100000" caps CPU at 20% of one
+	// core. Empty = no CPU limit.
+	CPUMax string
+
+	// MemoryMaxBytes maps to memory.max (in bytes). OOM inside the
+	// guest when hit; host stays healthy. Zero = no memory limit.
+	MemoryMaxBytes int64
+
+	// PIDsMax maps to pids.max on the VMM's HOST cgroup — a cheap
+	// fork-bomb guard for firecracker/jailer themselves. Zero = no
+	// pids limit.
+	PIDsMax int64
 }
 
 // Handle is a running (or recently started) Firecracker VM.
