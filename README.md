@@ -23,6 +23,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Go module + CLI skeleton | ✅ done |
 | Firecracker runner (boot VM from config) | ✅ done |
 | Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
+| Pre-baked rootfs profiles (base, python, node, go) | 🔨 planned for v0.1 — CI-published as GitHub Release assets with SHA256 |
 | HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
 | HTTP API — exec inside sandbox via vsock (streaming stdout/stderr) | ✅ done |
 | Sandbox lifetime timeout + per-exec deadline | ✅ done |
@@ -31,16 +32,17 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Snapshot — capture state + memory + rootfs | ✅ done |
 | HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET /snapshots`, `DELETE /snapshots/{id}`) | ✅ done |
 | HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | ✅ done |
+| Lazy memory loading via `userfaultfd` | 🔨 planned for v0.1 — serve guest page faults from the snapshot's memory file instead of byte-copying on fork (same technique as AWS Lambda SnapStart) |
 | Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
 | Resource quotas — CPU (cpu.max), memory (memory.max), PIDs (pids.max) via cgroup v2 | ✅ done under jailer |
 | Startup orphan-chroot reap after a crashed daemon | ✅ done |
 | Structured execution record | ✅ done — exit metadata (exit_code, duration_ms, signal, timed_out, oom_killed) + nested `usage` with CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes |
 | IO quotas (cgroup `io.max`) | ⏳ deferred — needs per-host block-device discovery |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now |
-| Default-deny network + allowlist | ⏳ planned |
-| Prometheus `/metrics` endpoint | ⏳ planned |
-| Python SDK | ⏳ planned |
-| Install script + systemd unit | ⏳ planned |
+| Default-deny network + allowlist | 🔨 next — per-sandbox netns + nftables egress + hand-rolled DNS proxy for hostname-based allowlist |
+| Prometheus `/metrics` endpoint | ⏳ planned for v0.1 |
+| Install script + systemd unit | ⏳ planned for v0.1 |
+| Python SDK | ⏳ deferred to v0.2 — the HTTP API is stable and directly usable from any language |
 
 Full trajectory through v1.0: [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -99,23 +101,16 @@ After you have a jailer-capable environment wired up, [scripts/smoke_fork.sh](sc
 
 ### Performance (and why your filesystem matters)
 
-Measured latencies against Firecracker v1.15 under jailer, 512 MiB guest, 1 GB rootfs, on an ext4 NVMe host:
+Fork cost is dominated by per-fork copies: the snapshot's memory file and rootfs are cloned into per-fork files. [fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1) in file size) but falls back to `io.Copy` when the filesystem doesn't support reflinks.
 
-| Stage | Latency |
-|---|---|
-| Source cold boot (incl. guest agent ready) | ~4.5s |
-| Snapshot (pause → clone rootfs → write state+mem → resume) | ~4.4s |
-| Fork ×3 (parallel goroutines, ext4) | ~6.5s total |
-| Teardown | <300ms |
+**ext4 doesn't support reflinks.** Only XFS with `reflink=1` (default since kernel 5.10's `mkfs.xfs`), btrfs, and f2fs do. If `stat -fc %T <crucible-dir>` returns `ext2/ext3`, every `Clone` is a full byte-copy and `Fork` is bottlenecked on disk write bandwidth.
 
-**Fork is disk-bound on ext4.** Each fork byte-copies ~1.5 GB (1 GB rootfs + 512 MiB memory) into per-fork files. Three forks = ~4.5 GB of writes to the same physical disk, at ~700 MB/s effective throughput — about as fast as the NVMe will go. Parallelizing the goroutines doesn't help *here*: the goroutines run concurrently but they're all waiting on the same disk. We keep the parallelism anyway because it does pay off once the filesystem stops being the bottleneck.
+Two orthogonal paths to cheap fork, both in the v0.1 scope:
 
-[fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1) in file size) but falls back to `io.Copy` when the filesystem doesn't support reflinks. **ext4 doesn't.** Only XFS with `reflink=1` (default since kernel 5.10's `mkfs.xfs`), btrfs, and f2fs do. If `stat -fc %T <crucible-dir>` returns `ext2/ext3`, every `Clone` is a full byte-copy.
+1. **Run crucible with `--work-base` on a reflink-capable filesystem** (btrfs, XFS-with-reflink). No code changes; `FICLONE` makes per-fork rootfs copies effectively instantaneous.
+2. **`userfaultfd` memory backend.** Firecracker supports `mem_backend: Uffd`: guest page faults are delivered to a userspace handler that serves pages directly from the snapshot's memory file — no memory copy at fork time. Same technique AWS Lambda uses for SnapStart.
 
-Two roads to sub-second fork:
-
-1. **Put `--work-base` on a reflink-capable filesystem** (btrfs loopback, or an XFS-reflink partition). No code changes; `FICLONE` makes per-fork copies effectively instantaneous, and the parallelism in `Fork` starts showing real speedup because the non-I/O work (jailer spawn, `LoadSnapshot`, vCPU restore) is all that's left.
-2. **`userfaultfd` memory backend** (v0.2 target). Firecracker supports `mem_backend: Uffd` which lazy-loads guest memory pages on demand from a shared source file via a userspace page-fault handler — no memory copy at fork time at all. This is the technique AWS Lambda uses; done right it drops fork latency to the 100–300 ms range regardless of filesystem.
+Actual latency numbers land here once the sandbox-bench harness is producing reproducible measurements — we'd rather publish no numbers than misleading ones.
 
 ### Exercise the API
 
