@@ -185,10 +185,9 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 	}
 
 	// Load snapshot FIRST. Firecracker forbids PUT /vsock (and other
-	// "boot-specific resource" configuration) before load — any such
-	// call yields "Loading a microVM snapshot not allowed after
-	// configuring boot-specific resources." So the only legal sequence
-	// is: fresh process → load → post-load reconfigure → resume.
+	// "boot-specific resource" configuration) before load: the only
+	// legal sequence is fresh process → load → post-load reconfigure
+	// → resume.
 	if err := h.client.LoadSnapshot(ctx, fcapi.SnapshotLoad{
 		SnapshotPath: spec.StatePath,
 		MemBackend: fcapi.MemBackend{
@@ -200,10 +199,12 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 		return fmt.Errorf("runner: load snapshot: %w", err)
 	}
 
-	// Rewire vsock AFTER load so the fork gets its own host UDS. If we
-	// skipped this, Firecracker would try to bind the path the source
-	// was using — colliding with the source's firecracker on any
-	// multi-sandbox daemon.
+	// Rewire vsock AFTER load so the fork binds its own UDS. Without
+	// this the fork would try to re-bind the exact host path the
+	// source recorded at snapshot time, colliding with the source's
+	// still-running firecracker. Under JailerRunner the chroot
+	// isolation handles this implicitly; we still issue PUT /vsock
+	// there for code uniformity.
 	if err := h.client.PutVsock(ctx, fcapi.VsockConfig{
 		GuestCID: DefaultGuestCID,
 		UDSPath:  h.vsockPath,

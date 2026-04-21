@@ -390,21 +390,31 @@ func (m *Manager) Shutdown(ctx context.Context) {
 // and returns a handle to it. The source sandbox is paused briefly
 // (typically sub-second) and resumes as soon as the snapshot is on disk.
 //
-// Mechanics (the rootfs-path swap is the interesting part):
+// Mechanics:
 //
 //  1. Pause the source.
-//  2. Clone the source's rootfs into the snapshot dir (frozen copy).
-//  3. PATCH the source's drive to point at the snapshot's rootfs copy.
-//     This is so the state file Firecracker writes in step 4 records a
-//     *stable* path — one that won't change even if we later delete
-//     the source or its workdir moves. Forks loading this snapshot
-//     will find the rootfs at the recorded path.
-//  4. CreateSnapshot — writes state + memory files to the snapshot dir.
-//  5. PATCH the source's drive back to its own workdir rootfs.
-//  6. Resume the source.
+//  2. Clone the source's rootfs into the snapshot dir (a frozen copy
+//     bound to the snapshot's lifetime; forks get their own COW
+//     clones of this file via fsutil.Clone).
+//  3. handle.Snapshot — writes state + memory files to the snapshot
+//     dir. The runner is responsible for any path translation
+//     (jailer'd firecracker writes inside its chroot and the handle
+//     moves the files out; direct firecracker writes straight to the
+//     paths we give it).
+//  4. Resume the source.
 //
-// If any step after pause fails, the source is best-effort resumed and
-// the snapshot dir is removed.
+// Earlier revisions wrapped step 3 in a drive-PATCH dance (swap
+// source's drive to snap-dir before CreateSnapshot, swap back after)
+// so the snapshot recorded a stable rootfs path. That was dropped
+// once JailerRunner landed: under jailer every VM sees the same
+// chroot-relative /rootfs.ext4 so the recorded path is stable by
+// construction, and under the direct runner the existing
+// PATCH-after-load in Restore redirects fork rootfs writes
+// regardless of what the snapshot recorded. Dropping it removed
+// three API calls and a failure-rollback branch.
+//
+// If any step after pause fails, the source is best-effort resumed
+// and the snapshot dir is removed.
 func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, error) {
 	src, err := m.Get(sandboxID)
 	if err != nil {
@@ -445,16 +455,8 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	if err := fsutil.Clone(srcRootfs, snapRootfs); err != nil {
 		return nil, fmt.Errorf("sandbox: clone source rootfs into snapshot: %w", err)
 	}
-	if err := src.handle.PatchRootfs(ctx, snapRootfs); err != nil {
-		return nil, fmt.Errorf("sandbox: swap source drive to snapshot rootfs: %w", err)
-	}
 	if err := src.handle.Snapshot(ctx, snapState, snapMem); err != nil {
-		// Best-effort: swap the drive back even on snapshot failure.
-		_ = src.handle.PatchRootfs(context.Background(), srcRootfs)
 		return nil, fmt.Errorf("sandbox: create snapshot: %w", err)
-	}
-	if err := src.handle.PatchRootfs(ctx, srcRootfs); err != nil {
-		return nil, fmt.Errorf("sandbox: swap source drive back: %w", err)
 	}
 	if err := src.handle.Resume(ctx); err != nil {
 		return nil, fmt.Errorf("sandbox: resume %s: %w", src.ID, err)

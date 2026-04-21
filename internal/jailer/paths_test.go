@@ -93,3 +93,26 @@ func TestChrootDirIsParentOfChrootRoot(t *testing.T) {
 		t.Fatalf("ChrootDir = %q", got)
 	}
 }
+
+// TestForkVsockIsolation pins the invariant that makes same-host fork
+// work under Firecracker v1.15 without the (unreleased) vsock_override:
+// the vsock UDS path (always "/v.sock" chroot-relative) must resolve
+// to distinct absolute host paths for each VM. If this ever returned
+// the same host path for two VMs, two firecracker processes would
+// race to bind the same UDS and the second would fail with EADDRINUSE
+// — exactly the bug jailer was adopted to fix.
+func TestForkVsockIsolation(t *testing.T) {
+	ids := []string{"fork-a", "fork-b", "fork-c"}
+	seen := make(map[string]string)
+	for _, id := range ids {
+		s := Spec{ID: id, ExecFile: "/usr/bin/firecracker", ChrootBase: "/srv/jailer"}
+		host := HostPath(s, "/v.sock")
+		if prev, ok := seen[host]; ok {
+			t.Fatalf("vsock host path collision: %s and %s both map to %s", prev, id, host)
+		}
+		seen[host] = id
+	}
+	if len(seen) != len(ids) {
+		t.Fatalf("expected %d distinct host paths, got %d", len(ids), len(seen))
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/fcapi"
+	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/jailer"
 )
 
@@ -482,6 +483,35 @@ func (h *jailerHandle) Wait() error {
 	err := h.fcHandle.Wait()
 	h.cleanupJailer()
 	return err
+}
+
+// Snapshot shadows the fcHandle.Snapshot promoted method. Firecracker,
+// sitting inside a pivot_root, can only write files at chroot-relative
+// paths — so we tell it to write to well-known chroot paths and then
+// move the resulting files out to the caller's requested host-
+// absolute paths.
+//
+// The "move" is os.Rename when both paths share a filesystem and a
+// Clone+remove fallback otherwise. See fsutil.Move.
+func (h *jailerHandle) Snapshot(ctx context.Context, statePath, memPath string) error {
+	if err := h.client.CreateSnapshot(ctx, fcapi.SnapshotCreate{
+		SnapshotType: fcapi.SnapshotTypeFull,
+		SnapshotPath: chrootStatePath,
+		MemPath:      chrootMemPath,
+	}); err != nil {
+		return fmt.Errorf("runner: create snapshot: %w", err)
+	}
+
+	hostState := jailer.HostPath(h.jailerSpec, chrootStatePath)
+	hostMem := jailer.HostPath(h.jailerSpec, chrootMemPath)
+
+	if err := fsutil.Move(hostState, statePath); err != nil {
+		return fmt.Errorf("runner: move snapshot state out of chroot: %w", err)
+	}
+	if err := fsutil.Move(hostMem, memPath); err != nil {
+		return fmt.Errorf("runner: move snapshot memory out of chroot: %w", err)
+	}
+	return nil
 }
 
 func (h *jailerHandle) cleanupJailer() {
