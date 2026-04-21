@@ -48,3 +48,47 @@ func Cleanup(spec Spec) error {
 
 	return firstErr
 }
+
+// ReapOrphans removes every per-VM chroot + matching cgroup under
+// the given ChrootBase that was left behind by a previous daemon
+// invocation.
+//
+// The daemon calls this exactly once, at startup, before accepting
+// any requests. Sandboxes are ephemeral and in-memory only — no
+// state carries across a daemon restart — so every directory found
+// under <ChrootBase>/<basename(execFile)>/ at startup is by
+// definition an orphan from a prior run that crashed or was killed
+// without clean shutdown.
+//
+// execFile is the same absolute path the daemon passes to
+// JailerRunner; only its basename matters here (it names the
+// subdirectory layer jailer itself writes under).
+//
+// Returns the list of IDs that were reaped (for logging), plus the
+// first error encountered, if any. Missing ChrootBase is not an
+// error — the first ever daemon startup has nothing to reap.
+func ReapOrphans(chrootBase, execFile string) ([]string, error) {
+	parent := filepath.Join(chrootBase, filepath.Base(execFile))
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("jailer: scan %s for orphans: %w", parent, err)
+	}
+
+	reaped := make([]string, 0, len(entries))
+	var firstErr error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		spec := Spec{ID: e.Name(), ExecFile: execFile, ChrootBase: chrootBase}
+		if err := Cleanup(spec); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("jailer: reap %s: %w", e.Name(), err)
+			continue
+		}
+		reaped = append(reaped, e.Name())
+	}
+	return reaped, firstErr
+}

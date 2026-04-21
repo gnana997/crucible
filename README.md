@@ -6,7 +6,7 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, runs commands inside them over vsock with stdout/stderr streaming back, and captures snapshots end-to-end. The HTTP surface for fork exists, but fork currently requires jailer-based chroot isolation to avoid a vsock UDS path collision — that's the next commit. Don't use this for anything real.
+> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, runs commands inside them over vsock with stdout/stderr streaming back, captures snapshots, and forks them end-to-end under jailer with cgroup v2 quotas. Don't use this for anything real.
 
 ## Why this exists
 
@@ -30,24 +30,17 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Graceful SIGTERM drain of active sandboxes | ✅ done |
 | Snapshot — capture state + memory + rootfs | ✅ done |
 | HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET /snapshots`, `DELETE /snapshots/{id}`) | ✅ done |
-| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | 🔨 surface in place; end-to-end blocked on jailer (see limitations below) |
-| Jailer integration (chroot + cgroup v2 + privilege drop) | 🔨 next — unblocks fork + unlocks resource quotas |
+| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | ✅ done |
+| Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
+| Resource quotas — CPU (cpu.max), memory (memory.max), PIDs (pids.max) via cgroup v2 | ✅ done under jailer |
+| Startup orphan-chroot reap after a crashed daemon | ✅ done |
 | Structured execution record | 🔨 partial — exit_code, duration_ms, signal, timed_out (no resource stats yet) |
-| Resource quotas (CPU / memory / disk / IO) | ⏳ lands with jailer |
+| IO quotas (cgroup `io.max`) | ⏳ deferred — needs per-host block-device discovery |
+| OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now |
 | Default-deny network + allowlist | ⏳ planned |
 | Prometheus `/metrics` endpoint | ⏳ planned |
 | Python SDK | ⏳ planned |
 | Install script + systemd unit | ⏳ planned |
-
-### Known limitations (wk3)
-
-**Fork currently fails at the Firecracker layer.** The orchestration is all in place and unit-tested end-to-end against runner stubs, but taking a snapshot and then calling `POST /snapshots/{id}/fork` against real Firecracker yields:
-
-```
-VsockUnixBackend: Error binding to the host-side Unix socket: Address in use (os error 98)
-```
-
-Firecracker v1.15 captures the vsock device's host UDS path inside the snapshot state file; on `PUT /snapshot/load` it tries to bind that exact path, and it collides with the source's still-running firecracker. Firecracker's `SnapshotLoad` params have `network_overrides` but no `vsock_overrides`, so there's no API-level fix. The canonical production answer is **jailer**, which puts each firecracker in its own chroot so the vsock UDS is always at a fresh `/vsock.sock` inside its jail — snapshot captures that relative path and every fork has its own chroot. Jailer also unlocks host cgroup v2 quotas (CPU / memory / IO / PIDs) as a side effect. It's the next commit.
 
 Full trajectory through v1.0: [docs/ROADMAP.md](docs/ROADMAP.md).
 
@@ -74,6 +67,8 @@ The rootfs build uses `fakeroot + mkfs.ext4 -d` under the hood — no sudo neede
 
 ### Start the daemon
 
+Development mode — direct firecracker launch, no sudo, no jailer, no cgroup quotas:
+
 ```bash
 ./crucible daemon \
   --firecracker-bin /path/to/firecracker \
@@ -81,6 +76,26 @@ The rootfs build uses `fakeroot + mkfs.ext4 -d` under the hood — no sudo neede
   --rootfs           assets/rootfs.ext4
 # listens on 127.0.0.1:7878 by default
 ```
+
+Production-style mode — jailer chroot + cgroup v2 quotas + privilege drop. Requires root because jailer needs `CAP_SYS_ADMIN` to unshare namespaces, mknod `/dev/kvm`, and chown files before it can drop to an unprivileged uid:
+
+```bash
+sudo ./crucible daemon \
+  --firecracker-bin /path/to/firecracker \
+  --jailer-bin      /path/to/jailer \
+  --kernel          /path/to/vmlinux \
+  --rootfs          assets/rootfs.ext4 \
+  --chroot-base     /srv/jailer \
+  --jail-uid 10000 --jail-gid 10000
+```
+
+With `--jailer-bin` set, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, its own cgroup v2 slice (for resource quotas), and firecracker itself runs as the unprivileged `--jail-uid`. This is the pattern AWS Lambda and Fly.io use — see the [upstream jailer docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md) for the mechanics.
+
+At startup the daemon reaps any orphan chroots left by a previous run (crashed or killed without clean shutdown), so you don't have to babysit `/srv/jailer` between restarts.
+
+### End-to-end smoke test
+
+After you have a jailer-capable environment wired up, [scripts/smoke_fork.sh](scripts/smoke_fork.sh) drives the full flow: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker, tear everything down. Run as root.
 
 ### Exercise the API
 
@@ -152,13 +167,15 @@ Repository layout:
 cmd/crucible/         CLI entry + subcommand wiring (daemon)
 cmd/crucible-agent/   guest-side binary (vsock listener + /exec handler)
 internal/fcapi/       hand-written Firecracker HTTP-over-UDS client
-internal/runner/      firecracker process lifecycle
-internal/sandbox/     ID generation + Manager (lifecycle, exec, timers)
+internal/fsutil/      Clone (FICLONE reflink / copy), Move (rename + xdev fallback)
+internal/jailer/      argv builder, chroot staging, cleanup, orphan reap
+internal/runner/      firecracker + jailer process lifecycle
+internal/sandbox/     ID generation + Manager (lifecycle, exec, snapshot, fork, timers)
 internal/daemon/      HTTP server, routes, middleware
 internal/agentwire/   shared protocol (frame format, ExecRequest/Result)
 internal/agentapi/    host-side HTTP client over hybrid-vsock UDS
 internal/version/     ldflags-settable build version
-scripts/              rootfs builder
+scripts/              rootfs builder, smoke_fork.sh (end-to-end jailer test)
 docs/                 VISION.md + ROADMAP.md
 ```
 

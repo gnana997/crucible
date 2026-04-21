@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/daemon"
+	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
@@ -144,6 +145,15 @@ Required flags:
 		if _, err := os.Stat(*jailerBin); err != nil {
 			fmt.Fprintf(stderr, "error: --jailer-bin %q: %v\n", *jailerBin, err)
 			return 2
+		}
+		// Reap any chroots left behind by a previous daemon run that
+		// crashed or was killed without clean shutdown. Sandboxes are
+		// in-memory only, so every dir under <chroot-base>/firecracker/
+		// at startup is by definition an orphan.
+		if reaped, err := jailer.ReapOrphans(*chrootBase, *fcBin); err != nil {
+			logger.Warn("orphan reap failed (continuing)", "err", err)
+		} else if len(reaped) > 0 {
+			logger.Info("reaped orphan chroots from previous run", "count", len(reaped), "ids", reaped)
 		}
 		jr := runner.NewJailerRunner(*jailerBin, *fcBin, *chrootBase, uint32(*jailUID), uint32(*jailGID))
 		jr.Logger = logger

@@ -360,12 +360,30 @@ func (j *JailerRunner) configureAndBoot(ctx context.Context, h *fcHandle, spec S
 	return nil
 }
 
-// configureAndLoad is the restore fcapi sequence. Ordering matters:
-// LoadSnapshot first (firecracker forbids PUT /vsock before load),
-// then rewire vsock (each fork gets its own chroot-relative path that
-// resolves to a unique absolute host path), then drive patch (so the
-// fork's rootfs writes don't corrupt the snapshot's frozen rootfs),
-// then resume.
+// configureAndLoad is the restore fcapi sequence. Under jailer it
+// is short:
+//
+//  1. waitReady.
+//  2. LoadSnapshot — the state file records uds_path=/v.sock and
+//     path_on_host=/rootfs.ext4 (chroot-relative). Each fork has
+//     its own chroot, so those paths resolve to unique absolute
+//     host paths on the fork side; no collision with the source.
+//  3. PutVmState(Resumed).
+//
+// We deliberately do NOT issue PutVsock or PatchDrive post-load:
+//
+//   - PutVsock is a "boot-specific resource" and Firecracker
+//     returns 400 "not supported after starting the microVM"
+//     once a snapshot is loaded. It also isn't needed — the
+//     chroot-relative path already resolves correctly.
+//   - PatchDrive to the same chroot path firecracker already
+//     opened via LoadSnapshot would be a no-op (same inode via
+//     the hardlink Stage put there).
+//
+// Under direct Firecracker this flow would fail at step 2 with
+// the vsock UDS collision that originally motivated adopting
+// jailer — a fix is coming upstream (vsock_override on
+// SnapshotLoadParams, PR #5323) but not in v1.15.
 func (j *JailerRunner) configureAndLoad(ctx context.Context, h *fcHandle) error {
 	readyTimeout := j.ReadyTimeout
 	if readyTimeout == 0 {
@@ -386,20 +404,6 @@ func (j *JailerRunner) configureAndLoad(ctx context.Context, h *fcHandle) error 
 		ResumeVM: false,
 	}); err != nil {
 		return fmt.Errorf("runner: load snapshot: %w", err)
-	}
-
-	if err := h.client.PutVsock(ctx, fcapi.VsockConfig{
-		GuestCID: DefaultGuestCID,
-		UDSPath:  chrootVsockPath,
-	}); err != nil {
-		return fmt.Errorf("runner: put vsock: %w", err)
-	}
-
-	if err := h.client.PatchDrive(ctx, fcapi.DrivePatch{
-		DriveID:    rootfsDriveID,
-		PathOnHost: chrootRootfsPath,
-	}); err != nil {
-		return fmt.Errorf("runner: patch rootfs drive: %w", err)
 	}
 
 	if err := h.client.PutVmState(ctx, fcapi.VmStateResumed); err != nil {
