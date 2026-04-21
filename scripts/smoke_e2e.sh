@@ -865,10 +865,9 @@ finish_test
 
 # ===== TEST 15: orphan reap =================================
 start_test "15" "orphan_reap" \
-  "A synthetic chroot under /srv/jailer is removed when the daemon restarts."
+  "Synthetic orphan chroot + netns + nft table are all removed when the daemon restarts."
 
-# Seed a fake chroot (daemon must be running to have already set
-# up the base nft + dummy iface, but we're going to restart it).
+# Seed a fake chroot — the existing reap path we've always had.
 FAKE_ID="synthetic-$$-$RANDOM"
 FAKE_DIR="$CHROOT_BASE/firecracker/$FAKE_ID/root"
 mkdir -p "$FAKE_DIR"
@@ -876,33 +875,55 @@ touch "$FAKE_DIR/marker"
 ls -la "$FAKE_DIR" > "$TEST_DIR/before_restart.txt"
 pass "seed_fake_chroot" "$FAKE_DIR created"
 
-# Restart daemon. Shutdown is clean; the fake chroot survives
-# because the daemon never knew about it.
+# Seed a fake orphan netns with our prefix. The daemon reap should
+# nuke it on startup.
+FAKE_NETNS="crucible-orphan-$$-$RANDOM"
+ip netns add "$FAKE_NETNS" 2>> "$TEST_DIR/seed.log" \
+  && pass "seed_fake_netns" "$FAKE_NETNS created" \
+  || fail "seed_fake_netns" "could not create $FAKE_NETNS"
+
+# Restart daemon. Shutdown is clean; the fakes survive because the
+# daemon never knew about them.
 stop_daemon
-# Confirm fake is still there post-shutdown.
 if [[ -d "$CHROOT_BASE/firecracker/$FAKE_ID" ]]; then
-  pass "fake_survived_shutdown" "still present"
+  pass "fake_chroot_survived_shutdown" "still present"
 else
-  fail "fake_survived_shutdown" "fake vanished unexpectedly"
+  fail "fake_chroot_survived_shutdown" "fake chroot vanished unexpectedly"
+fi
+if ip netns list | grep -q "^$FAKE_NETNS"; then
+  pass "fake_netns_survived_shutdown" "still present"
+else
+  fail "fake_netns_survived_shutdown" "fake netns vanished unexpectedly"
 fi
 
 start_daemon
 
-# Give it a moment to process the reap + logs.
+# Give the daemon a moment to finish its reap passes.
 sleep 0.5
 
 if [[ -d "$CHROOT_BASE/firecracker/$FAKE_ID" ]]; then
-  fail "fake_reaped" "chroot $FAKE_ID still exists after daemon startup"
+  fail "fake_chroot_reaped" "chroot $FAKE_ID still exists after daemon startup"
   ls -la "$CHROOT_BASE/firecracker/$FAKE_ID" > "$TEST_DIR/after_restart.txt" || true
 else
-  pass "fake_reaped" "chroot $FAKE_ID removed by startup reap"
+  pass "fake_chroot_reaped" "chroot $FAKE_ID removed by startup reap"
 fi
 
-# Cross-check in the daemon log.
-if grep -q "reaped orphan chroots" "$DAEMON_LOG"; then
-  pass "reap_logged" "daemon logged the reap"
+if ip netns list | grep -q "^$FAKE_NETNS"; then
+  fail "fake_netns_reaped" "netns $FAKE_NETNS still exists after daemon startup"
 else
-  fail "reap_logged" "daemon did not log 'reaped orphan chroots' (check $DAEMON_LOG)"
+  pass "fake_netns_reaped" "netns $FAKE_NETNS removed by startup reap"
+fi
+
+# Cross-check both reap types in the daemon log.
+if grep -q "reaped orphan chroots" "$DAEMON_LOG"; then
+  pass "chroot_reap_logged" "daemon logged the chroot reap"
+else
+  fail "chroot_reap_logged" "daemon did not log 'reaped orphan chroots' (check $DAEMON_LOG)"
+fi
+if grep -q "reaped orphan netns" "$DAEMON_LOG"; then
+  pass "netns_reap_logged" "daemon logged the netns reap"
+else
+  fail "netns_reap_logged" "daemon did not log 'reaped orphan netns' (check $DAEMON_LOG)"
 fi
 
 finish_test

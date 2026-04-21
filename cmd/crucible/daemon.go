@@ -188,6 +188,14 @@ Required flags:
 	// story. Attempting `network={enabled:true}` in a request when
 	// this block didn't run results in a clean 400 from the
 	// Manager, not a silent fallback.
+	// Reap orphan sandbox network state from a previous run (netns,
+	// veths, nft table, iptables ACCEPTs). Always safe to call —
+	// touches only objects carrying our crucible- prefix / comment
+	// tag — and we run it unconditionally so state from a previous
+	// networked run is cleaned up even if the operator started this
+	// run without --network-egress-iface.
+	network.ReapOrphans(context.Background(), logger)
+
 	var netMgr *network.Manager
 	if *netEgressIface != "" && *jailerBin != "" {
 		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
