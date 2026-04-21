@@ -97,6 +97,26 @@ At startup the daemon reaps any orphan chroots left by a previous run (crashed o
 
 After you have a jailer-capable environment wired up, [scripts/smoke_fork.sh](scripts/smoke_fork.sh) drives the full flow: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker, tear everything down. Run as root.
 
+### Performance (and why your filesystem matters)
+
+Measured latencies against Firecracker v1.15 under jailer, 512 MiB guest, 1 GB rootfs, on an ext4 NVMe host:
+
+| Stage | Latency |
+|---|---|
+| Source cold boot (incl. guest agent ready) | ~4.5s |
+| Snapshot (pause → clone rootfs → write state+mem → resume) | ~4.4s |
+| Fork ×3 (parallel goroutines, ext4) | ~6.5s total |
+| Teardown | <300ms |
+
+**Fork is disk-bound on ext4.** Each fork byte-copies ~1.5 GB (1 GB rootfs + 512 MiB memory) into per-fork files. Three forks = ~4.5 GB of writes to the same physical disk, at ~700 MB/s effective throughput — about as fast as the NVMe will go. Parallelizing the goroutines doesn't help *here*: the goroutines run concurrently but they're all waiting on the same disk. We keep the parallelism anyway because it does pay off once the filesystem stops being the bottleneck.
+
+[fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1) in file size) but falls back to `io.Copy` when the filesystem doesn't support reflinks. **ext4 doesn't.** Only XFS with `reflink=1` (default since kernel 5.10's `mkfs.xfs`), btrfs, and f2fs do. If `stat -fc %T <crucible-dir>` returns `ext2/ext3`, every `Clone` is a full byte-copy.
+
+Two roads to sub-second fork:
+
+1. **Put `--work-base` on a reflink-capable filesystem** (btrfs loopback, or an XFS-reflink partition). No code changes; `FICLONE` makes per-fork copies effectively instantaneous, and the parallelism in `Fork` starts showing real speedup because the non-I/O work (jailer spawn, `LoadSnapshot`, vCPU restore) is all that's left.
+2. **`userfaultfd` memory backend** (v0.2 target). Firecracker supports `mem_backend: Uffd` which lazy-loads guest memory pages on demand from a shared source file via a userspace page-fault handler — no memory copy at fork time at all. This is the technique AWS Lambda uses; done right it drops fork latency to the 100–300 ms range regardless of filesystem.
+
 ### Exercise the API
 
 ```bash
