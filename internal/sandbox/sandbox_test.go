@@ -83,8 +83,26 @@ func newStubHandle(workdir string) *stubHandle {
 	return &stubHandle{workdir: workdir, shutdown: make(chan struct{})}
 }
 
-func (h *stubHandle) Workdir() string   { return h.workdir }
-func (h *stubHandle) VSockPath() string { return "" } // stub handle has no vsock
+func (h *stubHandle) Workdir() string                               { return h.workdir }
+func (h *stubHandle) VSockPath() string                             { return "" } // stub handle has no vsock
+func (h *stubHandle) Pause(context.Context) error                   { return nil }
+func (h *stubHandle) Resume(context.Context) error                  { return nil }
+func (h *stubHandle) PatchRootfs(_ context.Context, _ string) error { return nil }
+
+// Snapshot writes empty state + memory files so that downstream Clone
+// calls in Manager.Snapshot find real paths. Tests that want to inject
+// failures here can extend stubHandle with an error-producing Snapshot
+// method.
+func (h *stubHandle) Snapshot(_ context.Context, statePath, memPath string) error {
+	if err := os.WriteFile(statePath, []byte("stub-state"), 0o640); err != nil {
+		return err
+	}
+	if err := os.WriteFile(memPath, []byte("stub-memory"), 0o640); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (h *stubHandle) Shutdown(ctx context.Context) error {
 	select {
 	case <-h.shutdown:
@@ -98,10 +116,12 @@ func (h *stubHandle) Wait() error { <-h.shutdown; return nil }
 // stubRunner is a runner.Runner for tests: records Start calls and
 // produces stubHandles, optionally returning a pre-canned error.
 type stubRunner struct {
-	mu       sync.Mutex
-	calls    []runner.Spec
-	startErr error
-	handles  []*stubHandle
+	mu           sync.Mutex
+	calls        []runner.Spec
+	restoreCalls []runner.RestoreSpec
+	startErr     error
+	restoreErr   error
+	handles      []*stubHandle
 }
 
 func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, error) {
@@ -119,16 +139,39 @@ func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, 
 	return h, nil
 }
 
+func (r *stubRunner) Restore(_ context.Context, spec runner.RestoreSpec) (runner.Handle, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.restoreCalls = append(r.restoreCalls, spec)
+	if r.restoreErr != nil {
+		return nil, r.restoreErr
+	}
+	_ = os.MkdirAll(spec.Workdir, 0o755)
+	h := newStubHandle(spec.Workdir)
+	r.handles = append(r.handles, h)
+	return h, nil
+}
+
 // newTestManager constructs a Manager backed by a fresh stubRunner.
+// A tiny template rootfs file is created so Manager.Create's Clone call
+// succeeds — the stub runner doesn't read it, but Clone expects the path
+// to exist.
 func newTestManager(t *testing.T) (*Manager, *stubRunner) {
 	t.Helper()
 	workBase := t.TempDir()
+
+	tmplDir := t.TempDir()
+	template := filepath.Join(tmplDir, "rootfs.ext4")
+	if err := os.WriteFile(template, []byte("fake-template-bytes"), 0o640); err != nil {
+		t.Fatalf("write template rootfs: %v", err)
+	}
+
 	r := &stubRunner{}
 	m, err := NewManager(ManagerConfig{
 		Runner:   r,
 		WorkBase: workBase,
 		Kernel:   "/fake/vmlinux",
-		Rootfs:   "/fake/rootfs.ext4",
+		Rootfs:   template,
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -172,13 +215,25 @@ func TestManagerCreateAppliesDefaults(t *testing.T) {
 		t.Error("CreatedAt not set")
 	}
 
-	// Verify the runner received the spec we computed.
+	// The per-sandbox rootfs clone should exist under the workdir.
+	sbxRootfs := filepath.Join(s.Workdir, perSandboxRootfsName)
+	if _, err := os.Stat(sbxRootfs); err != nil {
+		t.Errorf("per-sandbox rootfs missing under workdir: %v", err)
+	}
+
+	// The runner should receive the *cloned* rootfs path, not the template.
 	if len(r.calls) != 1 {
 		t.Fatalf("runner.Start called %d times, want 1", len(r.calls))
 	}
 	got := r.calls[0]
-	if got.Kernel != "/fake/vmlinux" || got.Rootfs != "/fake/rootfs.ext4" {
-		t.Errorf("spec paths wrong: %+v", got)
+	if got.Kernel != "/fake/vmlinux" {
+		t.Errorf("Kernel = %q, want /fake/vmlinux", got.Kernel)
+	}
+	if got.Rootfs != sbxRootfs {
+		t.Errorf("Rootfs = %q, want per-sandbox clone %q", got.Rootfs, sbxRootfs)
+	}
+	if got.Rootfs == m.cfg.Rootfs {
+		t.Error("runner received template path; should be per-sandbox clone")
 	}
 	if got.VCPUs != DefaultVCPUs || got.MemoryMiB != DefaultMemoryMiB {
 		t.Errorf("spec sizing wrong: %+v", got)
@@ -260,15 +315,22 @@ func TestManagerDelete(t *testing.T) {
 	}
 }
 
-func TestManagerCreateRunnerErrorLeavesMapClean(t *testing.T) {
+func TestManagerCreateRunnerErrorCleansUp(t *testing.T) {
 	wantErr := errors.New("start boom")
 	workBase := t.TempDir()
+
+	tmplDir := t.TempDir()
+	template := filepath.Join(tmplDir, "rootfs.ext4")
+	if err := os.WriteFile(template, []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
 	r := &stubRunner{startErr: wantErr}
 	m, err := NewManager(ManagerConfig{
 		Runner:   r,
 		WorkBase: workBase,
 		Kernel:   "/fake/vmlinux",
-		Rootfs:   "/fake/rootfs.ext4",
+		Rootfs:   template,
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -279,6 +341,172 @@ func TestManagerCreateRunnerErrorLeavesMapClean(t *testing.T) {
 	}
 	if len(m.List()) != 0 {
 		t.Errorf("List returned %d entries, want 0", len(m.List()))
+	}
+
+	// Workdir + cloned rootfs should have been removed on rollback.
+	entries, err := os.ReadDir(workBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("workbase still contains %v after failed Create; want empty", names)
+	}
+}
+
+// --- Snapshot / Fork / DeleteSnapshot ---------------------------------
+
+func TestManagerSnapshotAndFork(t *testing.T) {
+	m, r := newTestManager(t)
+
+	source, err := m.Create(context.Background(), CreateConfig{VCPUs: 2, MemoryMiB: 256})
+	if err != nil {
+		t.Fatalf("Create source: %v", err)
+	}
+
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if !strings.HasPrefix(snap.ID, "snap_") {
+		t.Errorf("snap id %q: missing snap_ prefix", snap.ID)
+	}
+	if snap.SourceID != source.ID {
+		t.Errorf("SourceID = %q, want %q", snap.SourceID, source.ID)
+	}
+	if snap.VCPUs != 2 || snap.MemoryMiB != 256 {
+		t.Errorf("snap sizing = %d/%d, want 2/256", snap.VCPUs, snap.MemoryMiB)
+	}
+	// Snapshot files should exist on disk.
+	for _, p := range []string{snap.StatePath, snap.MemPath, snap.RootfsPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("snapshot file missing: %v", err)
+		}
+	}
+	// Source sandbox must still be registered + live.
+	if _, err := m.Get(source.ID); err != nil {
+		t.Errorf("source gone after snapshot: %v", err)
+	}
+
+	forks, err := m.Fork(context.Background(), snap.ID, 3)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if len(forks) != 3 {
+		t.Fatalf("len(forks) = %d, want 3", len(forks))
+	}
+
+	// Each fork should have its own workdir + its own memory and rootfs files.
+	for _, f := range forks {
+		if !strings.HasPrefix(f.ID, "sbx_") {
+			t.Errorf("fork id %q: missing sbx_ prefix", f.ID)
+		}
+		if f.VCPUs != snap.VCPUs || f.MemoryMiB != snap.MemoryMiB {
+			t.Errorf("fork sizing = %d/%d, want %d/%d from snapshot",
+				f.VCPUs, f.MemoryMiB, snap.VCPUs, snap.MemoryMiB)
+		}
+		for _, name := range []string{perSandboxRootfsName, perForkMemoryName} {
+			if _, err := os.Stat(filepath.Join(f.Workdir, name)); err != nil {
+				t.Errorf("fork %s missing %s: %v", f.ID, name, err)
+			}
+		}
+	}
+
+	// The runner should have seen three Restore calls.
+	if len(r.restoreCalls) != 3 {
+		t.Errorf("runner.Restore called %d times, want 3", len(r.restoreCalls))
+	}
+}
+
+func TestManagerDeleteSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	if err := m.DeleteSnapshot(context.Background(), snap.ID); err != nil {
+		t.Fatalf("DeleteSnapshot: %v", err)
+	}
+	if _, err := m.GetSnapshot(snap.ID); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Errorf("GetSnapshot after delete: err=%v, want ErrSnapshotNotFound", err)
+	}
+	if _, err := os.Stat(snap.Dir); !os.IsNotExist(err) {
+		t.Errorf("snapshot dir still exists: %v", err)
+	}
+
+	// Idempotent: second delete returns ErrSnapshotNotFound.
+	if err := m.DeleteSnapshot(context.Background(), snap.ID); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Errorf("second DeleteSnapshot: err=%v, want ErrSnapshotNotFound", err)
+	}
+}
+
+func TestManagerSnapshotUnknownSandbox(t *testing.T) {
+	m, _ := newTestManager(t)
+	_, err := m.Snapshot(context.Background(), "sbx_0000000000000")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestManagerForkUnknownSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+	_, err := m.Fork(context.Background(), "snap_0000000000000", 1)
+	if !errors.Is(err, ErrSnapshotNotFound) {
+		t.Errorf("err = %v, want ErrSnapshotNotFound", err)
+	}
+}
+
+func TestManagerForkRejectsZeroCount(t *testing.T) {
+	m, _ := newTestManager(t)
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Fork(context.Background(), snap.ID, 0); err == nil {
+		t.Error("Fork(count=0): got nil, want error")
+	}
+}
+
+func TestManagerForkRollbackOnFailure(t *testing.T) {
+	// Inject a restore failure after N successful ones to verify that
+	// the successful forks are torn down.
+	m, r := newTestManager(t)
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.restoreErr = errors.New("restore boom")
+	_, err = m.Fork(context.Background(), snap.ID, 3)
+	if err == nil {
+		t.Fatal("Fork: got nil, want error")
+	}
+
+	// Only the source sandbox should remain; no fork survived.
+	list := m.List()
+	if len(list) != 1 || list[0].ID != source.ID {
+		ids := make([]string, len(list))
+		for i, s := range list {
+			ids[i] = s.ID
+		}
+		t.Errorf("sandboxes after failed Fork: %v, want only %s", ids, source.ID)
 	}
 }
 

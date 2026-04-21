@@ -81,6 +81,26 @@ type Handle interface {
 	// the guest. Empty means the handle has no vsock configured (e.g.
 	// test stubs).
 	VSockPath() string
+
+	// Pause transitions the VM to Paused. Prerequisite for Snapshot.
+	Pause(ctx context.Context) error
+
+	// Resume transitions a Paused VM back to Running. No-op on an
+	// already-running VM.
+	Resume(ctx context.Context) error
+
+	// Snapshot dumps the VM's state and memory to the given paths. The
+	// VM must be Paused before calling; Snapshot does not resume it.
+	// statePath is typically shared across forks; memPath and the
+	// rootfs file get cloned per-fork by the caller.
+	Snapshot(ctx context.Context, statePath, memPath string) error
+
+	// PatchRootfs hot-swaps the rootfs block device to newPath. Used by
+	// Manager during snapshot creation (swap to snapshot-owned rootfs
+	// before CreateSnapshot so the recorded path is stable) and after
+	// Restore (swap to the fork's private rootfs so writes don't
+	// corrupt the snapshot). Safe while Paused.
+	PatchRootfs(ctx context.Context, newPath string) error
 }
 
 // DefaultGuestCID is the vsock CID assigned to every sandbox's guest.
@@ -89,9 +109,36 @@ type Handle interface {
 // collide, and the host distinguishes them by per-sandbox UDS paths.
 const DefaultGuestCID = 3
 
-// Runner starts Firecracker VMs.
+// RestoreSpec is the input to Runner.Restore. Like Spec, the runner
+// creates Workdir and writes a log file there. Unlike Spec, kernel /
+// rootfs / boot-args / machine-config are *not* required — all of them
+// come from the snapshot state file.
+type RestoreSpec struct {
+	// Workdir is the per-fork directory. The runner creates api.sock,
+	// vsock.sock, and firecracker.log inside it.
+	Workdir string
+
+	// StatePath is the snapshot state file (written by CreateSnapshot).
+	// Typically shared read-only across all forks of the same snapshot.
+	StatePath string
+
+	// MemPath is the per-fork memory file. Callers should clone the
+	// snapshot's memory file into this path before calling Restore, so
+	// each fork has its own writable backing.
+	MemPath string
+
+	// RootfsPath is the per-fork writable rootfs file. Firecracker
+	// opens the path it saw at snapshot time, so the path here must
+	// match the one used by the source sandbox at snapshot time.
+	// Callers manage this via symlinks or deliberate path reuse.
+	RootfsPath string
+}
+
+// Runner starts Firecracker VMs — either from a cold boot (Start) or
+// from a previously-captured snapshot (Restore).
 type Runner interface {
 	Start(ctx context.Context, spec Spec) (Handle, error)
+	Restore(ctx context.Context, spec RestoreSpec) (Handle, error)
 }
 
 // ErrInvalidSpec is returned from Start when required fields are missing

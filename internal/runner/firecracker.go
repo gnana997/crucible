@@ -106,6 +106,146 @@ func (f *Firecracker) Start(ctx context.Context, spec Spec) (Handle, error) {
 	return h, nil
 }
 
+// Restore implements Runner. The flow parallels Start but loads the
+// VM state from a snapshot instead of cold-booting:
+//
+//  1. mkdir workdir; spawn firecracker with a fresh api.sock.
+//  2. Wait for the API to respond.
+//  3. PUT /vsock — Firecracker rewires vsock to this fork's UDS on load,
+//     overriding whatever the snapshot captured.
+//  4. PUT /snapshot/load with resume_vm=false — VM is Paused.
+//  5. PATCH /drives/rootfs to the fork's per-sandbox rootfs copy —
+//     the snapshot state recorded a specific path_on_host, and we
+//     swap it so future writes don't corrupt the snapshot's frozen
+//     rootfs.
+//  6. PATCH /vm {state: Resumed} — fork is live.
+//
+// The guest agent continues running from where it was at snapshot time
+// (its listener socket state was in the VM memory dump). Its host-side
+// UDS path is now this fork's vsock.sock, but the agent doesn't know
+// anything changed.
+func (f *Firecracker) Restore(ctx context.Context, spec RestoreSpec) (Handle, error) {
+	if err := f.validateRestore(spec); err != nil {
+		return nil, err
+	}
+
+	if err := os.MkdirAll(spec.Workdir, 0o750); err != nil {
+		return nil, fmt.Errorf("runner: create workdir: %w", err)
+	}
+
+	sockPath := filepath.Join(spec.Workdir, apiSocketName)
+	vsockPath := filepath.Join(spec.Workdir, vsockSocketName)
+	_ = os.Remove(sockPath)
+	_ = os.Remove(vsockPath)
+
+	logPath := filepath.Join(spec.Workdir, logFileName)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
+	if err != nil {
+		return nil, fmt.Errorf("runner: open log file: %w", err)
+	}
+
+	cmd := exec.Command(f.Binary, "--api-sock", sockPath)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return nil, fmt.Errorf("runner: start firecracker: %w", err)
+	}
+
+	log := f.logger().With(
+		"component", "runner",
+		"mode", "restore",
+		"workdir", spec.Workdir,
+		"pid", cmd.Process.Pid,
+	)
+	log.Info("firecracker process started")
+
+	h := newHandle(cmd, fcapi.NewClient(sockPath), logFile, spec.Workdir, sockPath, vsockPath, log)
+
+	if err := f.configureAndLoad(ctx, h, spec); err != nil {
+		_ = h.Shutdown(context.Background())
+		return nil, err
+	}
+
+	log.Info("firecracker VM restored from snapshot")
+	return h, nil
+}
+
+func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec RestoreSpec) error {
+	readyTimeout := f.ReadyTimeout
+	if readyTimeout == 0 {
+		readyTimeout = defaultReadyTimeout
+	}
+	readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+	defer cancel()
+	if err := waitReady(readyCtx, h.client); err != nil {
+		return fmt.Errorf("runner: wait for API ready: %w", err)
+	}
+
+	// Load snapshot FIRST. Firecracker forbids PUT /vsock (and other
+	// "boot-specific resource" configuration) before load — any such
+	// call yields "Loading a microVM snapshot not allowed after
+	// configuring boot-specific resources." So the only legal sequence
+	// is: fresh process → load → post-load reconfigure → resume.
+	if err := h.client.LoadSnapshot(ctx, fcapi.SnapshotLoad{
+		SnapshotPath: spec.StatePath,
+		MemBackend: fcapi.MemBackend{
+			BackendType: fcapi.MemBackendFile,
+			BackendPath: spec.MemPath,
+		},
+		ResumeVM: false,
+	}); err != nil {
+		return fmt.Errorf("runner: load snapshot: %w", err)
+	}
+
+	// Rewire vsock AFTER load so the fork gets its own host UDS. If we
+	// skipped this, Firecracker would try to bind the path the source
+	// was using — colliding with the source's firecracker on any
+	// multi-sandbox daemon.
+	if err := h.client.PutVsock(ctx, fcapi.VsockConfig{
+		GuestCID: DefaultGuestCID,
+		UDSPath:  h.vsockPath,
+	}); err != nil {
+		return fmt.Errorf("runner: put vsock: %w", err)
+	}
+
+	// Swap the rootfs to the fork's private copy. Without this, the
+	// fork would share the snapshot's on-disk rootfs and writes would
+	// corrupt the frozen state.
+	if err := h.client.PatchDrive(ctx, fcapi.DrivePatch{
+		DriveID:    rootfsDriveID,
+		PathOnHost: spec.RootfsPath,
+	}); err != nil {
+		return fmt.Errorf("runner: patch rootfs drive: %w", err)
+	}
+
+	if err := h.client.PutVmState(ctx, fcapi.VmStateResumed); err != nil {
+		return fmt.Errorf("runner: resume restored VM: %w", err)
+	}
+	return nil
+}
+
+func (f *Firecracker) validateRestore(s RestoreSpec) error {
+	if f.Binary == "" {
+		return fmt.Errorf("%w: Firecracker.Binary is empty", ErrInvalidSpec)
+	}
+	if s.Workdir == "" {
+		return fmt.Errorf("%w: Workdir is required", ErrInvalidSpec)
+	}
+	if s.StatePath == "" {
+		return fmt.Errorf("%w: StatePath is required", ErrInvalidSpec)
+	}
+	if s.MemPath == "" {
+		return fmt.Errorf("%w: MemPath is required", ErrInvalidSpec)
+	}
+	if s.RootfsPath == "" {
+		return fmt.Errorf("%w: RootfsPath is required", ErrInvalidSpec)
+	}
+	return nil
+}
+
 func (f *Firecracker) configureAndBoot(ctx context.Context, h *fcHandle, spec Spec) error {
 	readyTimeout := f.ReadyTimeout
 	if readyTimeout == 0 {
@@ -238,6 +378,34 @@ func (h *fcHandle) Workdir() string { return h.workdir }
 
 // VSockPath implements Handle.
 func (h *fcHandle) VSockPath() string { return h.vsockPath }
+
+// Pause implements Handle by delegating to PATCH /vm.
+func (h *fcHandle) Pause(ctx context.Context) error {
+	return h.client.PutVmState(ctx, fcapi.VmStatePaused)
+}
+
+// Resume implements Handle by delegating to PATCH /vm.
+func (h *fcHandle) Resume(ctx context.Context) error {
+	return h.client.PutVmState(ctx, fcapi.VmStateResumed)
+}
+
+// Snapshot implements Handle by delegating to PUT /snapshot/create with
+// SnapshotType=Full (v0.1 never emits diff snapshots).
+func (h *fcHandle) Snapshot(ctx context.Context, statePath, memPath string) error {
+	return h.client.CreateSnapshot(ctx, fcapi.SnapshotCreate{
+		SnapshotType: fcapi.SnapshotTypeFull,
+		SnapshotPath: statePath,
+		MemPath:      memPath,
+	})
+}
+
+// PatchRootfs implements Handle by delegating to PATCH /drives/rootfs.
+func (h *fcHandle) PatchRootfs(ctx context.Context, newPath string) error {
+	return h.client.PatchDrive(ctx, fcapi.DrivePatch{
+		DriveID:    rootfsDriveID,
+		PathOnHost: newPath,
+	})
+}
 
 // Wait implements Handle. Safe to call multiple times; subsequent calls
 // return the same result as the first without re-invoking cmd.Wait.

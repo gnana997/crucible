@@ -27,8 +27,27 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentapi"
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/runner"
 )
+
+// perSandboxRootfsName is the filename Manager.Create uses for the
+// per-sandbox rootfs clone under the workdir. Kept unexported; the
+// exact name isn't part of the external contract.
+const perSandboxRootfsName = "rootfs.ext4"
+
+// Filenames inside a snapshot directory. Stable so operators can
+// inspect and copy snapshot artifacts manually.
+const (
+	snapshotStateName  = "state.file"
+	snapshotMemoryName = "memory.file"
+	snapshotRootfsName = "rootfs.ext4"
+	perForkMemoryName  = "memory.file"
+)
+
+// ErrSnapshotNotFound is returned by Manager.{Get,Delete}Snapshot when
+// no snapshot matches the given ID.
+var ErrSnapshotNotFound = errors.New("snapshot: not found")
 
 // Default machine sizing applied when a CreateConfig leaves a field at 0.
 // These mirror the "sane defaults" principle from docs/VISION.md — small
@@ -101,6 +120,11 @@ type ManagerConfig struct {
 
 	// Kernel and Rootfs are applied to every sandbox in v0.1. Profiles
 	// and per-sandbox overrides arrive in v0.2.
+	//
+	// Rootfs is a *template* — Manager.Create clones it to a per-
+	// sandbox file under the sandbox workdir before handing the clone
+	// to the runner. Sharing one writable rootfs across concurrent VMs
+	// would corrupt the filesystem, so the clone step is not optional.
 	Kernel string
 	Rootfs string
 
@@ -116,12 +140,29 @@ type ManagerConfig struct {
 	AgentReadyTimeout time.Duration
 }
 
-// Manager owns the sandbox map and coordinates lifecycle operations.
+// Snapshot is a frozen reference point captured from a running sandbox.
+// Forks derive from a Snapshot: each fork's initial memory and rootfs
+// are cloned from the snapshot directory.
+type Snapshot struct {
+	ID         string
+	SourceID   string // sandbox the snapshot was taken from
+	VCPUs      int    // inherited from source
+	MemoryMiB  int    // inherited from source
+	Dir        string // snapshot directory (StatePath/MemPath/RootfsPath live inside)
+	StatePath  string // state.file
+	MemPath    string // memory.file
+	RootfsPath string // rootfs.ext4 (frozen clone at snapshot time)
+	CreatedAt  time.Time
+}
+
+// Manager owns the sandbox + snapshot registries and coordinates
+// lifecycle operations.
 type Manager struct {
 	cfg ManagerConfig
 
 	mu        sync.RWMutex
 	sandboxes map[string]*Sandbox
+	snapshots map[string]*Snapshot
 }
 
 // NewManager constructs a Manager. It does not touch the filesystem or
@@ -142,12 +183,14 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	return &Manager{
 		cfg:       cfg,
 		sandboxes: make(map[string]*Sandbox),
+		snapshots: make(map[string]*Snapshot),
 	}, nil
 }
 
 // Create allocates a new sandbox, boots its VM, and stores the record.
-// If the runner fails to start, no record is stored and the error is
-// returned; callers can safely retry.
+// If anything fails before the sandbox is registered, Create rolls back
+// — the firecracker process (if spawned) is shut down, and the workdir
+// and its per-sandbox rootfs clone are removed. Callers can safely retry.
 func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error) {
 	id, err := NewID()
 	if err != nil {
@@ -163,10 +206,32 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	}
 	workdir := filepath.Join(m.cfg.WorkBase, id)
 
+	// success is flipped at the end; if anything below returns early,
+	// the deferred cleanup removes the workdir we created.
+	var success bool
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(workdir)
+		}
+	}()
+
+	if err := os.MkdirAll(workdir, 0o750); err != nil {
+		return nil, fmt.Errorf("sandbox: create workdir %s: %w", workdir, err)
+	}
+
+	// Clone the rootfs template into a per-sandbox copy so concurrent
+	// sandboxes don't corrupt each other's filesystem state. On reflink-
+	// capable filesystems this is effectively instant; otherwise it's a
+	// full byte copy.
+	sbxRootfs := filepath.Join(workdir, perSandboxRootfsName)
+	if err := fsutil.Clone(m.cfg.Rootfs, sbxRootfs); err != nil {
+		return nil, fmt.Errorf("sandbox: clone rootfs template: %w", err)
+	}
+
 	handle, err := m.cfg.Runner.Start(ctx, runner.Spec{
 		Workdir:   workdir,
 		Kernel:    m.cfg.Kernel,
-		Rootfs:    m.cfg.Rootfs,
+		Rootfs:    sbxRootfs,
 		BootArgs:  req.BootArgs,
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
@@ -191,7 +256,6 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 
 	if m.cfg.WaitForAgent && s.execClient != nil {
 		if err := m.waitForAgent(ctx, s.execClient); err != nil {
-			// Tear the VM down so we don't leak an unusable sandbox.
 			_ = handle.Shutdown(context.Background())
 			return nil, fmt.Errorf("sandbox: agent not ready: %w", err)
 		}
@@ -204,6 +268,8 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	if req.TimeoutSec > 0 {
 		m.startLifetimeTimer(s, req.TimeoutSec)
 	}
+
+	success = true
 	return s, nil
 }
 
@@ -318,6 +384,251 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	for _, s := range m.List() {
 		_ = m.Delete(ctx, s.ID)
 	}
+}
+
+// Snapshot captures a frozen reference point from the given sandbox
+// and returns a handle to it. The source sandbox is paused briefly
+// (typically sub-second) and resumes as soon as the snapshot is on disk.
+//
+// Mechanics (the rootfs-path swap is the interesting part):
+//
+//  1. Pause the source.
+//  2. Clone the source's rootfs into the snapshot dir (frozen copy).
+//  3. PATCH the source's drive to point at the snapshot's rootfs copy.
+//     This is so the state file Firecracker writes in step 4 records a
+//     *stable* path — one that won't change even if we later delete
+//     the source or its workdir moves. Forks loading this snapshot
+//     will find the rootfs at the recorded path.
+//  4. CreateSnapshot — writes state + memory files to the snapshot dir.
+//  5. PATCH the source's drive back to its own workdir rootfs.
+//  6. Resume the source.
+//
+// If any step after pause fails, the source is best-effort resumed and
+// the snapshot dir is removed.
+func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, error) {
+	src, err := m.Get(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+
+	snapID, err := NewSnapshotID()
+	if err != nil {
+		return nil, err
+	}
+	snapDir := filepath.Join(m.cfg.WorkBase, snapID)
+	var success bool
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(snapDir)
+		}
+	}()
+
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		return nil, fmt.Errorf("sandbox: create snapshot dir: %w", err)
+	}
+
+	srcRootfs := filepath.Join(src.Workdir, perSandboxRootfsName)
+	snapRootfs := filepath.Join(snapDir, snapshotRootfsName)
+	snapState := filepath.Join(snapDir, snapshotStateName)
+	snapMem := filepath.Join(snapDir, snapshotMemoryName)
+
+	if err := src.handle.Pause(ctx); err != nil {
+		return nil, fmt.Errorf("sandbox: pause %s: %w", src.ID, err)
+	}
+	// From here on, any failure must attempt to resume the source.
+	defer func() {
+		if !success {
+			_ = src.handle.Resume(context.Background())
+		}
+	}()
+
+	if err := fsutil.Clone(srcRootfs, snapRootfs); err != nil {
+		return nil, fmt.Errorf("sandbox: clone source rootfs into snapshot: %w", err)
+	}
+	if err := src.handle.PatchRootfs(ctx, snapRootfs); err != nil {
+		return nil, fmt.Errorf("sandbox: swap source drive to snapshot rootfs: %w", err)
+	}
+	if err := src.handle.Snapshot(ctx, snapState, snapMem); err != nil {
+		// Best-effort: swap the drive back even on snapshot failure.
+		_ = src.handle.PatchRootfs(context.Background(), srcRootfs)
+		return nil, fmt.Errorf("sandbox: create snapshot: %w", err)
+	}
+	if err := src.handle.PatchRootfs(ctx, srcRootfs); err != nil {
+		return nil, fmt.Errorf("sandbox: swap source drive back: %w", err)
+	}
+	if err := src.handle.Resume(ctx); err != nil {
+		return nil, fmt.Errorf("sandbox: resume %s: %w", src.ID, err)
+	}
+
+	snap := &Snapshot{
+		ID:         snapID,
+		SourceID:   src.ID,
+		VCPUs:      src.VCPUs,
+		MemoryMiB:  src.MemoryMiB,
+		Dir:        snapDir,
+		StatePath:  snapState,
+		MemPath:    snapMem,
+		RootfsPath: snapRootfs,
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	m.mu.Lock()
+	m.snapshots[snapID] = snap
+	m.mu.Unlock()
+
+	success = true
+	return snap, nil
+}
+
+// GetSnapshot returns the snapshot with the given ID or ErrSnapshotNotFound.
+func (m *Manager) GetSnapshot(id string) (*Snapshot, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.snapshots[id]
+	if !ok {
+		return nil, ErrSnapshotNotFound
+	}
+	return s, nil
+}
+
+// ListSnapshots returns a snapshot of currently-registered snapshots.
+func (m *Manager) ListSnapshots() []*Snapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*Snapshot, 0, len(m.snapshots))
+	for _, s := range m.snapshots {
+		out = append(out, s)
+	}
+	return out
+}
+
+// DeleteSnapshot removes the snapshot's registry entry and its on-disk
+// files. Forks already created from it are unaffected — they have their
+// own per-fork rootfs and memory copies.
+func (m *Manager) DeleteSnapshot(ctx context.Context, id string) error {
+	m.mu.Lock()
+	snap, ok := m.snapshots[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrSnapshotNotFound
+	}
+	delete(m.snapshots, id)
+	m.mu.Unlock()
+
+	_ = ctx // reserved for future cancellation bounds on large deletes
+	if err := os.RemoveAll(snap.Dir); err != nil {
+		return fmt.Errorf("sandbox: remove snapshot dir %s: %w", snap.Dir, err)
+	}
+	return nil
+}
+
+// Fork creates `count` new sandboxes from a snapshot. Each fork gets
+// its own workdir, per-fork memory file (cloned from the snapshot's),
+// and per-fork rootfs (cloned from the snapshot's frozen rootfs). If
+// any fork in the batch fails to start, the ones already created are
+// torn down — Fork is all-or-nothing for v0.1.
+func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sandbox, error) {
+	if count <= 0 {
+		return nil, errors.New("sandbox: Fork count must be > 0")
+	}
+	snap, err := m.GetSnapshot(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+
+	forks := make([]*Sandbox, 0, count)
+	success := false
+	defer func() {
+		if !success {
+			for _, s := range forks {
+				_ = m.Delete(context.Background(), s.ID)
+			}
+		}
+	}()
+
+	for i := 0; i < count; i++ {
+		s, err := m.forkOne(ctx, snap)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: fork %d/%d: %w", i+1, count, err)
+		}
+		forks = append(forks, s)
+	}
+
+	success = true
+	return forks, nil
+}
+
+// forkOne creates a single fork. Split out so Fork's all-or-nothing
+// loop stays readable.
+func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error) {
+	id, err := NewID()
+	if err != nil {
+		return nil, err
+	}
+	workdir := filepath.Join(m.cfg.WorkBase, id)
+
+	var success bool
+	defer func() {
+		if !success {
+			_ = os.RemoveAll(workdir)
+		}
+	}()
+
+	if err := os.MkdirAll(workdir, 0o750); err != nil {
+		return nil, fmt.Errorf("create workdir: %w", err)
+	}
+
+	forkRootfs := filepath.Join(workdir, perSandboxRootfsName)
+	forkMem := filepath.Join(workdir, perForkMemoryName)
+
+	if err := fsutil.Clone(snap.RootfsPath, forkRootfs); err != nil {
+		return nil, fmt.Errorf("clone snapshot rootfs: %w", err)
+	}
+	if err := fsutil.Clone(snap.MemPath, forkMem); err != nil {
+		return nil, fmt.Errorf("clone snapshot memory: %w", err)
+	}
+
+	handle, err := m.cfg.Runner.Restore(ctx, runner.RestoreSpec{
+		Workdir:    workdir,
+		StatePath:  snap.StatePath,
+		MemPath:    forkMem,
+		RootfsPath: forkRootfs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("runner restore: %w", err)
+	}
+
+	s := &Sandbox{
+		ID:        id,
+		VCPUs:     snap.VCPUs,
+		MemoryMiB: snap.MemoryMiB,
+		Workdir:   workdir,
+		VSockPath: handle.VSockPath(),
+		CreatedAt: time.Now().UTC(),
+		handle:    handle,
+		done:      make(chan struct{}),
+	}
+	if s.VSockPath != "" {
+		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)
+	}
+
+	// On a restored VM the agent is already running inside — its
+	// listener survived the snapshot. WaitForAgent is typically
+	// unnecessary for forks, but we honor the setting for consistency
+	// with Create.
+	if m.cfg.WaitForAgent && s.execClient != nil {
+		if err := m.waitForAgent(ctx, s.execClient); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("agent not ready after restore: %w", err)
+		}
+	}
+
+	m.mu.Lock()
+	m.sandboxes[id] = s
+	m.mu.Unlock()
+
+	success = true
+	return s, nil
 }
 
 // Delete shuts the sandbox down and removes it from the manager. It is

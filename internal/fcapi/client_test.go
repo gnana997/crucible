@@ -133,6 +133,28 @@ func TestPutDrive(t *testing.T) {
 	}
 }
 
+func TestPatchDrive(t *testing.T) {
+	var got DrivePatch
+	mux := http.NewServeMux()
+	mux.HandleFunc("/drives/rootfs", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		assertBody(t, r, &got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	sock := newMockServer(t, mux)
+
+	c := NewClient(sock)
+	want := DrivePatch{DriveID: "rootfs", PathOnHost: "/fork/rootfs.ext4"}
+	if err := c.PatchDrive(context.Background(), want); err != nil {
+		t.Fatalf("PatchDrive: %v", err)
+	}
+	if got != want {
+		t.Errorf("body = %+v, want %+v", got, want)
+	}
+}
+
 func TestPutMachineConfig(t *testing.T) {
 	var got MachineConfig
 	mux := http.NewServeMux()
@@ -189,6 +211,82 @@ func TestInstanceStart(t *testing.T) {
 	}
 	if got.ActionType != ActionInstanceStart {
 		t.Errorf("action_type = %q, want %q", got.ActionType, ActionInstanceStart)
+	}
+}
+
+func TestPutVmState(t *testing.T) {
+	var got vmStateReq
+	mux := http.NewServeMux()
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			t.Errorf("method = %s, want PATCH", r.Method)
+		}
+		assertBody(t, r, &got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	sock := newMockServer(t, mux)
+
+	c := NewClient(sock)
+	if err := c.PutVmState(context.Background(), VmStatePaused); err != nil {
+		t.Fatalf("PutVmState(Paused): %v", err)
+	}
+	if got.State != VmStatePaused {
+		t.Errorf("state = %q, want %q", got.State, VmStatePaused)
+	}
+}
+
+func TestCreateSnapshot(t *testing.T) {
+	var got SnapshotCreate
+	mux := http.NewServeMux()
+	mux.HandleFunc("/snapshot/create", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		assertBody(t, r, &got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	sock := newMockServer(t, mux)
+
+	c := NewClient(sock)
+	want := SnapshotCreate{
+		SnapshotType: SnapshotTypeFull,
+		SnapshotPath: "/snap/state",
+		MemPath:      "/snap/mem",
+	}
+	if err := c.CreateSnapshot(context.Background(), want); err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if got != want {
+		t.Errorf("body = %+v, want %+v", got, want)
+	}
+}
+
+func TestLoadSnapshot(t *testing.T) {
+	var got SnapshotLoad
+	mux := http.NewServeMux()
+	mux.HandleFunc("/snapshot/load", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("method = %s, want PUT", r.Method)
+		}
+		assertBody(t, r, &got)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	sock := newMockServer(t, mux)
+
+	c := NewClient(sock)
+	want := SnapshotLoad{
+		SnapshotPath: "/snap/state",
+		MemBackend: MemBackend{
+			BackendType: MemBackendFile,
+			BackendPath: "/fork/mem",
+		},
+		ResumeVM: true,
+	}
+	if err := c.LoadSnapshot(context.Background(), want); err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	if got != want {
+		t.Errorf("body = %+v, want %+v", got, want)
 	}
 }
 

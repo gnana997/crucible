@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
@@ -26,6 +27,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
+	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
+	mux.HandleFunc("GET /snapshots", s.handleListSnapshots)
+	mux.HandleFunc("GET /snapshots/{id}", s.handleGetSnapshot)
+	mux.HandleFunc("DELETE /snapshots/{id}", s.handleDeleteSnapshot)
+	mux.HandleFunc("POST /snapshots/{id}/fork", s.handleForkSnapshot)
 	return mux
 }
 
@@ -67,6 +73,43 @@ func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
 // listResponse wraps the sandbox list so the response shape can grow
 // without breaking clients (e.g. adding "next_page" later).
 type listResponse struct {
+	Sandboxes []sandboxResponse `json:"sandboxes"`
+}
+
+// snapshotResponse is the JSON shape returned for a single snapshot.
+// The on-disk paths are included because they're useful for operator
+// debugging (ls, debugfs, du) and don't leak any secrets.
+type snapshotResponse struct {
+	ID         string    `json:"id"`
+	SourceID   string    `json:"source_id"`
+	VCPUs      int       `json:"vcpus"`
+	MemoryMiB  int       `json:"memory_mib"`
+	Dir        string    `json:"dir"`
+	StatePath  string    `json:"state_path"`
+	MemPath    string    `json:"mem_path"`
+	RootfsPath string    `json:"rootfs_path"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func snapshotResponseFrom(s *sandbox.Snapshot) snapshotResponse {
+	return snapshotResponse{
+		ID:         s.ID,
+		SourceID:   s.SourceID,
+		VCPUs:      s.VCPUs,
+		MemoryMiB:  s.MemoryMiB,
+		Dir:        s.Dir,
+		StatePath:  s.StatePath,
+		MemPath:    s.MemPath,
+		RootfsPath: s.RootfsPath,
+		CreatedAt:  s.CreatedAt,
+	}
+}
+
+type snapshotListResponse struct {
+	Snapshots []snapshotResponse `json:"snapshots"`
+}
+
+type forkResponse struct {
 	Sandboxes []sandboxResponse `json:"sandboxes"`
 }
 
@@ -214,6 +257,106 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, jerr.Error()))
 	}
 	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+}
+
+func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
+		return
+	}
+	snap, err := s.cfg.Manager.Snapshot(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, sandbox.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, snapshotResponseFrom(snap))
+}
+
+func (s *Server) handleListSnapshots(w http.ResponseWriter, _ *http.Request) {
+	all := s.cfg.Manager.ListSnapshots()
+	out := make([]snapshotResponse, 0, len(all))
+	for _, snap := range all {
+		out = append(out, snapshotResponseFrom(snap))
+	}
+	writeJSON(w, http.StatusOK, snapshotListResponse{Snapshots: out})
+}
+
+func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidSnapshotID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid snapshot id"))
+		return
+	}
+	snap, err := s.cfg.Manager.GetSnapshot(id)
+	if err != nil {
+		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshotResponseFrom(snap))
+}
+
+func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidSnapshotID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid snapshot id"))
+		return
+	}
+	if err := s.cfg.Manager.DeleteSnapshot(r.Context(), id); err != nil {
+		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleForkSnapshot creates `count` sandboxes from the given snapshot.
+// `count` comes from the query string (?count=N), defaults to 1 if
+// absent. Fork is all-or-nothing: a failure part-way through rolls
+// back any forks started so far, so the response is either "all N
+// sandboxes" or an error.
+func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidSnapshotID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid snapshot id"))
+		return
+	}
+
+	count := 1
+	if q := r.URL.Query().Get("count"); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid count %q (want a positive integer)", q))
+			return
+		}
+		count = n
+	}
+
+	forks, err := s.cfg.Manager.Fork(r.Context(), id, count)
+	if err != nil {
+		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := make([]sandboxResponse, 0, len(forks))
+	for _, f := range forks {
+		out = append(out, sandboxResponseFrom(f))
+	}
+	writeJSON(w, http.StatusCreated, forkResponse{Sandboxes: out})
 }
 
 // flushOnWrite forwards every Write to w and flushes the underlying

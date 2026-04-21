@@ -6,7 +6,7 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, and runs commands inside them over vsock with stdout/stderr streaming back. Quotas beyond wallclock timeouts, snapshots, default-deny networking, and the Python SDK still to come. Don't use this for anything real.
+> **Status.** `crucible daemon` boots Firecracker microVMs, manages their lifecycle over HTTP, runs commands inside them over vsock with stdout/stderr streaming back, and captures snapshots end-to-end. The HTTP surface for fork exists, but fork currently requires jailer-based chroot isolation to avoid a vsock UDS path collision — that's the next commit. Don't use this for anything real.
 
 ## Why this exists
 
@@ -22,18 +22,32 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 |---|---|
 | Go module + CLI skeleton | ✅ done |
 | Firecracker runner (boot VM from config) | ✅ done |
+| Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
 | HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
 | HTTP API — exec inside sandbox via vsock (streaming stdout/stderr) | ✅ done |
 | Sandbox lifetime timeout + per-exec deadline | ✅ done |
 | JSON lifecycle logs (`--log-format=json`) | ✅ done |
 | Graceful SIGTERM drain of active sandboxes | ✅ done |
+| Snapshot — capture state + memory + rootfs | ✅ done |
+| HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET /snapshots`, `DELETE /snapshots/{id}`) | ✅ done |
+| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | 🔨 surface in place; end-to-end blocked on jailer (see limitations below) |
+| Jailer integration (chroot + cgroup v2 + privilege drop) | 🔨 next — unblocks fork + unlocks resource quotas |
 | Structured execution record | 🔨 partial — exit_code, duration_ms, signal, timed_out (no resource stats yet) |
-| Snapshot + fork primitives | ⏳ planned |
+| Resource quotas (CPU / memory / disk / IO) | ⏳ lands with jailer |
 | Default-deny network + allowlist | ⏳ planned |
-| Resource quotas (CPU / memory / disk / IO) | ⏳ planned |
 | Prometheus `/metrics` endpoint | ⏳ planned |
 | Python SDK | ⏳ planned |
 | Install script + systemd unit | ⏳ planned |
+
+### Known limitations (wk3)
+
+**Fork currently fails at the Firecracker layer.** The orchestration is all in place and unit-tested end-to-end against runner stubs, but taking a snapshot and then calling `POST /snapshots/{id}/fork` against real Firecracker yields:
+
+```
+VsockUnixBackend: Error binding to the host-side Unix socket: Address in use (os error 98)
+```
+
+Firecracker v1.15 captures the vsock device's host UDS path inside the snapshot state file; on `PUT /snapshot/load` it tries to bind that exact path, and it collides with the source's still-running firecracker. Firecracker's `SnapshotLoad` params have `network_overrides` but no `vsock_overrides`, so there's no API-level fix. The canonical production answer is **jailer**, which puts each firecracker in its own chroot so the vsock UDS is always at a fresh `/vsock.sock` inside its jail — snapshot captures that relative path and every fork has its own chroot. Jailer also unlocks host cgroup v2 quotas (CPU / memory / IO / PIDs) as a side effect. It's the next commit.
 
 Full trajectory through v1.0: [docs/ROADMAP.md](docs/ROADMAP.md).
 

@@ -12,6 +12,42 @@ import (
 	"github.com/gnana997/crucible/internal/fcapi"
 )
 
+func TestValidateRestoreSpec(t *testing.T) {
+	base := RestoreSpec{
+		Workdir:    "/tmp/fork-x",
+		StatePath:  "/snap/state.file",
+		MemPath:    "/fork-x/mem.file",
+		RootfsPath: "/fork-x/rootfs.ext4",
+	}
+	cases := []struct {
+		name    string
+		binary  string
+		mutate  func(*RestoreSpec)
+		wantErr bool
+	}{
+		{"valid", "firecracker", func(*RestoreSpec) {}, false},
+		{"empty binary", "", func(*RestoreSpec) {}, true},
+		{"empty workdir", "firecracker", func(s *RestoreSpec) { s.Workdir = "" }, true},
+		{"empty state path", "firecracker", func(s *RestoreSpec) { s.StatePath = "" }, true},
+		{"empty mem path", "firecracker", func(s *RestoreSpec) { s.MemPath = "" }, true},
+		{"empty rootfs path", "firecracker", func(s *RestoreSpec) { s.RootfsPath = "" }, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &Firecracker{Binary: tc.binary}
+			s := base
+			tc.mutate(&s)
+			err := f.validateRestore(s)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateRestore(%+v): got nil, want error", s)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateRestore(%+v): got %v, want nil", s, err)
+			}
+		})
+	}
+}
+
 func TestValidateSpec(t *testing.T) {
 	// Base spec that passes all checks; each subtest perturbs one field.
 	base := Spec{

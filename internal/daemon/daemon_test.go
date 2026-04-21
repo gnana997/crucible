@@ -30,8 +30,16 @@ func newStubHandle(workdir string) *stubHandle {
 	return &stubHandle{workdir: workdir, shutdown: make(chan struct{})}
 }
 
-func (h *stubHandle) Workdir() string   { return h.workdir }
-func (h *stubHandle) VSockPath() string { return "" }
+func (h *stubHandle) Workdir() string                               { return h.workdir }
+func (h *stubHandle) VSockPath() string                             { return "" }
+func (h *stubHandle) Pause(context.Context) error                   { return nil }
+func (h *stubHandle) Resume(context.Context) error                  { return nil }
+func (h *stubHandle) PatchRootfs(_ context.Context, _ string) error { return nil }
+func (h *stubHandle) Snapshot(_ context.Context, statePath, memPath string) error {
+	_ = os.WriteFile(statePath, []byte("stub-state"), 0o640)
+	_ = os.WriteFile(memPath, []byte("stub-memory"), 0o640)
+	return nil
+}
 func (h *stubHandle) Shutdown(context.Context) error {
 	select {
 	case <-h.shutdown:
@@ -55,6 +63,13 @@ func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, 
 	return newStubHandle(spec.Workdir), nil
 }
 
+func (r *stubRunner) Restore(_ context.Context, spec runner.RestoreSpec) (runner.Handle, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_ = os.MkdirAll(spec.Workdir, 0o755)
+	return newStubHandle(spec.Workdir), nil
+}
+
 // --- test harness -----------------------------------------------------
 
 // newTestServer builds a Server wired to a real Manager + stub runner +
@@ -63,11 +78,17 @@ func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, 
 func newTestServer(t *testing.T) (*httptest.Server, *sandbox.Manager) {
 	t.Helper()
 	workBase := t.TempDir()
+
+	tmpl := t.TempDir() + "/rootfs.ext4"
+	if err := os.WriteFile(tmpl, []byte("fake-template"), 0o640); err != nil {
+		t.Fatalf("write template rootfs: %v", err)
+	}
+
 	mgr, err := sandbox.NewManager(sandbox.ManagerConfig{
 		Runner:   &stubRunner{},
 		WorkBase: workBase,
 		Kernel:   "/fake/vmlinux",
-		Rootfs:   "/fake/rootfs.ext4",
+		Rootfs:   tmpl,
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -410,6 +431,221 @@ func TestCreateSandboxTimeoutPassedThrough(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("status = %d, want 201", resp.StatusCode)
+	}
+}
+
+// --- snapshot / fork routes ------------------------------------------
+
+func createSandboxViaHTTP(t *testing.T, ts *httptest.Server) string {
+	t.Helper()
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", nil)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	var out sandboxResponse
+	decodeJSON(t, resp, &out)
+	return out.ID
+}
+
+func createSnapshotViaHTTP(t *testing.T, ts *httptest.Server, sbxID string) snapshotResponse {
+	t.Helper()
+	resp, err := http.Post(ts.URL+"/sandboxes/"+sbxID+"/snapshot", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST snapshot: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("snapshot status = %d, body = %s", resp.StatusCode, body)
+	}
+	var out snapshotResponse
+	decodeJSON(t, resp, &out)
+	return out
+}
+
+func TestCreateSnapshotHappyPath(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	if !strings.HasPrefix(snap.ID, "snap_") {
+		t.Errorf("snapshot id %q: missing snap_ prefix", snap.ID)
+	}
+	if snap.SourceID != sbxID {
+		t.Errorf("SourceID = %q, want %q", snap.SourceID, sbxID)
+	}
+}
+
+func TestCreateSnapshotSandboxNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Post(ts.URL+"/sandboxes/sbx_0000000000000/snapshot", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestCreateSnapshotInvalidID(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Post(ts.URL+"/sandboxes/not-a-real-id/snapshot", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestListSnapshots(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/snapshots")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	var empty snapshotListResponse
+	decodeJSON(t, resp, &empty)
+	if len(empty.Snapshots) != 0 {
+		t.Errorf("expected empty list, got %d", len(empty.Snapshots))
+	}
+
+	sbxID := createSandboxViaHTTP(t, ts)
+	_ = createSnapshotViaHTTP(t, ts, sbxID)
+	_ = createSnapshotViaHTTP(t, ts, sbxID)
+
+	resp, err = http.Get(ts.URL + "/snapshots")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	var got snapshotListResponse
+	decodeJSON(t, resp, &got)
+	if len(got.Snapshots) != 2 {
+		t.Errorf("len = %d, want 2", len(got.Snapshots))
+	}
+}
+
+func TestGetSnapshot(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	resp, err := http.Get(ts.URL + "/snapshots/" + snap.ID)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	var got snapshotResponse
+	decodeJSON(t, resp, &got)
+	if got.ID != snap.ID {
+		t.Errorf("ID = %q, want %q", got.ID, snap.ID)
+	}
+}
+
+func TestGetSnapshotNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/snapshots/snap_0000000000000")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestDeleteSnapshot(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/snapshots/"+snap.ID, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+
+	// Second delete should 404.
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE again: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("second DELETE status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestForkSnapshot(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	resp, err := http.Post(ts.URL+"/snapshots/"+snap.ID+"/fork?count=3", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST fork: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
+	}
+	var got forkResponse
+	decodeJSON(t, resp, &got)
+	if len(got.Sandboxes) != 3 {
+		t.Errorf("len = %d, want 3", len(got.Sandboxes))
+	}
+	for _, s := range got.Sandboxes {
+		if !strings.HasPrefix(s.ID, "sbx_") {
+			t.Errorf("fork id %q: missing sbx_ prefix", s.ID)
+		}
+	}
+}
+
+func TestForkSnapshotDefaultsCountToOne(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	resp, err := http.Post(ts.URL+"/snapshots/"+snap.ID+"/fork", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	var got forkResponse
+	decodeJSON(t, resp, &got)
+	if len(got.Sandboxes) != 1 {
+		t.Errorf("len = %d, want 1", len(got.Sandboxes))
+	}
+}
+
+func TestForkSnapshotRejectsBadCount(t *testing.T) {
+	ts, _ := newTestServer(t)
+	sbxID := createSandboxViaHTTP(t, ts)
+	snap := createSnapshotViaHTTP(t, ts, sbxID)
+
+	for _, q := range []string{"0", "-1", "not-a-number"} {
+		t.Run("count="+q, func(t *testing.T) {
+			resp, err := http.Post(ts.URL+"/snapshots/"+snap.ID+"/fork?count="+q, "application/json", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestForkSnapshotNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Post(ts.URL+"/snapshots/snap_0000000000000/fork?count=1", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
 }
 
