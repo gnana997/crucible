@@ -42,7 +42,6 @@ const (
 	snapshotStateName  = "state.file"
 	snapshotMemoryName = "memory.file"
 	snapshotRootfsName = "rootfs.ext4"
-	perForkMemoryName  = "memory.file"
 )
 
 // ErrSnapshotNotFound is returned by Manager.{Get,Delete}Snapshot when
@@ -796,14 +795,17 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	}
 
 	forkRootfs := filepath.Join(workdir, perSandboxRootfsName)
-	forkMem := filepath.Join(workdir, perForkMemoryName)
 
 	if err := fsutil.Clone(snap.RootfsPath, forkRootfs); err != nil {
 		return nil, fmt.Errorf("clone snapshot rootfs: %w", err)
 	}
-	if err := fsutil.Clone(snap.MemPath, forkMem); err != nil {
-		return nil, fmt.Errorf("clone snapshot memory: %w", err)
-	}
+	// Guest memory is deliberately NOT cloned. The fork restores with
+	// LazyMem: the runner's memfault handler serves pages on demand
+	// straight from the snapshot's memory file, shared read-only by
+	// every fork, and UFFDIO_COPY installs them into this fork's
+	// private memory — so writes diverge per fork with no up-front
+	// copy. This keeps fork cost O(guest working set) on any
+	// filesystem, reflink or not (docs/GAPS.md gap 1).
 
 	// Network for the fork, if the source had one. The
 	// provisioner gives us a fresh netns + subnet + MAC even
@@ -821,8 +823,9 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	restoreSpec := runner.RestoreSpec{
 		Workdir:    workdir,
 		StatePath:  snap.StatePath,
-		MemPath:    forkMem,
+		MemPath:    snap.MemPath,
 		RootfsPath: forkRootfs,
+		LazyMem:    true,
 	}
 	if netHandle != nil {
 		restoreSpec.NetNS = netHandle.NetnsPath

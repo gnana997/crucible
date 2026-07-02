@@ -187,10 +187,23 @@ type RestoreSpec struct {
 	// Typically shared read-only across all forks of the same snapshot.
 	StatePath string
 
-	// MemPath is the per-fork memory file. Callers should clone the
-	// snapshot's memory file into this path before calling Restore, so
-	// each fork has its own writable backing.
+	// MemPath is the memory file backing the restored guest. With
+	// LazyMem set it is the snapshot's memory file itself, opened
+	// read-only and safely shared by any number of concurrent forks.
+	// Without LazyMem (eager file-backed load), callers must clone
+	// the snapshot's memory file into a per-fork path first, so each
+	// fork has its own writable backing.
 	MemPath string
+
+	// LazyMem restores guest memory through Firecracker's userfaultfd
+	// backend instead of an eager file mapping: the runner starts a
+	// memfault handler that serves pages on demand from MemPath, and
+	// only pages the guest actually touches are ever read. UFFDIO_COPY
+	// installs pages into the restoring VM's private memory, so forks
+	// diverge on write with no per-fork copy of MemPath — fork cost
+	// stays O(guest working set) even on filesystems without reflink
+	// (ext4). See internal/memfault and docs/GAPS.md gap 1.
+	LazyMem bool
 
 	// RootfsPath is the per-fork writable rootfs file. Firecracker
 	// opens the path it saw at snapshot time, so the path here must

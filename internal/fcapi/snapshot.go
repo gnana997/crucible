@@ -36,8 +36,10 @@ func (c *Client) CreateSnapshot(ctx context.Context, cfg SnapshotCreate) error {
 }
 
 // MemBackendType enumerates how Firecracker reads the memory file on
-// load. v0.1 uses File (eager file-backed load); UffdHandler (lazy
-// userfaultfd-based loading) is a v0.3 optimization.
+// load. File is an eager file-backed load; UffdHandler restores lazily
+// through a userfaultfd served by internal/memfault (BackendPath is
+// then the handler's Unix socket, not the memory file). Forks use
+// UffdHandler so the snapshot memory is shared instead of copied.
 type MemBackendType string
 
 const (

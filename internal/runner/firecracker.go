@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -11,11 +12,13 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/fcapi"
+	"github.com/gnana997/crucible/internal/memfault"
 )
 
 const (
 	apiSocketName       = "api.sock"
 	vsockSocketName     = "vsock.sock"
+	uffdSocketName      = "uffd.sock"
 	logFileName         = "firecracker.log"
 	rootfsDriveID       = "rootfs"
 	defaultReadyTimeout = 5 * time.Second
@@ -120,6 +123,10 @@ func (f *Firecracker) Start(ctx context.Context, spec Spec) (Handle, error) {
 //     rootfs.
 //  6. PATCH /vm {state: Resumed} — fork is live.
 //
+// With spec.LazyMem, a memfault handler is started before load and
+// guest memory is served on demand from MemPath via userfaultfd
+// instead of being mapped eagerly.
+//
 // The guest agent continues running from where it was at snapshot time
 // (its listener socket state was in the VM memory dump). Its host-side
 // UDS path is now this fork's vsock.sock, but the agent doesn't know
@@ -164,6 +171,22 @@ func (f *Firecracker) Restore(ctx context.Context, spec RestoreSpec) (Handle, er
 
 	h := newHandle(cmd, fcapi.NewClient(sockPath), logFile, spec.Workdir, sockPath, vsockPath, log)
 
+	// The uffd handler must be listening before LoadSnapshot:
+	// firecracker connects to the socket during load to hand over
+	// its userfaultfd. The handle owns it from here (finalize).
+	if spec.LazyMem {
+		uffd, err := memfault.Serve(memfault.Config{
+			SocketPath: filepath.Join(spec.Workdir, uffdSocketName),
+			MemPath:    spec.MemPath,
+			Logger:     log,
+		})
+		if err != nil {
+			_ = h.Shutdown(context.Background())
+			return nil, fmt.Errorf("runner: start uffd handler: %w", err)
+		}
+		h.uffd = uffd
+	}
+
 	if err := f.configureAndLoad(ctx, h, spec); err != nil {
 		_ = h.Shutdown(context.Background())
 		return nil, err
@@ -188,13 +211,24 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 	// "boot-specific resource" configuration) before load: the only
 	// legal sequence is fresh process → load → post-load reconfigure
 	// → resume.
+	memBackend := fcapi.MemBackend{
+		BackendType: fcapi.MemBackendFile,
+		BackendPath: spec.MemPath,
+	}
+	if spec.LazyMem {
+		// Restore started a memfault handler on this socket before
+		// firecracker launched; during load firecracker connects and
+		// hands over the userfaultfd, and pages are then served from
+		// spec.MemPath on demand.
+		memBackend = fcapi.MemBackend{
+			BackendType: fcapi.MemBackendUffdHandler,
+			BackendPath: filepath.Join(spec.Workdir, uffdSocketName),
+		}
+	}
 	if err := h.client.LoadSnapshot(ctx, fcapi.SnapshotLoad{
 		SnapshotPath: spec.StatePath,
-		MemBackend: fcapi.MemBackend{
-			BackendType: fcapi.MemBackendFile,
-			BackendPath: spec.MemPath,
-		},
-		ResumeVM: false,
+		MemBackend:   memBackend,
+		ResumeVM:     false,
 	}); err != nil {
 		return fmt.Errorf("runner: load snapshot: %w", err)
 	}
@@ -350,6 +384,11 @@ type fcHandle struct {
 	done    chan struct{} // closed when cmd.Wait returns
 	waitErr error         // result of cmd.Wait; read only after done is closed
 
+	// uffd is the memfault handler serving lazy guest memory; nil for
+	// cold boots and eager restores. Set between newHandle and
+	// configureAndLoad, closed by finalize.
+	uffd io.Closer
+
 	finalizeOnce sync.Once
 }
 
@@ -448,10 +487,15 @@ func (h *fcHandle) Shutdown(ctx context.Context) error {
 	}
 }
 
-// finalize closes the log file and removes the api + vsock sockets.
-// Idempotent.
+// finalize closes the log file, stops the uffd handler (if any), and
+// removes the api + vsock sockets. Idempotent. Runs only after the
+// firecracker process has exited, so the handler's serve loop is
+// already drained (no guest is left waiting on a fault).
 func (h *fcHandle) finalize() {
 	h.finalizeOnce.Do(func() {
+		if h.uffd != nil {
+			_ = h.uffd.Close()
+		}
 		_ = h.logFile.Close()
 		_ = os.Remove(h.sockPath)
 		_ = os.Remove(h.vsockPath)

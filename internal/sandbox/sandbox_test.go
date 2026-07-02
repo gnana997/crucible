@@ -399,7 +399,9 @@ func TestManagerSnapshotAndFork(t *testing.T) {
 		t.Fatalf("len(forks) = %d, want 3", len(forks))
 	}
 
-	// Each fork should have its own workdir + its own memory and rootfs files.
+	// Each fork should have its own workdir + its own rootfs clone.
+	// Guest memory is NOT cloned per fork: the restore spec must point
+	// at the snapshot's memory file and request the lazy uffd path.
 	for _, f := range forks {
 		if !strings.HasPrefix(f.ID, "sbx_") {
 			t.Errorf("fork id %q: missing sbx_ prefix", f.ID)
@@ -408,16 +410,26 @@ func TestManagerSnapshotAndFork(t *testing.T) {
 			t.Errorf("fork sizing = %d/%d, want %d/%d from snapshot",
 				f.VCPUs, f.MemoryMiB, snap.VCPUs, snap.MemoryMiB)
 		}
-		for _, name := range []string{perSandboxRootfsName, perForkMemoryName} {
-			if _, err := os.Stat(filepath.Join(f.Workdir, name)); err != nil {
-				t.Errorf("fork %s missing %s: %v", f.ID, name, err)
-			}
+		if _, err := os.Stat(filepath.Join(f.Workdir, perSandboxRootfsName)); err != nil {
+			t.Errorf("fork %s missing %s: %v", f.ID, perSandboxRootfsName, err)
+		}
+		if _, err := os.Stat(filepath.Join(f.Workdir, snapshotMemoryName)); err == nil {
+			t.Errorf("fork %s has a per-fork memory clone; memory must be shared lazily", f.ID)
 		}
 	}
 
-	// The runner should have seen three Restore calls.
+	// The runner should have seen three Restore calls, all sharing the
+	// snapshot memory file read-only via the lazy path.
 	if len(r.restoreCalls) != 3 {
 		t.Errorf("runner.Restore called %d times, want 3", len(r.restoreCalls))
+	}
+	for _, spec := range r.restoreCalls {
+		if !spec.LazyMem {
+			t.Errorf("Restore spec LazyMem = false, want true")
+		}
+		if spec.MemPath != snap.MemPath {
+			t.Errorf("Restore spec MemPath = %q, want shared snapshot mem %q", spec.MemPath, snap.MemPath)
+		}
 	}
 }
 

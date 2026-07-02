@@ -14,6 +14,7 @@ import (
 	"github.com/gnana997/crucible/internal/fcapi"
 	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/jailer"
+	"github.com/gnana997/crucible/internal/memfault"
 )
 
 // Chroot-relative paths we stage every VM's files at. These are the
@@ -30,6 +31,15 @@ const (
 	chrootVsockPath  = "/v.sock"
 	chrootStatePath  = "/snap.state"
 	chrootMemPath    = "/snap.mem"
+
+	// chrootUffdSocketPath is where lazy (LazyMem) restores place the
+	// memfault handler's socket. The daemon binds it at the host path
+	// (jailer.HostPath) before jailer launches; firecracker — inside
+	// its pivot_root, as the jail uid — connects to this path during
+	// LoadSnapshot. The snapshot memory file itself is NOT staged into
+	// the chroot for lazy restores: only the daemon-side handler reads
+	// it, so the guest's memory source stays outside the jail.
+	chrootUffdSocketPath = "/uffd.sock"
 
 	// chrootAPISocketPath is where firecracker (inside its chroot)
 	// creates its API socket. Jailer doesn't enforce this; it's just
@@ -207,16 +217,39 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		return nil, err
 	}
 
-	if err := jailer.Stage(jSpec, map[string]string{
+	stage := map[string]string{
 		chrootStatePath:  spec.StatePath,
-		chrootMemPath:    spec.MemPath,
 		chrootRootfsPath: spec.RootfsPath,
-	}); err != nil {
+	}
+	if !spec.LazyMem {
+		stage[chrootMemPath] = spec.MemPath
+	}
+	if err := jailer.Stage(jSpec, stage); err != nil {
 		return nil, fmt.Errorf("runner: stage snapshot files for jailer: %w", err)
+	}
+
+	// The uffd handler must be listening before LoadSnapshot connects
+	// to it; binding before launch also guarantees the socket inode
+	// exists in the chroot before firecracker pivots into it.
+	var uffd *memfault.Handler
+	if spec.LazyMem {
+		var err error
+		uffd, err = memfault.Serve(memfault.Config{
+			SocketPath: jailer.HostPath(jSpec, chrootUffdSocketPath),
+			MemPath:    spec.MemPath,
+			Logger:     j.logger(),
+		})
+		if err != nil {
+			_ = jailer.Cleanup(jSpec)
+			return nil, fmt.Errorf("runner: start uffd handler: %w", err)
+		}
 	}
 
 	cmd, logFile, err := j.launch(jSpec, spec.Workdir)
 	if err != nil {
+		if uffd != nil {
+			_ = uffd.Close()
+		}
 		_ = jailer.Cleanup(jSpec)
 		return nil, err
 	}
@@ -234,9 +267,10 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 	log.Info("jailer process started")
 
 	fch := newHandle(cmd, fcapi.NewClient(sockPath), logFile, spec.Workdir, sockPath, vsockHostPath, log)
+	fch.uffd = uffd // nil unless LazyMem; closed by finalize
 	h := &jailerHandle{fcHandle: fch, jailerSpec: jSpec}
 
-	if err := j.configureAndLoad(ctx, h.fcHandle); err != nil {
+	if err := j.configureAndLoad(ctx, h.fcHandle, spec); err != nil {
 		_ = h.Shutdown(context.Background())
 		return nil, err
 	}
@@ -397,7 +431,7 @@ func (j *JailerRunner) configureAndBoot(ctx context.Context, h *fcHandle, spec S
 // the vsock UDS collision that originally motivated adopting
 // jailer — a fix is coming upstream (vsock_override on
 // SnapshotLoadParams, PR #5323) but not in v1.15.
-func (j *JailerRunner) configureAndLoad(ctx context.Context, h *fcHandle) error {
+func (j *JailerRunner) configureAndLoad(ctx context.Context, h *fcHandle, spec RestoreSpec) error {
 	readyTimeout := j.ReadyTimeout
 	if readyTimeout == 0 {
 		readyTimeout = defaultReadyTimeout
@@ -408,13 +442,23 @@ func (j *JailerRunner) configureAndLoad(ctx context.Context, h *fcHandle) error 
 		return fmt.Errorf("runner: wait for API ready: %w", err)
 	}
 
+	memBackend := fcapi.MemBackend{
+		BackendType: fcapi.MemBackendFile,
+		BackendPath: chrootMemPath,
+	}
+	if spec.LazyMem {
+		// Restore bound the memfault handler at this chroot path
+		// before launch; firecracker connects during load and hands
+		// over its userfaultfd.
+		memBackend = fcapi.MemBackend{
+			BackendType: fcapi.MemBackendUffdHandler,
+			BackendPath: chrootUffdSocketPath,
+		}
+	}
 	if err := h.client.LoadSnapshot(ctx, fcapi.SnapshotLoad{
 		SnapshotPath: chrootStatePath,
-		MemBackend: fcapi.MemBackend{
-			BackendType: fcapi.MemBackendFile,
-			BackendPath: chrootMemPath,
-		},
-		ResumeVM: false,
+		MemBackend:   memBackend,
+		ResumeVM:     false,
 	}); err != nil {
 		return fmt.Errorf("runner: load snapshot: %w", err)
 	}
