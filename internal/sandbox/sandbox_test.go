@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +123,14 @@ type stubRunner struct {
 	startErr     error
 	restoreErr   error
 	handles      []*stubHandle
+
+	// Concurrency probe for the fork fan-out cap. When restoreDelay > 0,
+	// each Restore holds for that long (outside the mutex) while tracking
+	// the peak number of simultaneous callers, so a test can assert Fork
+	// never runs more forks at once than its concurrency limit.
+	restoreDelay time.Duration
+	inFlight     int32
+	maxInFlight  int32
 }
 
 func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, error) {
@@ -140,6 +149,17 @@ func (r *stubRunner) Start(_ context.Context, spec runner.Spec) (runner.Handle, 
 }
 
 func (r *stubRunner) Restore(_ context.Context, spec runner.RestoreSpec) (runner.Handle, error) {
+	if r.restoreDelay > 0 {
+		cur := atomic.AddInt32(&r.inFlight, 1)
+		for {
+			peak := atomic.LoadInt32(&r.maxInFlight)
+			if cur <= peak || atomic.CompareAndSwapInt32(&r.maxInFlight, peak, cur) {
+				break
+			}
+		}
+		time.Sleep(r.restoreDelay)
+		atomic.AddInt32(&r.inFlight, -1)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.restoreCalls = append(r.restoreCalls, spec)
@@ -519,6 +539,43 @@ func TestManagerForkRollbackOnFailure(t *testing.T) {
 			ids[i] = s.ID
 		}
 		t.Errorf("sandboxes after failed Fork: %v, want only %s", ids, source.ID)
+	}
+}
+
+func TestManagerForkBoundsConcurrency(t *testing.T) {
+	// With ForkConcurrency=2, a fork batch larger than the cap must never
+	// run more than 2 forkOne calls at once. The stub runner records the
+	// peak number of simultaneous Restore calls (widened by restoreDelay).
+	m, r := newTestManager(t)
+	m.cfg.ForkConcurrency = 2
+	r.restoreDelay = 40 * time.Millisecond
+
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const count = 8
+	forks, err := m.Fork(context.Background(), snap.ID, count)
+	if err != nil {
+		t.Fatalf("Fork: %v", err)
+	}
+	if len(forks) != count {
+		t.Fatalf("len(forks) = %d, want %d", len(forks), count)
+	}
+
+	peak := atomic.LoadInt32(&r.maxInFlight)
+	if peak > int32(m.cfg.ForkConcurrency) {
+		t.Errorf("peak concurrent forks = %d, exceeds cap %d", peak, m.cfg.ForkConcurrency)
+	}
+	// Also confirm forks genuinely ran in parallel (guards against a
+	// regression that serialized the fan-out to 1).
+	if peak < 2 {
+		t.Errorf("peak concurrent forks = %d, want the cap (2) to be reached", peak)
 	}
 }
 

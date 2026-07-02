@@ -22,6 +22,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -178,6 +179,14 @@ type ManagerConfig struct {
 	// it; when the field itself is nil here, any request with
 	// Network set is rejected at Create time.
 	Network NetworkProvisioner
+
+	// ForkConcurrency caps how many forks Fork boots simultaneously.
+	// Each concurrent fork copies a multi-GB rootfs and boots a VM, so
+	// an unbounded fan-out on a large count would thrash host I/O and
+	// risk an OOM. Zero means DefaultForkConcurrency (runtime.NumCPU()).
+	// Fork never spends more than `count` workers regardless of this
+	// value.
+	ForkConcurrency int
 }
 
 // NetworkProvisioner is the narrow slice of internal/network.Manager
@@ -704,14 +713,28 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, id string) error {
 	return nil
 }
 
+// defaultForkConcurrency is the fork fan-out cap used when
+// ManagerConfig.ForkConcurrency is left at 0. NumCPU is a reasonable
+// proxy for how much parallel rootfs-copy + VM-boot work a host can
+// absorb without thrashing.
+func defaultForkConcurrency() int {
+	if n := runtime.NumCPU(); n > 0 {
+		return n
+	}
+	return 1
+}
+
 // Fork creates `count` new sandboxes from a snapshot. Each fork gets
 // its own workdir, per-fork memory file (cloned from the snapshot's),
 // and per-fork rootfs (cloned from the snapshot's frozen rootfs).
 //
-// Forks run in parallel. The dominant per-fork cost on a filesystem
-// without reflink support is byte-copying the memory file (~0.5 GB)
-// and rootfs (~1 GB), which is I/O-bound and parallelizes well; the
-// non-I/O portions (jailer staging, LoadSnapshot, vCPU restore) are
+// Forks run in parallel, but the fan-out is bounded to at most
+// ForkConcurrency workers (default runtime.NumCPU()) so a large count
+// can't launch hundreds of simultaneous rootfs copies and VM boots and
+// OOM the host. The dominant per-fork cost on a filesystem without
+// reflink support is byte-copying the memory file (~0.5 GB) and rootfs
+// (~1 GB), which is I/O-bound and parallelizes well; the non-I/O
+// portions (jailer staging, LoadSnapshot, vCPU restore) are
 // independent. On a test host we measured ~2.1s/fork serially vs
 // ~1.0s/fork in parallel (count=3).
 //
@@ -733,12 +756,25 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sa
 		err error
 	}
 
+	// Bound the fan-out: a buffered channel of `limit` tokens caps how
+	// many forkOne calls (each a rootfs copy + VM boot) run at once.
+	limit := m.cfg.ForkConcurrency
+	if limit <= 0 {
+		limit = defaultForkConcurrency()
+	}
+	if limit > count {
+		limit = count
+	}
+	sem := make(chan struct{}, limit)
+
 	results := make([]forkResult, count)
 	var wg sync.WaitGroup
 	wg.Add(count)
 	for i := 0; i < count; i++ {
 		go func(idx int) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 			sb, err := m.forkOne(ctx, snap)
 			results[idx] = forkResult{sb: sb, err: err}
 		}(i)
