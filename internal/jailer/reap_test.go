@@ -51,6 +51,19 @@ func TestReapOrphansRemovesStaleChroots(t *testing.T) {
 	}
 }
 
+func TestKillJailedNoMatchIsNoop(t *testing.T) {
+	// No process carries this (unique, nonexistent) jailer ID, so
+	// killJailed must signal nothing — the safety property the graceful
+	// teardown path and the reap of already-dead chroots both rely on.
+	id := "sbx-no-such-vm-zzzq9x7k3rf22"
+	if n := killJailed(id); n != 0 {
+		t.Fatalf("killJailed with no matching id signalled %d processes, want 0", n)
+	}
+	if pids := jailedPIDs(id); len(pids) != 0 {
+		t.Fatalf("jailedPIDs with no matching id = %v, want none", pids)
+	}
+}
+
 func TestReapOrphansNoDirIsNotError(t *testing.T) {
 	// First-ever daemon startup: ChrootBase exists but has never had a
 	// jailer subdirectory under it.

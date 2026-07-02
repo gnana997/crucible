@@ -1,10 +1,14 @@
 package jailer
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
 )
 
 // Cleanup tears down the chroot and cgroup owned by this Spec.
@@ -49,6 +53,72 @@ func Cleanup(spec Spec) error {
 	return firstErr
 }
 
+// reapKillTimeout bounds how long killJailed waits for a SIGKILL'd VMM
+// to actually exit (releasing its chroot bind mounts) before Cleanup
+// removes the tree.
+const reapKillTimeout = 2 * time.Second
+
+// jailedPIDs returns the host PIDs of the jailer + firecracker processes
+// belonging to the VM with the given jailer ID.
+//
+// We match on /proc/<pid>/cmdline, not /proc/<pid>/root: jailer
+// pivot_root's firecracker into a PRIVATE mount namespace, so from the
+// host the process's root is unreachable and /proc/<pid>/root does not
+// resolve to <ChrootBase>/firecracker/<ID>/root. cmdline, by contrast,
+// is plain host-readable bytes unaffected by the mount/pid namespace,
+// and jailer injects "--id <ID>" into both its own argv and
+// firecracker's — so the unique ID token identifies exactly this VM's
+// processes and nothing else.
+func jailedPIDs(id string) []int {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	idTok := []byte(id)
+	var pids []int
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue // not a PID entry
+		}
+		raw, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue // process exited, or unreadable — skip
+		}
+		for _, tok := range bytes.Split(raw, []byte{0}) {
+			if bytes.Equal(tok, idTok) {
+				pids = append(pids, pid)
+				break
+			}
+		}
+	}
+	return pids
+}
+
+// killJailed SIGKILLs the jailer + firecracker processes for the VM with
+// the given jailer ID and waits, bounded, for them to exit so the
+// chroot's bind mounts are released before the caller removes the tree.
+// Returns the number of processes signalled. A no-op (returns 0) when no
+// process carries the ID — the common case, since a cleanly-shut-down VM
+// has already exited.
+func killJailed(id string) int {
+	pids := jailedPIDs(id)
+	if len(pids) == 0 {
+		return 0
+	}
+	for _, pid := range pids {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+	deadline := time.Now().Add(reapKillTimeout)
+	for time.Now().Before(deadline) {
+		if len(jailedPIDs(id)) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return len(pids)
+}
+
 // ReapOrphans removes every per-VM chroot + matching cgroup under
 // the given ChrootBase that was left behind by a previous daemon
 // invocation.
@@ -84,6 +154,13 @@ func ReapOrphans(chrootBase, execFile string) ([]string, error) {
 			continue
 		}
 		spec := Spec{ID: e.Name(), ExecFile: execFile, ChrootBase: chrootBase}
+		// A VM whose daemon was killed without clean shutdown keeps
+		// running (reparented to init) — the chroot directory alone is
+		// not enough to identify it as dead. Kill the jailer +
+		// firecracker carrying this VM's ID before removing the tree,
+		// so a restart leaves no orphaned VM process behind. e.Name()
+		// is the jailer ID (the chroot subdir name).
+		killJailed(e.Name())
 		if err := Cleanup(spec); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("jailer: reap %s: %w", e.Name(), err)
 			continue

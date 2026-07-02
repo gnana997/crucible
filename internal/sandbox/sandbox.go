@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -187,6 +188,20 @@ type ManagerConfig struct {
 	// Fork never spends more than `count` workers regardless of this
 	// value.
 	ForkConcurrency int
+
+	// StatePath is the file backing the durable sandbox/snapshot
+	// registry journal (docs/GAPS.md gap 3). When non-empty, the
+	// Manager records every create/delete/snapshot there so a restart
+	// can reconcile (see Manager.Reconcile). Empty disables persistence
+	// — the registries live only in memory, as in unit tests.
+	StatePath string
+
+	// ReloadAllowlist rebuilds a network allowlist from its persisted
+	// patterns when Reconcile re-adopts a snapshot that carried network
+	// intent. In production the daemon wires this to network.New; when
+	// nil, re-adopted snapshots lose their network policy (networked
+	// forks from them would need it re-specified). Optional.
+	ReloadAllowlist func(patterns []string) (NetworkAllowlist, error)
 }
 
 // NetworkProvisioner is the narrow slice of internal/network.Manager
@@ -272,10 +287,21 @@ type Manager struct {
 	mu        sync.RWMutex
 	sandboxes map[string]*Sandbox
 	snapshots map[string]*Snapshot
+
+	// store is the durable registry journal; nil when StatePath is
+	// unset (persistence disabled). loadedSandboxes/loadedSnapshots
+	// hold the records replayed at construction, consumed once by
+	// Reconcile and then cleared.
+	store           *store
+	loadedSandboxes []sandboxRecord
+	loadedSnapshots []snapshotRecord
 }
 
-// NewManager constructs a Manager. It does not touch the filesystem or
-// start any goroutines; those happen lazily on Create.
+// NewManager constructs a Manager. It starts no goroutines. It touches
+// the filesystem only when cfg.StatePath is set: it opens (creating if
+// needed) and replays the durable registry journal so a subsequent
+// Reconcile call can adopt/reap the previous run's state. The parent of
+// StatePath must already exist.
 func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if cfg.Runner == nil {
 		return nil, errors.New("sandbox: ManagerConfig.Runner is required")
@@ -289,11 +315,37 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if cfg.Rootfs == "" {
 		return nil, errors.New("sandbox: ManagerConfig.Rootfs is required")
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:       cfg,
 		sandboxes: make(map[string]*Sandbox),
 		snapshots: make(map[string]*Snapshot),
-	}, nil
+	}
+	if cfg.StatePath != "" {
+		st, sbx, snaps, err := openStore(cfg.StatePath)
+		if err != nil {
+			return nil, err
+		}
+		m.store = st
+		m.loadedSandboxes = sbx
+		m.loadedSnapshots = snaps
+	}
+	return m, nil
+}
+
+// registerSandbox records a freshly-built sandbox in the in-memory map
+// and, when persistence is enabled, appends its record to the durable
+// journal. A journal write failure is logged but not fatal: the sandbox
+// is live and usable; the worst case is that a crash before the next
+// compaction leaves the sandbox unreaped, exactly the pre-gap-3 behavior.
+func (m *Manager) registerSandbox(s *Sandbox) {
+	m.mu.Lock()
+	m.sandboxes[s.ID] = s
+	m.mu.Unlock()
+	if m.store != nil {
+		if err := m.store.putSandbox(sandboxRecordOf(s)); err != nil {
+			slog.Default().Warn("persist sandbox record failed", "component", "sandbox", "id", s.ID, "err", err)
+		}
+	}
 }
 
 // Create allocates a new sandbox, boots its VM, and stores the record.
@@ -394,9 +446,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		}
 	}
 
-	m.mu.Lock()
-	m.sandboxes[id] = s
-	m.mu.Unlock()
+	m.registerSandbox(s)
 
 	if req.TimeoutSec > 0 {
 		m.startLifetimeTimer(s, req.TimeoutSec)
@@ -564,6 +614,9 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	for _, s := range m.List() {
 		_ = m.Delete(ctx, s.ID)
 	}
+	if m.store != nil {
+		_ = m.store.close()
+	}
 }
 
 // Snapshot captures a frozen reference point from the given sandbox
@@ -667,6 +720,12 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	m.snapshots[snapID] = snap
 	m.mu.Unlock()
 
+	if m.store != nil {
+		if err := m.store.putSnapshot(snapshotRecordOf(snap)); err != nil {
+			slog.Default().Warn("persist snapshot record failed", "component", "sandbox", "id", snapID, "err", err)
+		}
+	}
+
 	success = true
 	return snap, nil
 }
@@ -705,6 +764,12 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, id string) error {
 	}
 	delete(m.snapshots, id)
 	m.mu.Unlock()
+
+	if m.store != nil {
+		if err := m.store.delSnapshot(id); err != nil {
+			slog.Default().Warn("persist snapshot deletion failed", "component", "sandbox", "id", id, "err", err)
+		}
+	}
 
 	_ = ctx // reserved for future cancellation bounds on large deletes
 	if err := os.RemoveAll(snap.Dir); err != nil {
@@ -916,9 +981,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		cancel()
 	}
 
-	m.mu.Lock()
-	m.sandboxes[id] = s
-	m.mu.Unlock()
+	m.registerSandbox(s)
 
 	success = true
 	return s, nil
@@ -946,6 +1009,14 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 	delete(m.sandboxes, id)
 	m.mu.Unlock()
+
+	// Durably drop the record so a crash after this point doesn't leave
+	// the (now torn-down) sandbox to be reaped again on restart.
+	if m.store != nil {
+		if err := m.store.delSandbox(id); err != nil {
+			slog.Default().Warn("persist sandbox deletion failed", "component", "sandbox", "id", id, "err", err)
+		}
+	}
 
 	// Signal any lifetime-timer goroutine to exit before we block on
 	// shutdown. Safe to call more than once; doneOnce guards the close.

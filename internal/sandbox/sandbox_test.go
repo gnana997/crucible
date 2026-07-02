@@ -652,3 +652,238 @@ func TestManagerConcurrentCreateDelete(t *testing.T) {
 		t.Errorf("after parallel create/delete, %d sandboxes remain", n)
 	}
 }
+
+// --- restart / reconcile tests ----------------------------------------
+
+// newPersistentManager builds a Manager backed by a stubRunner whose
+// registry journal + workdirs live under a caller-shared workBase, so two
+// successive managers can simulate a daemon restart over the same state.
+func newPersistentManager(t *testing.T, workBase, statePath, template string) *Manager {
+	t.Helper()
+	m, err := NewManager(ManagerConfig{
+		Runner:    &stubRunner{},
+		WorkBase:  workBase,
+		Kernel:    "/fake/vmlinux",
+		Rootfs:    template,
+		StatePath: statePath,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	return m
+}
+
+func TestManagerReconcileAfterRestart(t *testing.T) {
+	workBase := t.TempDir()
+	tmplDir := t.TempDir()
+	template := filepath.Join(tmplDir, "rootfs.ext4")
+	if err := os.WriteFile(template, []byte("fake-template-bytes"), 0o640); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	statePath := filepath.Join(workBase, "registry.jsonl")
+
+	// --- first daemon incarnation: two sandboxes + a snapshot ---------
+	m1 := newPersistentManager(t, workBase, statePath, template)
+	s1, err := m1.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create s1: %v", err)
+	}
+	s2, err := m1.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create s2: %v", err)
+	}
+	snap, err := m1.Snapshot(context.Background(), s1.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	// Everything is on disk.
+	for _, d := range []string{s1.Workdir, s2.Workdir, snap.Dir} {
+		if _, err := os.Stat(d); err != nil {
+			t.Fatalf("expected %s on disk: %v", d, err)
+		}
+	}
+
+	// Simulate a crash: no Shutdown/Delete. The records + dirs persist.
+	// A real crash closes the fd for us; emulate that so the second
+	// manager can reopen the journal for append.
+	if err := m1.store.close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// --- second incarnation: reconcile --------------------------------
+	m2 := newPersistentManager(t, workBase, statePath, template)
+	if err := m2.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// Orphaned sandboxes are reaped: gone from the registry AND disk.
+	for _, s := range []*Sandbox{s1, s2} {
+		if _, err := m2.Get(s.ID); !errors.Is(err, ErrNotFound) {
+			t.Errorf("sandbox %s still registered after reconcile: err=%v", s.ID, err)
+		}
+		if _, err := os.Stat(s.Workdir); !os.IsNotExist(err) {
+			t.Errorf("sandbox workdir %s not reaped: err=%v", s.Workdir, err)
+		}
+	}
+
+	// The snapshot is re-adopted: registered, files intact, forkable.
+	got, err := m2.GetSnapshot(snap.ID)
+	if err != nil {
+		t.Fatalf("snapshot not re-adopted: %v", err)
+	}
+	if got.RootfsPath != snap.RootfsPath || got.SourceID != snap.SourceID {
+		t.Errorf("re-adopted snapshot fields drifted: got %+v want rootfs=%s source=%s", got, snap.RootfsPath, snap.SourceID)
+	}
+	if _, err := os.Stat(snap.Dir); err != nil {
+		t.Errorf("snapshot dir removed by reconcile: %v", err)
+	}
+	forks, err := m2.Fork(context.Background(), snap.ID, 2)
+	if err != nil {
+		t.Fatalf("Fork from re-adopted snapshot: %v", err)
+	}
+	if len(forks) != 2 {
+		t.Errorf("len(forks) = %d, want 2", len(forks))
+	}
+
+	// The journal was compacted down to the single surviving snapshot:
+	// replaying it yields no sandboxes and one snapshot record. (The
+	// forks above were created post-reconcile and re-appended, so read
+	// the journal state that existed right after compaction by checking
+	// the reaped sandboxes are absent.)
+	sbxRecs, snapRecs, err := replayJournal(statePath)
+	if err != nil {
+		t.Fatalf("replay journal: %v", err)
+	}
+	for _, r := range sbxRecs {
+		if r.ID == s1.ID || r.ID == s2.ID {
+			t.Errorf("reaped sandbox %s still in journal after compaction", r.ID)
+		}
+	}
+	var foundSnap bool
+	for _, r := range snapRecs {
+		if r.ID == snap.ID {
+			foundSnap = true
+		}
+	}
+	if !foundSnap {
+		t.Errorf("adopted snapshot %s missing from compacted journal", snap.ID)
+	}
+
+	m2.Shutdown(context.Background())
+}
+
+func TestManagerReconcileSweepsUnjournaledOrphan(t *testing.T) {
+	workBase := t.TempDir()
+	tmplDir := t.TempDir()
+	template := filepath.Join(tmplDir, "rootfs.ext4")
+	if err := os.WriteFile(template, []byte("fake-template-bytes"), 0o640); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	statePath := filepath.Join(workBase, "registry.jsonl")
+
+	// Simulate a crash mid-Create: a workdir tree exists on disk with no
+	// journal record (the daemon died before the put was appended).
+	orphan := filepath.Join(workBase, "sbx_orphan0000001")
+	if err := os.MkdirAll(filepath.Join(orphan, "sub"), 0o750); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+
+	m := newPersistentManager(t, workBase, statePath, template)
+	if err := m.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("un-journaled orphan dir not swept: err=%v", err)
+	}
+	// The journal itself must survive the sweep.
+	if _, err := os.Stat(statePath); err != nil {
+		t.Errorf("registry journal removed by sweep: %v", err)
+	}
+	m.Shutdown(context.Background())
+}
+
+func TestStoreToleratesTornFinalLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registry.jsonl")
+	// One valid snapshot put, then a torn (truncated, newline-less) line
+	// as a crash mid-append would leave.
+	good := `{"op":"put","kind":"snapshot","id":"snap_aaaaaaaaaaaaa","snapshot":{"id":"snap_aaaaaaaaaaaaa","dir":"/x"}}` + "\n"
+	torn := `{"op":"put","kind":"sandbox","id":"sbx_bbb`
+	if err := os.WriteFile(path, []byte(good+torn), 0o640); err != nil {
+		t.Fatalf("seed journal: %v", err)
+	}
+
+	st, sbx, snaps, err := openStore(path)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	if len(sbx) != 0 {
+		t.Errorf("torn sandbox line should be skipped, got %d sandbox records", len(sbx))
+	}
+	if len(snaps) != 1 || snaps[0].ID != "snap_aaaaaaaaaaaaa" {
+		t.Errorf("good snapshot lost on torn-line replay: %v", snaps)
+	}
+
+	// A new append must not concatenate onto the torn bytes.
+	if err := st.putSnapshot(snapshotRecord{ID: "snap_ccccccccccccc", Dir: "/y"}); err != nil {
+		t.Fatalf("putSnapshot: %v", err)
+	}
+	if err := st.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	_, snaps2, err := replayJournal(path)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, s := range snaps2 {
+		got[s.ID] = true
+	}
+	if !got["snap_aaaaaaaaaaaaa"] || !got["snap_ccccccccccccc"] {
+		t.Errorf("expected both snapshots after torn-line recovery, got %v", snaps2)
+	}
+}
+
+func TestManagerReconcileDropsSnapshotWithMissingFiles(t *testing.T) {
+	workBase := t.TempDir()
+	tmplDir := t.TempDir()
+	template := filepath.Join(tmplDir, "rootfs.ext4")
+	if err := os.WriteFile(template, []byte("fake-template-bytes"), 0o640); err != nil {
+		t.Fatalf("write template: %v", err)
+	}
+	statePath := filepath.Join(workBase, "registry.jsonl")
+
+	m1 := newPersistentManager(t, workBase, statePath, template)
+	src, err := m1.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	snap, err := m1.Snapshot(context.Background(), src.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := m1.store.close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Corrupt the durable state: the snapshot's files vanished (disk
+	// wiped, manual rm, etc.) while its record survived in the journal.
+	if err := os.RemoveAll(snap.Dir); err != nil {
+		t.Fatalf("remove snapshot dir: %v", err)
+	}
+
+	m2 := newPersistentManager(t, workBase, statePath, template)
+	if err := m2.Reconcile(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The dangling snapshot must be dropped, not re-adopted.
+	if _, err := m2.GetSnapshot(snap.ID); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Errorf("dangling snapshot re-adopted: err=%v, want ErrSnapshotNotFound", err)
+	}
+	if n := len(m2.ListSnapshots()); n != 0 {
+		t.Errorf("ListSnapshots = %d, want 0 after dropping dangling snapshot", n)
+	}
+}

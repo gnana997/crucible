@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -235,6 +236,13 @@ Required flags:
 		Rootfs:            *rootfs,
 		WaitForAgent:      !*noWaitAgent,
 		AgentReadyTimeout: agentReady,
+		// Durable local authority (gap 3): journal registry changes to a
+		// file under the work base so a restart can reconcile. Rebuild
+		// snapshot allowlists from persisted patterns via network.New.
+		StatePath: filepath.Join(*workBase, "registry.jsonl"),
+		ReloadAllowlist: func(patterns []string) (sandbox.NetworkAllowlist, error) {
+			return network.New(patterns)
+		},
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
@@ -242,6 +250,15 @@ Required flags:
 	mgr, err := sandbox.NewManager(mgrCfg)
 	if err != nil {
 		logger.Error("manager init failed", "err", err)
+		return 1
+	}
+
+	// Reconcile against the previous run's journal: re-adopt snapshots
+	// whose files survived and reap orphaned sandbox workdirs. Runs after
+	// the jailer + network orphan-reaps above, which already killed any
+	// leftover VMs, netns, and nft state.
+	if err := mgr.Reconcile(context.Background()); err != nil {
+		logger.Error("registry reconcile failed", "err", err)
 		return 1
 	}
 
