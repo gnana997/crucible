@@ -95,6 +95,21 @@ func jailedPIDs(id string) []int {
 	return pids
 }
 
+// pidCmdlineMatchesID re-reads /proc/<pid>/cmdline and reports whether it
+// still carries the "--id <id>" token. Used to re-confirm a pid the instant
+// before signalling it: between the jailedPIDs scan and the SIGKILL the pid
+// could have exited and been recycled by an unrelated process (pid
+// wraparound), and a recycled pid won't carry our token — so this keeps the
+// reap from ever signalling a stranger. A false from a since-exited pid is
+// correct too: nothing left to kill.
+func pidCmdlineMatchesID(pid int, id string) bool {
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false
+	}
+	return cmdlineMatchesID(raw, id)
+}
+
 // cmdlineMatchesID reports whether raw — a NUL-separated
 // /proc/<pid>/cmdline — carries the jailer "--id <id>" argument pair.
 // Requiring id to directly follow a "--id" token (rather than matching
@@ -142,7 +157,12 @@ func killJailed(id string) bool {
 		return true
 	}
 	for _, pid := range pids {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		// Re-confirm the pid still carries our --id token immediately before
+		// signalling: the jailedPIDs scan above races pid reuse, and a
+		// recycled pid must not be SIGKILLed as if it were our VMM.
+		if pidCmdlineMatchesID(pid, id) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 	}
 	deadline := time.Now().Add(reapKillTimeout)
 	for {

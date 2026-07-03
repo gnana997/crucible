@@ -246,7 +246,7 @@ func Teardown(ctx context.Context, spec VethSpec) error {
 	}
 	// `ip link delete` on a missing link exits with "Cannot find
 	// device". We swallow that to stay idempotent.
-	if isCannotFindDevice(err) {
+	if isCannotFindDevice(ctx, err) {
 		return nil
 	}
 	return err
@@ -255,11 +255,12 @@ func Teardown(ctx context.Context, spec VethSpec) error {
 // isCannotFindDevice inspects an error returned from runCmd to
 // decide whether it represents "already gone" — the only failure
 // mode Teardown wants to treat as success.
-func isCannotFindDevice(err error) bool {
-	// Require that `ip` actually ran and exited non-zero before trusting
-	// its stderr text — a context cancellation or missing binary must not
-	// be misread as "already gone", which would leave a live veth behind.
-	return ranAndExitedNonZero(err) &&
+func isCannotFindDevice(ctx context.Context, err error) bool {
+	// Require that `ip` actually ran and exited non-zero (with the ctx not
+	// cancelled) before trusting its stderr text — a context timeout,
+	// cancellation, or missing binary must not be misread as "already gone",
+	// which would leave a live veth behind.
+	return ranAndExitedNonZero(ctx, err) &&
 		containsAny(err.Error(),
 			"Cannot find device",
 			"does not exist",

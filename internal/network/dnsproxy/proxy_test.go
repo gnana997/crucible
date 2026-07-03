@@ -253,6 +253,38 @@ func (r *allowIPRecorder) snapshot() []allowIPCall {
 
 // --- tests ------------------------------------------------------
 
+// TestStartReturnsReadyProxyImmediately pins the readiness guarantee that made
+// the former Manager.WaitForDNSProxyReady redundant (L11): Start returns only
+// after the UDP listener is bound and the server's NotifyStartedFunc has fired,
+// so a query sent the instant Start returns — no wait, no retry — is answered.
+func TestStartReturnsReadyProxyImmediately(t *testing.T) {
+	upstream, _ := startStubUpstream(t, 60, "93.184.216.34")
+
+	listener, err := net.ListenPacket("udp", proxyIP+":0")
+	if err != nil {
+		t.Fatalf("pre-bind: %v", err)
+	}
+	proxyAddr := listener.LocalAddr().String()
+	_ = listener.Close()
+
+	p, err := Start(Config{ListenAddr: proxyAddr, Upstream: upstream, AllowIP: func(context.Context, string, []AllowedIP) error { return nil }})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop() })
+	// No sleep/poll between Start and Register+query: if Start returned before
+	// the listener was live, this Exchange would time out.
+	p.Register(mustAddr(t, guestIP), &Policy{SandboxID: "sbx-test", Allowlist: newStubMatcher("example.com")})
+
+	resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
+	if err != nil {
+		t.Fatalf("query immediately after Start: %v", err)
+	}
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("Rcode=%d answers=%d, want NOERROR with 1 answer", resp.Rcode, len(resp.Answer))
+	}
+}
+
 func TestProxyAllowedQueryForwardsAndPokesNFT(t *testing.T) {
 	upstream, upstreamHits := startStubUpstream(t, 60, "93.184.216.34")
 	_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"example.com"})

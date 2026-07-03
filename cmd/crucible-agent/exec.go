@@ -108,7 +108,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	<-pollDone
 
 	result := resultFromError(runErr, cmd, cmdCtx.Err(), time.Since(start))
-	attachUsage(&result, cmd.ProcessState, lastIO.Load())
+	attachUsage(&result, cmd.ProcessState, lastIO.Load(), cmdCtx.Err())
 
 	writeExitFrame(fw, result)
 
@@ -125,7 +125,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 // child's Rusage + the final /proc/<pid>/io snapshot. Safe to call
 // with a nil ProcessState (it just becomes a no-op), for parity
 // with start-failure paths.
-func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *procIOStats) {
+func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *procIOStats, ctxErr error) {
 	if ps == nil {
 		return
 	}
@@ -134,7 +134,11 @@ func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *pro
 		return
 	}
 	result.Usage = buildUsage(ru, ioStats)
-	result.OomKilled = detectOOM(ps, result.TimedOut, result.Usage.PeakMemoryBytes, guestMemTotalBytes())
+	// ctxErr != nil means the ctx was done (deadline OR client cancel) and we
+	// SIGKILLed the group — so it's our kill, not an OOM. TimedOut alone
+	// wouldn't catch a client cancel (context.Canceled), which is why we key
+	// on the raw ctx error here.
+	result.OomKilled = detectOOM(ps, ctxErr != nil, result.Usage.PeakMemoryBytes, guestMemTotalBytes())
 }
 
 // buildEnv composes the command's environment. The agent's own env is

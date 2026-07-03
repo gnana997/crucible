@@ -10,6 +10,33 @@ import (
 	"github.com/gnana997/crucible/internal/network/dnsproxy"
 )
 
+// TestCheckNftSandboxIDRejectsInjection is the L6 guard: the sandbox id is
+// concatenated into per-sandbox nft object names and the script fed to
+// `nft -f -`, so anything outside [a-zA-Z0-9-] must be refused locally rather
+// than trusting the distant sandbox-ID validator.
+func TestCheckNftSandboxIDRejectsInjection(t *testing.T) {
+	good := []string{"sbx-abc123", "a", strings.Repeat("a", 64)}
+	for _, id := range good {
+		if err := checkNftSandboxID(id); err != nil {
+			t.Errorf("checkNftSandboxID(%q) = %v, want nil", id, err)
+		}
+	}
+	bad := []string{
+		"",                      // empty
+		"sbx_abc",               // unsanitized underscore
+		"a b",                   // space
+		"a;drop",                // separator
+		"a}\nadd element",       // nft-script injection attempt
+		"a/b",                   // slash
+		strings.Repeat("a", 65), // too long
+	}
+	for _, id := range bad {
+		if err := checkNftSandboxID(id); err == nil {
+			t.Errorf("checkNftSandboxID(%q) = nil, want error", id)
+		}
+	}
+}
+
 func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
 	got := BuildBaseScript("eth0", netip.MustParseAddr("10.20.255.254"))
 	mustContainAll(t, got, []string{

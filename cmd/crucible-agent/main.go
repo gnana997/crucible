@@ -56,7 +56,13 @@ func run(logger *slog.Logger) int {
 	// No Read/Write timeouts on the server: exec responses can stream for
 	// as long as the command takes. Per-request deadlines come from
 	// ExecRequest.TimeoutSec and are enforced inside handleExec.
-	srv := &http.Server{Handler: mux}
+	// ReadHeaderTimeout is safe to set — it bounds only the request-header
+	// read, not the body or the streamed response — and closes the slowloris
+	// hole (gosec G112) of a peer that opens a connection and dribbles headers.
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	// Graceful shutdown on SIGTERM/SIGINT. systemd will SIGTERM on a
 	// `systemctl stop crucible-agent`.

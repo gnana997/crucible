@@ -24,6 +24,10 @@ import (
 // work around.
 const identitySeedSize = 32
 
+// maxIdentityRequestBody bounds the POST /identity/refresh body. The request
+// is a small JSON blob (a base64 seed + a sandbox id); 1 MiB is generous.
+const maxIdentityRequestBody = 1 << 20
+
 // Linux random-device ioctls (linux/random.h). Stable kernel ABI.
 const (
 	// rndAddEntropy is _IOW('R', 0x03, int[2]): feed a
@@ -86,9 +90,27 @@ func injectEntropy(seed []byte) error {
 // directory, not the file, so this also replaces the 0444
 // /etc/machine-id without relying on root's CAP_DAC_OVERRIDE — and no
 // reader ever observes a truncated in-between state.
+//
+// The temp file is created O_EXCL|O_NOFOLLOW so we never write *through* a
+// symlink or a pre-existing file planted at the temp path — the agent runs
+// as root and these paths live in guest-writable dirs (/etc, /var/lib),
+// so a redirected write is a real (if low-severity, single-VM) footgun. A
+// leftover temp from a crashed prior refresh is unlinked first (Remove
+// unlinks the symlink/file itself, it does not follow it).
 func replaceFile(path string, content []byte, mode os.FileMode) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, content, mode); err != nil {
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -135,6 +157,10 @@ func newMachineID() (string, error) {
 // is no self-healing fallback for duplicated entropy, and the caller
 // treats a failed refresh as a failed fork.
 func handleIdentityRefresh(w http.ResponseWriter, r *http.Request) {
+	// Bound the body like /exec does: an identity refresh is a small JSON
+	// blob (a 32-byte seed + a sandbox id), so cap it rather than letting a
+	// misbehaving host stream unbounded into the decoder.
+	r.Body = http.MaxBytesReader(w, r.Body, maxIdentityRequestBody)
 	var req agentwire.IdentityRefreshRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w,

@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/netip"
 	"sync"
-	"time"
 
 	"github.com/gnana997/crucible/internal/network/dhcp"
 	"github.com/gnana997/crucible/internal/network/dnsproxy"
@@ -466,27 +465,16 @@ func removeCrucibleDNSIface(ctx context.Context) error {
 	if err == nil {
 		return nil
 	}
-	if isCannotFindDevice(err) {
+	if isCannotFindDevice(ctx, err) {
 		return nil
 	}
 	return err
 }
 
-// WaitForDNSProxyReady blocks until the shared DNS proxy is
-// responsive, bounded by a short timeout. Useful in tests and
-// in integration smokes where the caller wants to be sure the
-// proxy is live before registering a sandbox.
-//
-// In production, Start only returns after the proxy's
-// NotifyStartedFunc has fired, so this is mostly a belt-and-
-// suspenders check.
-func (m *Manager) WaitForDNSProxyReady(timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if m.proxy != nil {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return errors.New("network: DNS proxy did not become ready")
-}
+// The DNS proxy needs no separate readiness wait: dnsproxy.Start blocks
+// until the listener is bound and the server's NotifyStartedFunc has fired
+// (or fails), so once m.proxy is non-nil the proxy is already live and
+// Register calls take effect for the next query. An earlier
+// WaitForDNSProxyReady only re-checked m.proxy != nil — always true
+// post-Start — so it promised a readiness guarantee it never delivered; it
+// was unused and has been removed.

@@ -10,14 +10,24 @@ import (
 
 // ranAndExitedNonZero reports whether err came from an external command
 // that actually ran and exited non-zero (an *exec.ExitError) — as opposed
-// to a context cancellation, a missing binary, or a netlink/permission
-// failure. Teardown idempotency checks require this before trusting a
+// to a missing binary, a netlink/permission failure, or a context
+// cancellation. Teardown idempotency checks require this before trusting a
 // tool's stderr text, so a transient or infrastructural error is never
 // misread as "the object was already gone" (which would silently leak a
 // live nft chain or veth). Neither nft nor ip exposes a distinct exit code
 // for "not found", so the specific stderr phrase is still needed as a
 // secondary discriminator — but only once we know the command itself ran.
-func ranAndExitedNonZero(err error) bool {
+//
+// The ctx.Err() guard is load-bearing: a CommandContext killed by its own
+// deadline (or cancellation) returns "signal: killed" as an *exec.ExitError,
+// which errors.As would happily accept — so without this check a timed-out
+// teardown would be misread as "already gone" and leak the object. If the
+// ctx is done we treat the error as fatal, never idempotent-success,
+// regardless of stderr.
+func ranAndExitedNonZero(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	var ee *exec.ExitError
 	return errors.As(err, &ee)
 }

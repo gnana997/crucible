@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"sync/atomic"
@@ -161,13 +162,33 @@ func TestDetectOOMSIGKILLBelowThreshold(t *testing.T) {
 	}
 }
 
-func TestDetectOOMTimedOutIsNotOOM(t *testing.T) {
-	// Even with a SIGKILL and high memory, a user-requested timeout
-	// (TimedOut=true) must not register as OOM — we killed it, not
-	// the kernel.
+func TestDetectOOMKilledByCtxIsNotOOM(t *testing.T) {
+	// Even with a SIGKILL at 100% memory, if the kill came from the command's
+	// context being done we did it, not the kernel — so it must not register
+	// as OOM. This covers BOTH a deadline (timeout) and a client disconnect
+	// (context.Canceled): attachUsage keys detectOOM on ctxErr != nil, so the
+	// client-cancel case (which leaves result.TimedOut false) is excluded too.
 	ps := processStateForSignal(t, "kill -9 $$")
-	if detectOOM(ps, true, 256<<20, 256<<20) {
-		t.Error("expected OomKilled=false when TimedOut")
+	for _, name := range []string{"deadline", "client-cancel"} {
+		t.Run(name, func(t *testing.T) {
+			if detectOOM(ps, true, 256<<20, 256<<20) {
+				t.Errorf("expected OomKilled=false when killed by ctx (%s)", name)
+			}
+		})
+	}
+}
+
+// TestAttachUsageClientCancelNotReportedOOM exercises the wiring: a client
+// cancel (context.Canceled — NOT a deadline) must flow through attachUsage as
+// "we killed it", never OOM. Before the fix attachUsage keyed on
+// result.TimedOut, which a client cancel leaves false, so a memory-hungry
+// cancelled exec could be mislabelled OomKilled.
+func TestAttachUsageClientCancelNotReportedOOM(t *testing.T) {
+	ps := processStateForSignal(t, "kill -9 $$") // SIGKILL, as our group-kill produces
+	var res agentwire.ExecResult
+	attachUsage(&res, ps, nil, context.Canceled)
+	if res.OomKilled {
+		t.Error("OomKilled=true for a client-cancelled exec — client cancel must not read as OOM")
 	}
 }
 
@@ -203,7 +224,7 @@ func TestAttachUsageRealCommand(t *testing.T) {
 	}
 
 	var res agentwire.ExecResult
-	attachUsage(&res, cmd.ProcessState, nil)
+	attachUsage(&res, cmd.ProcessState, nil, nil)
 
 	if res.Usage == nil {
 		t.Fatal("Usage was not attached after a successful Run")
@@ -224,7 +245,7 @@ func TestAttachUsageNilProcessStateIsNoop(t *testing.T) {
 	// a nil ProcessState must leave the result untouched rather than
 	// panicking.
 	var res agentwire.ExecResult
-	attachUsage(&res, nil, nil)
+	attachUsage(&res, nil, nil, nil)
 	if res.Usage != nil {
 		t.Error("Usage unexpectedly populated from nil ProcessState")
 	}

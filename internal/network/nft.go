@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,23 @@ const (
 	nftSandboxMap       = "sandbox_chains" // iifname verdict map
 	nftGuestSourcesSet  = "guest_sources"  // ifname . guest-IP pairs
 )
+
+// validNftSandboxID bounds the sandbox id interpolated into per-sandbox nft
+// object names and the rule scripts fed to `nft -f -`. IDs arrive here as
+// sbx_<base32> sanitized to [a-z0-9-], so this only ever rejects a
+// programming error — but it keeps that guarantee *local* to the nft layer
+// (defense-in-depth) instead of resting entirely on the distant sandbox-ID
+// validator, and forecloses nft-script injection should that ever regress.
+var validNftSandboxID = regexp.MustCompile(`^[a-zA-Z0-9-]{1,64}$`)
+
+// checkNftSandboxID rejects any id that isn't safe to concatenate into an nft
+// object name / script.
+func checkNftSandboxID(sandboxID string) error {
+	if !validNftSandboxID.MatchString(sandboxID) {
+		return fmt.Errorf("network: invalid sandbox id %q for nft object name", sandboxID)
+	}
+	return nil
+}
 
 // sandboxChainName returns the per-sandbox chain name. All
 // per-sandbox nft objects (chain, allowed-IPs set) are named by
@@ -162,12 +180,12 @@ func BuildSandboxTeardownScript(sandboxID string, hostIface string, guestIP neti
 func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr) error {
 	// Flush any prior state, ignoring "no such table" errors.
 	if err := runCmd(ctx, "nft", "flush", "table", "inet", NftTableName); err != nil {
-		if !isNoSuchObject(err) {
+		if !isNoSuchObject(ctx, err) {
 			return fmt.Errorf("flush existing table: %w", err)
 		}
 	}
 	if err := runCmd(ctx, "nft", "delete", "table", "inet", NftTableName); err != nil {
-		if !isNoSuchObject(err) {
+		if !isNoSuchObject(ctx, err) {
 			return fmt.Errorf("delete existing table: %w", err)
 		}
 	}
@@ -201,7 +219,7 @@ func TeardownBaseTable(ctx context.Context) error {
 	_ = removeIptablesForward(ctx)
 
 	if err := runCmd(ctx, "nft", "delete", "table", "inet", NftTableName); err != nil {
-		if isNoSuchObject(err) {
+		if isNoSuchObject(ctx, err) {
 			return nil
 		}
 		return err
@@ -255,6 +273,9 @@ func removeIptablesForward(ctx context.Context) error {
 // called after EnsureBaseTable and after the host-side veth
 // (hostIface) exists.
 func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, anycast netip.Addr) error {
+	if err := checkNftSandboxID(sandboxID); err != nil {
+		return err
+	}
 	script := BuildSandboxScript(sandboxID, hostIface, guestIP, anycast)
 	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
@@ -263,12 +284,15 @@ func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, a
 // missing objects are treated as success so double-teardown
 // doesn't fail.
 func RemoveSandbox(ctx context.Context, sandboxID, hostIface string, guestIP netip.Addr) error {
+	if err := checkNftSandboxID(sandboxID); err != nil {
+		return err
+	}
 	script := BuildSandboxTeardownScript(sandboxID, hostIface, guestIP)
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		// Partial-remove is common (e.g., the chain was already
 		// deleted by a prior failed removal). Log at the caller;
 		// here we just bucket "not found" errors into nil.
-		if isNoSuchObject(err) {
+		if isNoSuchObject(ctx, err) {
 			return nil
 		}
 		return err
@@ -297,6 +321,9 @@ func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) e
 	if len(ips) == 0 {
 		return nil
 	}
+	if err := checkNftSandboxID(sandboxID); err != nil {
+		return err
+	}
 	elems := make([]string, 0, len(ips))
 	for _, e := range ips {
 		if !e.Addr.Is4() {
@@ -324,11 +351,11 @@ func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) e
 // missing table/set/chain/element during teardown — the only failure we
 // treat as success for idempotency. nft returns a bare exit 1 for every
 // error, so we still key on its stderr phrase, but only after confirming
-// the command actually ran and exited (ranAndExitedNonZero) — otherwise a
-// context timeout or netlink failure could be misread as "already gone"
-// and leak a live chain.
-func isNoSuchObject(err error) bool {
-	return ranAndExitedNonZero(err) &&
+// the command actually ran and exited without the ctx being cancelled
+// (ranAndExitedNonZero) — otherwise a context timeout or netlink failure
+// could be misread as "already gone" and leak a live chain.
+func isNoSuchObject(ctx context.Context, err error) bool {
+	return ranAndExitedNonZero(ctx, err) &&
 		containsAny(err.Error(),
 			"No such file or directory",
 			"does not exist",

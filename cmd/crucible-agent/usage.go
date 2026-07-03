@@ -146,8 +146,12 @@ func timevalToMs(tv syscall.Timeval) int64 {
 // We set OomKilled when all of:
 //
 //  1. The process was killed by SIGKILL.
-//  2. The kill wasn't ours (i.e. not from a client-requested
-//     timeout — TimedOut is set separately).
+//  2. The kill wasn't ours: killedByCtx is true whenever the command's
+//     context was done — a client-requested timeout *or* a client
+//     disconnect (context.Canceled) — and in both cases we SIGKILLed the
+//     group ourselves, so it must not be reported as an OOM. (Keying only
+//     on "timed out" would false-positive OomKilled when the client merely
+//     cancelled a memory-hungry exec.)
 //  3. Peak RSS reached at least 95% of the guest's total memory,
 //     implying the VM was under memory pressure at the time.
 //
@@ -157,8 +161,8 @@ func timevalToMs(tv syscall.Timeval) int64 {
 // 95% threshold (possible in cgroup-memory-constrained children
 // even when the VM itself has headroom) — again, per-exec cgroups
 // fix that in v0.2.
-func detectOOM(ps *os.ProcessState, timedOut bool, peakRSSBytes int64, guestMemBytes int64) bool {
-	if timedOut || ps == nil {
+func detectOOM(ps *os.ProcessState, killedByCtx bool, peakRSSBytes int64, guestMemBytes int64) bool {
+	if killedByCtx || ps == nil {
 		return false
 	}
 	ws, ok := ps.Sys().(syscall.WaitStatus)
