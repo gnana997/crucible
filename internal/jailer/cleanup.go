@@ -65,16 +65,19 @@ const reapKillTimeout = 2 * time.Second
 // pivot_root's firecracker into a PRIVATE mount namespace, so from the
 // host the process's root is unreachable and /proc/<pid>/root does not
 // resolve to <ChrootBase>/firecracker/<ID>/root. cmdline, by contrast,
-// is plain host-readable bytes unaffected by the mount/pid namespace,
-// and jailer injects "--id <ID>" into both its own argv and
-// firecracker's — so the unique ID token identifies exactly this VM's
-// processes and nothing else.
+// is plain host-readable bytes unaffected by the mount/pid namespace.
+//
+// The match requires the ID to appear as the token immediately after a
+// literal "--id" — the exact shape jailer emits into both its own argv
+// and firecracker's (see BuildArgs). Matching a bare token anywhere in
+// the argv would let an ambiguous ID (jailer's own regex permits "1")
+// select unrelated host processes such as `sleep 1` — a stray SIGKILL
+// vector the reap must not have.
 func jailedPIDs(id string) []int {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
 	}
-	idTok := []byte(id)
 	var pids []int
 	for _, e := range entries {
 		pid, err := strconv.Atoi(e.Name())
@@ -85,38 +88,72 @@ func jailedPIDs(id string) []int {
 		if err != nil {
 			continue // process exited, or unreadable — skip
 		}
-		for _, tok := range bytes.Split(raw, []byte{0}) {
-			if bytes.Equal(tok, idTok) {
-				pids = append(pids, pid)
-				break
-			}
+		if cmdlineMatchesID(raw, id) {
+			pids = append(pids, pid)
 		}
 	}
 	return pids
 }
 
+// cmdlineMatchesID reports whether raw — a NUL-separated
+// /proc/<pid>/cmdline — carries the jailer "--id <id>" argument pair.
+// Requiring id to directly follow a "--id" token (rather than matching
+// a bare token anywhere) is what keeps an ambiguous id like "1" from
+// selecting unrelated processes. Pure + allocation-light so it's unit-
+// testable without fabricating /proc entries.
+func cmdlineMatchesID(raw []byte, id string) bool {
+	idTok := []byte(id)
+	dashID := []byte("--id")
+	toks := bytes.Split(raw, []byte{0})
+	for i := 1; i < len(toks); i++ {
+		if bytes.Equal(toks[i-1], dashID) && bytes.Equal(toks[i], idTok) {
+			return true
+		}
+	}
+	return false
+}
+
 // killJailed SIGKILLs the jailer + firecracker processes for the VM with
 // the given jailer ID and waits, bounded, for them to exit so the
 // chroot's bind mounts are released before the caller removes the tree.
-// Returns the number of processes signalled. A no-op (returns 0) when no
-// process carries the ID — the common case, since a cleanly-shut-down VM
-// has already exited.
-func killJailed(id string) int {
+//
+// Returns whether the process set — as identified by /proc/<pid>/
+// cmdline — drained within reapKillTimeout. A false return means at
+// least one matching process is still present after the deadline; the
+// caller MUST NOT remove that chroot, since the VM is still live and
+// holding its bind mounts. The classic false case is a task wedged in
+// uninterruptible D-state, which SIGKILL cannot reap until its kernel
+// operation completes. A cleanly-shut-down VM has no matching process,
+// so this returns true immediately (the common case).
+//
+// Liveness here trusts the "--id <ID>" tokens in cmdline. That is
+// robust against the non-adversarial cases this reap targets (crash/
+// SIGKILL orphans, slow or D-state exits), but a fully compromised VMM
+// can rewrite its own argv to erase the token and thereby look
+// drained. We accept that: sandbox IDs are random and never reused, so
+// a later VM won't collide on the freed slot, and RemoveAll of a live
+// VMM's tree stalls on EBUSY at its bind mounts (partial unlink; the
+// VMM keeps running on its open fds) rather than silently killing it.
+// The daemon runs jailer without --cgroup by default, so the
+// cgroup.procs signal that would be spoof-proof usually doesn't exist.
+func killJailed(id string) bool {
 	pids := jailedPIDs(id)
 	if len(pids) == 0 {
-		return 0
+		return true
 	}
 	for _, pid := range pids {
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 	}
 	deadline := time.Now().Add(reapKillTimeout)
-	for time.Now().Before(deadline) {
+	for {
 		if len(jailedPIDs(id)) == 0 {
-			break
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return len(pids)
 }
 
 // ReapOrphans removes every per-VM chroot + matching cgroup under
@@ -153,19 +190,43 @@ func ReapOrphans(chrootBase, execFile string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		spec := Spec{ID: e.Name(), ExecFile: execFile, ChrootBase: chrootBase}
+		id := e.Name()
+		// The reap path takes this directory name straight to
+		// killJailed, which SIGKILLs every host process whose argv
+		// carries the token. A name that isn't a valid jailer ID is
+		// not one we created (the create path enforces validIDPattern
+		// via Spec.Validate) — refuse to use it as a kill selector,
+		// or a stray dir named e.g. "1" would SIGKILL every process
+		// with a bare "1" argv token.
+		if !validIDPattern.MatchString(id) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("jailer: refusing to reap unexpected dir name %q under %s", id, parent)
+			}
+			continue
+		}
+		spec := Spec{ID: id, ExecFile: execFile, ChrootBase: chrootBase}
 		// A VM whose daemon was killed without clean shutdown keeps
 		// running (reparented to init) — the chroot directory alone is
 		// not enough to identify it as dead. Kill the jailer +
 		// firecracker carrying this VM's ID before removing the tree,
-		// so a restart leaves no orphaned VM process behind. e.Name()
-		// is the jailer ID (the chroot subdir name).
-		killJailed(e.Name())
-		if err := Cleanup(spec); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("jailer: reap %s: %w", e.Name(), err)
+		// so a restart leaves no orphaned VM process behind.
+		if !killJailed(id) {
+			// The VM is still live after the kill timeout (e.g. a
+			// wedged D-state task). Removing its chroot now would
+			// unlink the tree out from under a running VM whose bind
+			// mounts we never released — an orphan leak, not a reap.
+			// Leave the tree in place and surface the error so the
+			// next startup retries.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("jailer: VM %s still live after kill timeout; left chroot in place", id)
+			}
 			continue
 		}
-		reaped = append(reaped, e.Name())
+		if err := Cleanup(spec); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("jailer: reap %s: %w", id, err)
+			continue
+		}
+		reaped = append(reaped, id)
 	}
 	return reaped, firstErr
 }

@@ -157,12 +157,18 @@ func (j *JailerRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 		return nil, err
 	}
 
-	// Stage kernel + rootfs. Hardlink-first (same-filesystem: no IO);
-	// FICLONE or byte-copy fallback on cross-device.
-	if err := jailer.Stage(jSpec, map[string]string{
-		chrootKernelPath: spec.Kernel,
-		chrootRootfsPath: spec.Rootfs,
+	// Stage kernel + rootfs. The kernel is the shared daemon-wide
+	// template staged into every cold-boot chroot, so it is copied to
+	// a private read-only inode (Shared) — never hardlinked-then-
+	// chowned, which would downgrade the shared file's ownership and
+	// let a compromised VMM poison the kernel for future tenants. The
+	// rootfs is already a per-sandbox clone, so it takes the fast
+	// hardlink path.
+	if err := jailer.Stage(jSpec, map[string]jailer.StageFile{
+		chrootKernelPath: {Src: spec.Kernel, Shared: true},
+		chrootRootfsPath: {Src: spec.Rootfs},
 	}); err != nil {
+		_ = jailer.Cleanup(jSpec)
 		return nil, fmt.Errorf("runner: stage files for jailer: %w", err)
 	}
 
@@ -217,14 +223,18 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		return nil, err
 	}
 
-	stage := map[string]string{
-		chrootStatePath:  spec.StatePath,
-		chrootRootfsPath: spec.RootfsPath,
+	// All snapshot artifacts are this fork's own files (the rootfs is
+	// a frozen per-snapshot clone, state/mem are read back by this
+	// firecracker only), so they take the private hardlink path.
+	stage := map[string]jailer.StageFile{
+		chrootStatePath:  {Src: spec.StatePath},
+		chrootRootfsPath: {Src: spec.RootfsPath},
 	}
 	if !spec.LazyMem {
-		stage[chrootMemPath] = spec.MemPath
+		stage[chrootMemPath] = jailer.StageFile{Src: spec.MemPath}
 	}
 	if err := jailer.Stage(jSpec, stage); err != nil {
+		_ = jailer.Cleanup(jSpec)
 		return nil, fmt.Errorf("runner: stage snapshot files for jailer: %w", err)
 	}
 

@@ -207,10 +207,18 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 		return fmt.Errorf("runner: wait for API ready: %w", err)
 	}
 
-	// Load snapshot FIRST. Firecracker forbids PUT /vsock (and other
-	// "boot-specific resource" configuration) before load: the only
-	// legal sequence is fresh process → load → post-load reconfigure
-	// → resume.
+	// Load snapshot FIRST — before any vsock/drive reconfigure below.
+	//
+	// NOTE (v1.15): this direct-runner restore path is non-functional
+	// on Firecracker v1.15 and cannot fork — the post-load PUT /vsock
+	// below is rejected 400 "not supported after starting the microVM"
+	// (see docs/lessons.md, "Direct (non-jailer) restore cannot fork").
+	// Fork works only under JailerRunner, where each fork's chroot
+	// gives the recorded UDS path a unique host location so no rewire
+	// is needed. This path is kept — failing loudly, not silently — as
+	// the seam for the upstream fix (vsock_override on
+	// SnapshotLoadParams, PR #5323); until then, restore/fork via
+	// jailer only.
 	memBackend := fcapi.MemBackend{
 		BackendType: fcapi.MemBackendFile,
 		BackendPath: spec.MemPath,
@@ -233,12 +241,14 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 		return fmt.Errorf("runner: load snapshot: %w", err)
 	}
 
-	// Rewire vsock AFTER load so the fork binds its own UDS. Without
-	// this the fork would try to re-bind the exact host path the
-	// source recorded at snapshot time, colliding with the source's
-	// still-running firecracker. Under JailerRunner the chroot
-	// isolation handles this implicitly; we still issue PUT /vsock
-	// there for code uniformity.
+	// Rewire vsock AFTER load so the fork binds its own UDS instead of
+	// re-binding the exact host path the source recorded at snapshot
+	// time (which would collide with the source's still-running
+	// firecracker). This is the step v1.15 rejects with 400 — see the
+	// note above. JailerRunner sidesteps the rewire entirely: its
+	// per-fork chroot makes the recorded path resolve to a unique host
+	// location, so JailerRunner.configureAndLoad issues no PUT /vsock
+	// at all.
 	if err := h.client.PutVsock(ctx, fcapi.VsockConfig{
 		GuestCID: DefaultGuestCID,
 		UDSPath:  h.vsockPath,

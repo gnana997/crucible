@@ -12,7 +12,7 @@ func TestCleanupRemovesChroot(t *testing.T) {
 	srcDir := t.TempDir()
 	src := filepath.Join(srcDir, "f")
 	writeSrc(t, src, "x")
-	if err := Stage(s, map[string]string{"/f": src}); err != nil {
+	if err := Stage(s, map[string]StageFile{"/f": {Src: src}}); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 	if _, err := os.Stat(ChrootRoot(s)); err != nil {
@@ -43,7 +43,7 @@ func TestCleanupAfterStageThenDoubleCleanup(t *testing.T) {
 	srcDir := t.TempDir()
 	src := filepath.Join(srcDir, "f")
 	writeSrc(t, src, "x")
-	if err := Stage(s, map[string]string{"/f": src}); err != nil {
+	if err := Stage(s, map[string]StageFile{"/f": {Src: src}}); err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
 

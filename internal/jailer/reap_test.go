@@ -53,14 +53,70 @@ func TestReapOrphansRemovesStaleChroots(t *testing.T) {
 
 func TestKillJailedNoMatchIsNoop(t *testing.T) {
 	// No process carries this (unique, nonexistent) jailer ID, so
-	// killJailed must signal nothing — the safety property the graceful
-	// teardown path and the reap of already-dead chroots both rely on.
+	// killJailed must report the set as drained (nothing to kill) — the
+	// safety property the graceful teardown path and the reap of
+	// already-dead chroots both rely on.
 	id := "sbx-no-such-vm-zzzq9x7k3rf22"
-	if n := killJailed(id); n != 0 {
-		t.Fatalf("killJailed with no matching id signalled %d processes, want 0", n)
+	if !killJailed(id) {
+		t.Fatal("killJailed with no matching id returned false, want true (nothing to drain)")
 	}
 	if pids := jailedPIDs(id); len(pids) != 0 {
 		t.Fatalf("jailedPIDs with no matching id = %v, want none", pids)
+	}
+}
+
+func TestReapOrphansSkipsInvalidDirName(t *testing.T) {
+	// A directory name that isn't a valid jailer ID is not one crucible
+	// created, so the reap must never feed it to killJailed. ReapOrphans
+	// must skip it, leave its tree in place, and surface an error —
+	// while still reaping the valid sibling. ("bad_name" has an
+	// underscore, which validIDPattern rejects.)
+	base := t.TempDir()
+	seedOrphan(t, base, "firecracker", "bad_name")
+	seedOrphan(t, base, "firecracker", "sbx-real") // legitimate
+
+	reaped, err := ReapOrphans(base, "/usr/bin/firecracker")
+	if err == nil {
+		t.Fatal("expected an error for the invalid dir name, got nil")
+	}
+	if len(reaped) != 1 || reaped[0] != "sbx-real" {
+		t.Fatalf("reaped = %v, want [sbx-real]", reaped)
+	}
+	// The invalid dir's tree must be left untouched, not removed.
+	if _, statErr := os.Stat(filepath.Join(base, "firecracker", "bad_name")); statErr != nil {
+		t.Fatalf("invalid-name dir should be left in place, stat err = %v", statErr)
+	}
+}
+
+func TestCmdlineMatchesIDRequiresDashIDAdjacency(t *testing.T) {
+	nul := func(toks ...string) []byte {
+		var b []byte
+		for _, tk := range toks {
+			b = append(b, []byte(tk)...)
+			b = append(b, 0)
+		}
+		return b
+	}
+	cases := []struct {
+		name string
+		raw  []byte
+		id   string
+		want bool
+	}{
+		{"jailer argv", nul("/usr/bin/jailer", "--id", "sbx-abc", "--exec-file", "/fc"), "sbx-abc", true},
+		{"firecracker argv", nul("firecracker", "--id", "sbx-abc"), "sbx-abc", true},
+		// The M6 danger: ambiguous id appearing as a bare arg, NOT after --id.
+		{"bare ambiguous token", nul("sleep", "1"), "1", false},
+		{"id present but not after --id", nul("--exec-file", "sbx-abc", "--id", "other"), "sbx-abc", false},
+		{"no match", nul("bash", "-c", "true"), "sbx-abc", false},
+		{"empty cmdline", nil, "sbx-abc", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cmdlineMatchesID(c.raw, c.id); got != c.want {
+				t.Errorf("cmdlineMatchesID(%q, %q) = %v, want %v", c.raw, c.id, got, c.want)
+			}
+		})
 	}
 }
 
