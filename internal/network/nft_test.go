@@ -1,9 +1,13 @@
 package network
 
 import (
+	"context"
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gnana997/crucible/internal/network/dnsproxy"
 )
 
 func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
@@ -80,6 +84,36 @@ func TestSandboxNamesUseSandboxID(t *testing.T) {
 	}
 	if !strings.HasSuffix(sandboxAllowedSetName("x"), "_allowed") {
 		t.Error("set name suffix changed")
+	}
+}
+
+// TestAllowIPsRejectsNonPublicAddresses is the belt-and-suspenders
+// check for R1: AllowIPs is the last gate before an address lands in
+// the nftables allow-set, and must refuse anything IsPublicUnicast
+// rejects even if a caller somehow skipped the proxy's filter. The
+// rejection path returns before shelling out to nft, so this needs
+// no root.
+func TestAllowIPsRejectsNonPublicAddresses(t *testing.T) {
+	bad := []string{
+		"169.254.169.254", // link-local cloud metadata
+		"100.100.100.200", // Alibaba metadata (CGNAT)
+		"100.64.0.1",      // CGNAT
+		"10.20.0.2",       // sandbox pool / RFC1918
+		"192.168.1.1",     // RFC1918
+		"198.18.0.1",      // benchmarking
+		"192.0.2.1",       // TEST-NET-1
+		"240.0.0.1",       // reserved / future use
+		"127.0.0.1",       // loopback
+	}
+	for _, s := range bad {
+		t.Run(s, func(t *testing.T) {
+			err := AllowIPs(context.Background(), "sbx-test", []dnsproxy.AllowedIP{
+				{Addr: netip.MustParseAddr(s), TTL: time.Minute},
+			})
+			if err == nil {
+				t.Errorf("AllowIPs accepted non-public address %s", s)
+			}
+		})
 	}
 }
 

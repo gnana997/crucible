@@ -79,6 +79,15 @@ type Config struct {
 	// DefaultSourceQPS.
 	SourceQPS int
 
+	// PerSourceInflight caps how many upstream round-trips a single
+	// source (sandbox) may have in flight at once. It bounds each
+	// guest's share of the global MaxInflight pool so one guest
+	// resolving a slow — or deliberately stalling, attacker-run —
+	// authoritative server can't hold most of the global slots for
+	// UpstreamTimeout apiece and starve every other sandbox's DNS.
+	// Zero means DefaultPerSourceInflight.
+	PerSourceInflight int
+
 	// Logger receives lifecycle events and per-query summaries.
 	// Nil means slog.Default().
 	Logger *slog.Logger
@@ -102,6 +111,14 @@ const (
 	// below this) while keeping one guest from monopolizing the
 	// inflight slots.
 	DefaultSourceQPS = 50
+
+	// DefaultPerSourceInflight bounds a single source's concurrent
+	// upstream round-trips. Small enough that no one guest can pin a
+	// large share of DefaultMaxInflight, large enough that a normal
+	// fan-out of parallel lookups (a build resolving several hosts at
+	// once) isn't throttled — for well-behaved fast upstreams the
+	// per-source QPS limit is the tighter bound anyway.
+	DefaultPerSourceInflight = 8
 
 	// maxAnswerIPs caps how many A records of a single reply are
 	// returned to the guest and passed to AllowIP. Legitimate
@@ -151,10 +168,11 @@ type Proxy struct {
 }
 
 // policyEntry pairs the caller's Policy with the proxy-internal
-// per-source rate limiter.
+// per-source rate limiter and upstream in-flight cap.
 type policyEntry struct {
-	pol *Policy
-	lim *rateLimiter
+	pol      *Policy
+	lim      *rateLimiter
+	inflight chan struct{} // bounds this source's concurrent upstream round-trips
 }
 
 // Start binds a UDP listener at cfg.ListenAddr and spawns the
@@ -183,6 +201,9 @@ func Start(cfg Config) (*Proxy, error) {
 	}
 	if cfg.SourceQPS <= 0 {
 		cfg.SourceQPS = DefaultSourceQPS
+	}
+	if cfg.PerSourceInflight <= 0 {
+		cfg.PerSourceInflight = DefaultPerSourceInflight
 	}
 	log := cfg.Logger
 	if log == nil {
@@ -267,9 +288,14 @@ func (p *Proxy) Register(guestIP netip.Addr, pol *Policy) {
 	if qps <= 0 {
 		qps = DefaultSourceQPS
 	}
+	inflight := p.cfg.PerSourceInflight
+	if inflight <= 0 {
+		inflight = DefaultPerSourceInflight
+	}
 	p.policies.Store(guestIP, &policyEntry{
-		pol: pol,
-		lim: newRateLimiter(float64(qps), float64(2*qps)),
+		pol:      pol,
+		lim:      newRateLimiter(float64(qps), float64(2*qps)),
+		inflight: make(chan struct{}, inflight),
 	})
 }
 
@@ -328,6 +354,21 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			p.writeRcode(w, req, dns.RcodeNameError)
 			return
 		}
+	}
+
+	// Per-source in-flight cap, acquired after the cheap
+	// rate-limit/allowlist checks and immediately before the slow
+	// upstream round-trip. The global p.sem bounds total concurrency;
+	// this bounds any single source's share of it, so a guest
+	// resolving an allowlisted-but-slow (or attacker-run,
+	// deliberately-stalling) authoritative server can't pin most of
+	// the global slots for UpstreamTimeout each and black out every
+	// other sandbox's DNS. Released when the handler returns.
+	select {
+	case ent.inflight <- struct{}{}:
+		defer func() { <-ent.inflight }()
+	default:
+		return // source already at PerSourceInflight; resolver retries
 	}
 
 	// Forward to upstream. miekg/dns.Client handles EDNS0 for us
@@ -417,16 +458,57 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 }
 
-// blockedIP reports whether a resolved address must never reach a
-// guest or its egress allow-set. Everything that isn't public
-// global-unicast is rejected — loopback, link-local (the cloud
-// metadata endpoint lives at 169.254.169.254), multicast,
-// broadcast, unspecified — plus RFC1918 private space, which
-// covers the default 10.20.0.0/16 sandbox pool and typical host
-// LANs. Config.BlockedPrefixes extends this to operator-configured
-// pools outside those ranges.
-func (p *Proxy) blockedIP(ip netip.Addr) bool {
+// reservedV4Prefixes are IANA special-purpose IPv4 blocks that
+// netip's IsGlobalUnicast/IsPrivate do NOT catch: they look like
+// ordinary global unicast (and aren't RFC1918) yet route to
+// carrier-grade NAT — where several clouds put their instance
+// metadata service, e.g. Alibaba's 100.100.100.200 — or to
+// documentation, benchmarking, and reserved future-use space. A
+// DNS-resolved egress target inside any of these must be refused the
+// same as link-local (169.254.169.254) or RFC1918. Loopback,
+// link-local, multicast, and the unspecified/broadcast addresses are
+// already rejected by IsGlobalUnicast and are not repeated here.
+var reservedV4Prefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network" (RFC 1122 §3.2.1.3)
+	netip.MustParsePrefix("100.64.0.0/10"),   // shared address space / CGNAT (RFC 6598)
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments (incl. NAT64/DS-Lite)
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1 (RFC 5737)
+	netip.MustParsePrefix("192.88.99.0/24"),  // 6to4 relay anycast (RFC 7526, deprecated)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking (RFC 2544)
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 (RFC 5737)
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3 (RFC 5737)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (RFC 1112 §4)
+}
+
+// IsPublicUnicast reports whether ip is safe to expose as a DNS
+// egress target: a public global-unicast address that is not RFC1918
+// private and not inside any reservedV4Prefixes block. It is the
+// single source of truth for "public" — the proxy's answer filter
+// (blockedIP) and network.AllowIPs both call it, so the layer that
+// strips records from the guest's reply and the layer that pokes the
+// nftables allow-set can never disagree about which addresses are
+// reachable. Anything it rejects reaches neither the guest nor the
+// allow-set.
+func IsPublicUnicast(ip netip.Addr) bool {
 	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	for _, pfx := range reservedV4Prefixes {
+		if pfx.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+// blockedIP reports whether a resolved address must never reach a
+// guest or its egress allow-set: everything IsPublicUnicast rejects
+// (non-global-unicast, RFC1918, and the IANA special-purpose ranges
+// including link-local cloud metadata and CGNAT) plus any
+// operator-configured Config.BlockedPrefixes (e.g. a sandbox pool
+// placed outside RFC1918).
+func (p *Proxy) blockedIP(ip netip.Addr) bool {
+	if !IsPublicUnicast(ip) {
 		return true
 	}
 	for _, pfx := range p.cfg.BlockedPrefixes {

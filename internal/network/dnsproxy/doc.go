@@ -15,9 +15,12 @@
 //
 // Request handling:
 //
-//  1. Shed load: a global inflight cap bounds handler concurrency
-//     and a per-source token bucket bounds each sandbox's query
-//     rate. Packets beyond either limit are dropped silently.
+//  1. Shed load: a global inflight cap bounds total handler
+//     concurrency, a per-source in-flight cap bounds any one
+//     sandbox's share of it (so a slow/stalling upstream can't let
+//     one guest starve the rest), and a per-source token bucket
+//     bounds each sandbox's query rate. Packets beyond any limit are
+//     dropped silently.
 //  2. Look up the policy by source IP in a sync.Map. Unknown
 //     sources (no sandbox registered for that IP) are dropped
 //     silently — no reply, no log-spam.
@@ -28,9 +31,11 @@
 //     TCP fallback on truncation for free).
 //  5. Vet the answer section. AAAA records are stripped (the
 //     sandbox network is IPv4-only), as is any A record whose
-//     address is not public global-unicast — link-local (cloud
-//     metadata), loopback, RFC1918/sandbox-pool, multicast,
-//     broadcast — or inside a configured blocked prefix. An
+//     address is not public global-unicast (see IsPublicUnicast) —
+//     link-local (cloud metadata 169.254.169.254), loopback,
+//     RFC1918/sandbox-pool, CGNAT (Alibaba metadata 100.100.100.200),
+//     multicast, broadcast, and the other IANA special-purpose
+//     ranges — or inside a configured blocked prefix. An
 //     attacker-controlled upstream must not be able to open
 //     egress to the host, another tenant, or the LAN. At most
 //     maxAnswerIPs A records survive per reply.

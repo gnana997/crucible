@@ -287,10 +287,12 @@ func RemoveSandbox(ctx context.Context, sandboxID, hostIface string, guestIP net
 // certainly a DNS record with a degenerate TTL (we cap to keep
 // the set from growing unbounded).
 //
-// Addresses outside public global-unicast space are refused
-// outright. The proxy range-filters before calling; this re-check
-// guarantees no future caller can open egress to link-local,
-// loopback, or private/sandbox-pool space.
+// Addresses that aren't public global-unicast are refused outright.
+// The proxy range-filters before calling; this re-check shares the
+// exact same predicate (dnsproxy.IsPublicUnicast) so no future caller
+// can open egress to link-local (cloud metadata), loopback, CGNAT
+// (Alibaba metadata 100.100.100.200), private/sandbox-pool, or any
+// other IANA special-purpose range.
 func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) error {
 	if len(ips) == 0 {
 		return nil
@@ -300,7 +302,7 @@ func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) e
 		if !e.Addr.Is4() {
 			return fmt.Errorf("network: AllowIPs only supports IPv4, got %s", e.Addr)
 		}
-		if !e.Addr.IsGlobalUnicast() || e.Addr.IsPrivate() {
+		if !dnsproxy.IsPublicUnicast(e.Addr) {
 			return fmt.Errorf("network: AllowIPs refuses non-public address %s", e.Addr)
 		}
 		ttl := e.TTL

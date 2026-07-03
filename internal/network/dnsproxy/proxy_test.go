@@ -516,6 +516,19 @@ func TestProxyStripsUnroutableAnswers(t *testing.T) {
 		"224.0.0.1",       // multicast
 		"255.255.255.255", // broadcast
 		"0.0.0.0",         // unspecified
+		// IANA special-purpose ranges that look like global unicast
+		// but must never be an egress target (R1).
+		"100.100.100.200", // Alibaba cloud metadata (CGNAT / RFC 6598)
+		"100.64.0.1",      // CGNAT low edge
+		"100.127.255.255", // CGNAT high edge
+		"0.1.2.3",         // 0.0.0.0/8 "this network" (non-zero host)
+		"192.0.0.171",     // NAT64/DS-Lite (IETF protocol assignments)
+		"192.0.2.7",       // TEST-NET-1 documentation
+		"192.88.99.1",     // 6to4 relay anycast (deprecated)
+		"198.18.0.5",      // benchmarking (RFC 2544)
+		"198.51.100.9",    // TEST-NET-2 documentation
+		"203.0.113.9",     // TEST-NET-3 documentation
+		"240.0.0.1",       // reserved / future use (class E)
 	}
 	for _, bad := range cases {
 		t.Run(bad, func(t *testing.T) {
@@ -540,12 +553,16 @@ func TestProxyStripsUnroutableAnswers(t *testing.T) {
 }
 
 func TestProxyBlockedPrefixes(t *testing.T) {
-	// 100.64.0.0/10 (CGNAT) is global-unicast and not RFC1918, so
-	// only the configured prefix — how the manager passes a
-	// non-RFC1918 sandbox pool — can catch it.
-	upstream, _ := startStubUpstream(t, 60, "100.64.1.2")
+	// A genuinely public, globally-routable address (Google DNS) that
+	// IsPublicUnicast accepts — so only an operator-configured
+	// BlockedPrefixes entry (how the manager passes a sandbox pool
+	// placed outside RFC1918) can strip it. This exercises the config
+	// layer on top of the built-in reserved-range filter. (CGNAT and
+	// the other IANA special ranges are now caught by the built-in
+	// filter regardless of config — see TestProxyStripsUnroutableAnswers.)
+	upstream, _ := startStubUpstream(t, 60, "8.8.8.8")
 	_, proxyAddr, recorder := startTestProxyCfg(t, upstream, []string{"example.com"}, func(c *Config) {
-		c.BlockedPrefixes = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10")}
+		c.BlockedPrefixes = []netip.Prefix{netip.MustParsePrefix("8.8.8.0/24")}
 	})
 
 	resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
@@ -661,5 +678,99 @@ func TestProxyBoundsInflightConcurrency(t *testing.T) {
 	}
 	if hits > 4 {
 		t.Errorf("upstream hits = %d for a 10-query burst with MaxInflight=2", hits)
+	}
+}
+
+// TestProxyCapsPerSourceInflight covers the R3 fix: even when the
+// global pool has ample room, one source can't hold more than
+// PerSourceInflight upstream round-trips at once — so a single guest
+// pointed at a slow/stalling authoritative server can't monopolize
+// the shared pool and starve other sandboxes' DNS.
+func TestProxyCapsPerSourceInflight(t *testing.T) {
+	// Slow upstream so handlers pile up. Global pool is 16 (would
+	// admit all 10 queries), but PerSourceInflight=2 holds this one
+	// source to ~2 concurrent — a couple of waves within the client
+	// timeout, well under 10.
+	upstream, upstreamHits := startStubUpstreamDelay(t, 500*time.Millisecond, 60, "93.184.216.34")
+	_, proxyAddr, _ := startTestProxyCfg(t, upstream, []string{"example.com"}, func(c *Config) {
+		c.MaxInflight = 16
+		c.PerSourceInflight = 2
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := &dns.Client{
+				Net:     "udp",
+				Timeout: time.Second,
+				Dialer: &net.Dialer{
+					LocalAddr: &net.UDPAddr{IP: net.ParseIP(guestIP), Port: 0},
+					Timeout:   time.Second,
+				},
+			}
+			req := new(dns.Msg)
+			req.SetQuestion(dns.Fqdn("example.com"), dns.TypeA)
+			_, _, _ = c.Exchange(req, proxyAddr)
+		}()
+	}
+	wg.Wait()
+
+	hits := upstreamHits.Load()
+	if hits == 0 {
+		t.Fatal("all queries dropped — per-source cap over-aggressive")
+	}
+	if hits > 4 {
+		t.Errorf("upstream hits = %d for a single-source 10-query burst with PerSourceInflight=2 (global 16) — per-source cap not limiting", hits)
+	}
+}
+
+// TestIsPublicUnicast pins the exact address ranges the egress filter
+// treats as public (R1). Everything else — non-global-unicast,
+// RFC1918, and the IANA special-purpose blocks — must be rejected so
+// it reaches neither the guest nor the nftables allow-set.
+func TestIsPublicUnicast(t *testing.T) {
+	cases := []struct {
+		ip   string
+		want bool
+	}{
+		// Public global-unicast — the only addresses that pass.
+		{"8.8.8.8", true},
+		{"93.184.216.34", true},
+		{"1.1.1.1", true},
+		// Non-global-unicast (netip rejects these).
+		{"169.254.169.254", false}, // link-local cloud metadata
+		{"127.0.0.1", false},       // loopback
+		{"224.0.0.1", false},       // multicast
+		{"255.255.255.255", false}, // broadcast
+		{"0.0.0.0", false},         // unspecified
+		// RFC1918 private.
+		{"10.20.3.2", false},
+		{"172.16.0.1", false},
+		{"192.168.1.1", false},
+		// IANA special-purpose ranges added by the R1 fix.
+		{"100.100.100.200", false}, // Alibaba metadata (CGNAT)
+		{"100.64.0.0", false},      // CGNAT low edge
+		{"100.127.255.255", false}, // CGNAT high edge
+		{"0.1.2.3", false},         // 0.0.0.0/8 non-zero host
+		{"192.0.0.171", false},     // NAT64/DS-Lite
+		{"192.0.2.1", false},       // TEST-NET-1
+		{"192.88.99.1", false},     // 6to4 relay anycast
+		{"198.18.0.1", false},      // benchmarking
+		{"198.19.255.255", false},  // benchmarking (upper half of /15)
+		{"198.51.100.1", false},    // TEST-NET-2
+		{"203.0.113.1", false},     // TEST-NET-3
+		{"240.0.0.1", false},       // reserved / future use
+		// Just outside the special ranges — must stay public.
+		{"100.63.255.255", true}, // one below CGNAT
+		{"100.128.0.0", true},    // one above CGNAT
+		{"198.17.255.255", true}, // one below benchmarking
+		{"198.20.0.0", true},     // one above benchmarking
+	}
+	for _, c := range cases {
+		if got := IsPublicUnicast(netip.MustParseAddr(c.ip)); got != c.want {
+			t.Errorf("IsPublicUnicast(%s) = %v, want %v", c.ip, got, c.want)
+		}
 	}
 }
