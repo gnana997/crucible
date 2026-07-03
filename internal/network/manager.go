@@ -163,7 +163,7 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	}
 
 	// 3. nftables base table.
-	if err := EnsureBaseTable(ctx, cfg.EgressIface); err != nil {
+	if err := EnsureBaseTable(ctx, cfg.EgressIface, cfg.DNSAnycast); err != nil {
 		_ = removeCrucibleDNSIface(context.Background())
 		return nil, fmt.Errorf("network: nft base table: %w", err)
 	}
@@ -177,8 +177,13 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	proxy, err := dnsproxy.Start(dnsproxy.Config{
 		ListenAddr: listen,
 		Upstream:   upstream,
-		AllowIP:    AllowIP, // package-level helper from nft.go
-		Logger:     log,
+		AllowIP:    AllowIPs, // package-level helper from nft.go
+		// The proxy already rejects everything non-public
+		// (private, loopback, link-local, …); the pool is passed
+		// explicitly so an operator-configured pool outside
+		// RFC1918 space stays unreachable too.
+		BlockedPrefixes: []netip.Prefix{cfg.SubnetPool},
+		Logger:          log,
 	})
 	if err != nil {
 		_ = TeardownBaseTable(context.Background())
@@ -302,12 +307,12 @@ func (m *Manager) Setup(ctx context.Context, req SandboxSetup) (*SandboxHandle, 
 	}()
 
 	// 4. nft per-sandbox rules.
-	if err := InstallSandbox(ctx, req.SandboxID, vspec.HostVeth(), m.cfg.DNSAnycast); err != nil {
+	if err := InstallSandbox(ctx, req.SandboxID, vspec.HostVeth(), lease.GuestIP, m.cfg.DNSAnycast); err != nil {
 		return nil, fmt.Errorf("network: nft install: %w", err)
 	}
 	defer func() {
 		if !success {
-			_ = RemoveSandbox(context.Background(), req.SandboxID, vspec.HostVeth())
+			_ = RemoveSandbox(context.Background(), req.SandboxID, vspec.HostVeth(), lease.GuestIP)
 		}
 	}()
 
@@ -400,7 +405,7 @@ func (m *Manager) Teardown(ctx context.Context, h *SandboxHandle) error {
 		Lease:      h.Lease,
 		DNSAnycast: m.cfg.DNSAnycast,
 	}
-	if err := RemoveSandbox(ctx, h.SandboxID, vspec.HostVeth()); err != nil {
+	if err := RemoveSandbox(ctx, h.SandboxID, vspec.HostVeth(), h.Lease.GuestIP); err != nil {
 		m.log.Warn("nft remove", "sandbox", h.SandboxID, "err", err)
 	}
 	if err := Teardown(ctx, vspec); err != nil {

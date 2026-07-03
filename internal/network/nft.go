@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/gnana997/crucible/internal/network/dnsproxy"
 )
 
 // NftTableName is the single inet-family nftables table every
@@ -18,8 +20,10 @@ const NftTableName = "crucible"
 // nft chain and map names, derived from the table name.
 const (
 	nftForwardChain     = "forward"
+	nftInputChain       = "input"
 	nftPostroutingChain = "postrouting"
 	nftSandboxMap       = "sandbox_chains" // iifname verdict map
+	nftGuestSourcesSet  = "guest_sources"  // ifname . guest-IP pairs
 )
 
 // sandboxChainName returns the per-sandbox chain name. All
@@ -40,15 +44,26 @@ func sandboxAllowedSetName(sandboxID string) string {
 //   - the forward chain, default policy drop, dispatching on
 //     iifname to the appropriate per-sandbox chain
 //   - the sandbox_chains verdict map used for that dispatch
+//   - the guest_sources set + input chain gating guest→host
+//     traffic (only DNS to the anycast, only from a registered
+//     (veth, guest IP) pair)
 //   - the postrouting chain with masquerade on the egress iface
 //
 // Rendered as a string so tests can assert it byte-for-byte, and
 // so callers can inspect or log what got applied.
-func BuildBaseScript(egressIface string) string {
+func BuildBaseScript(egressIface string, dnsAnycast netip.Addr) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %s {\n", NftTableName)
 	fmt.Fprintf(&b, "\tmap %s {\n", nftSandboxMap)
 	fmt.Fprintf(&b, "\t\ttype ifname : verdict\n")
+	fmt.Fprintf(&b, "\t}\n")
+	// guest_sources pairs each sandbox's host-side veth with its
+	// guest IP. The input chain's DNS accept matches against it,
+	// which is what makes the DNS proxy's source-IP policy lookup
+	// kernel-attested: a guest spoofing another sandbox's IP sends
+	// a (veth, saddr) pair that isn't in the set and is dropped.
+	fmt.Fprintf(&b, "\tset %s {\n", nftGuestSourcesSet)
+	fmt.Fprintf(&b, "\t\ttype ifname . ipv4_addr\n")
 	fmt.Fprintf(&b, "\t}\n")
 	fmt.Fprintf(&b, "\tchain %s {\n", nftForwardChain)
 	fmt.Fprintf(&b, "\t\ttype filter hook forward priority 0; policy drop;\n")
@@ -58,6 +73,18 @@ func BuildBaseScript(egressIface string) string {
 	fmt.Fprintf(&b, "\t\tct state established,related accept\n")
 	// Dispatch outbound by ingress iface name to per-sandbox chain.
 	fmt.Fprintf(&b, "\t\tiifname vmap @%s\n", nftSandboxMap)
+	fmt.Fprintf(&b, "\t}\n")
+	// Input chain: the forward chain never sees guest packets whose
+	// destination is host-local (the DNS anycast, veth gateways, any
+	// daemon bound to 0.0.0.0) — those traverse INPUT. Policy stays
+	// accept so the host's own traffic (SSH etc.) is untouched; we
+	// gate only packets arriving from sandbox veths, allowing DNS to
+	// the anycast and dropping everything else.
+	fmt.Fprintf(&b, "\tchain %s {\n", nftInputChain)
+	fmt.Fprintf(&b, "\t\ttype filter hook input priority 0; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr %s udp dport 53 accept\n",
+		nftGuestSourcesSet, dnsAnycast)
+	fmt.Fprintf(&b, "\t\tiifname %q drop\n", vethHostPrefix+"*")
 	fmt.Fprintf(&b, "\t}\n")
 	fmt.Fprintf(&b, "\tchain %s {\n", nftPostroutingChain)
 	fmt.Fprintf(&b, "\t\ttype nat hook postrouting priority 100;\n")
@@ -79,7 +106,10 @@ func BuildBaseScript(egressIface string) string {
 //  2. accept any packet whose destination is in the allowed set
 //  3. fall through → drop (implicitly, because the forward chain's
 //     default policy is drop and we don't accept here)
-func BuildSandboxScript(sandboxID string, hostIface string, anycast netip.Addr) string {
+//
+// It also registers the (host veth, guest IP) pair in the base
+// guest_sources set so the input chain accepts this guest's DNS.
+func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast netip.Addr) string {
 	chain := sandboxChainName(sandboxID)
 	set := sandboxAllowedSetName(sandboxID)
 
@@ -98,20 +128,25 @@ func BuildSandboxScript(sandboxID string, hostIface string, anycast netip.Addr) 
 	// parses as an ifname literal.
 	fmt.Fprintf(&b, "add element inet %s %s { %q : jump %s }\n",
 		NftTableName, nftSandboxMap, hostIface, chain)
+	// Anti-spoof pair for the input chain's DNS accept.
+	fmt.Fprintf(&b, "add element inet %s %s { %q . %s }\n",
+		NftTableName, nftGuestSourcesSet, hostIface, guestIP)
 	return b.String()
 }
 
 // BuildSandboxTeardownScript removes everything BuildSandboxScript
 // added. Used in Teardown and by the orphan reap.
 //
-// The map element is removed first so no new packets dispatch to
-// the chain during the brief window where the chain is being
-// emptied.
-func BuildSandboxTeardownScript(sandboxID string, hostIface string) string {
+// The guest_sources pair and map element are removed first so no
+// new packets are accepted or dispatched to the chain during the
+// brief window where the chain is being emptied.
+func BuildSandboxTeardownScript(sandboxID string, hostIface string, guestIP netip.Addr) string {
 	chain := sandboxChainName(sandboxID)
 	set := sandboxAllowedSetName(sandboxID)
 
 	var b strings.Builder
+	fmt.Fprintf(&b, "delete element inet %s %s { %q . %s }\n",
+		NftTableName, nftGuestSourcesSet, hostIface, guestIP)
 	fmt.Fprintf(&b, "delete element inet %s %s { %q }\n",
 		NftTableName, nftSandboxMap, hostIface)
 	fmt.Fprintf(&b, "delete chain inet %s %s\n", NftTableName, chain)
@@ -124,7 +159,7 @@ func BuildSandboxTeardownScript(sandboxID string, hostIface string) string {
 // tearing down any previous instance, guaranteeing a clean state
 // on startup. Operators who want to preserve state across daemon
 // restarts shouldn't; every restart is a fresh world.
-func EnsureBaseTable(ctx context.Context, egressIface string) error {
+func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr) error {
 	// Flush any prior state, ignoring "no such table" errors.
 	if err := runCmd(ctx, "nft", "flush", "table", "inet", NftTableName); err != nil {
 		if !isNoSuchTable(err) {
@@ -136,7 +171,7 @@ func EnsureBaseTable(ctx context.Context, egressIface string) error {
 			return fmt.Errorf("delete existing table: %w", err)
 		}
 	}
-	script := BuildBaseScript(egressIface)
+	script := BuildBaseScript(egressIface, dnsAnycast)
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		return fmt.Errorf("install base table: %w", err)
 	}
@@ -219,16 +254,16 @@ func removeIptablesForward(ctx context.Context) error {
 // InstallSandbox applies BuildSandboxScript via nft -f -. Must be
 // called after EnsureBaseTable and after the host-side veth
 // (hostIface) exists.
-func InstallSandbox(ctx context.Context, sandboxID, hostIface string, anycast netip.Addr) error {
-	script := BuildSandboxScript(sandboxID, hostIface, anycast)
+func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, anycast netip.Addr) error {
+	script := BuildSandboxScript(sandboxID, hostIface, guestIP, anycast)
 	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
 
 // RemoveSandbox applies BuildSandboxTeardownScript. Idempotent —
 // missing objects are treated as success so double-teardown
 // doesn't fail.
-func RemoveSandbox(ctx context.Context, sandboxID, hostIface string) error {
-	script := BuildSandboxTeardownScript(sandboxID, hostIface)
+func RemoveSandbox(ctx context.Context, sandboxID, hostIface string, guestIP netip.Addr) error {
+	script := BuildSandboxTeardownScript(sandboxID, hostIface, guestIP)
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		// Partial-remove is common (e.g., the chain was already
 		// deleted by a prior failed removal). Log at the caller;
@@ -241,28 +276,46 @@ func RemoveSandbox(ctx context.Context, sandboxID, hostIface string) error {
 	return nil
 }
 
-// AllowIP adds an IPv4 address to the sandbox's allowed-IPs set
-// with the given timeout. Called by the DNS proxy on each allowed
-// resolution.
+// AllowIPs adds a batch of resolved IPv4 addresses to the
+// sandbox's allowed-IPs set, one nft invocation per batch. Called
+// by the DNS proxy once per allowed resolution reply — batching
+// (rather than one fork per record) is what keeps a fat DNS
+// response from forking thousands of nft processes.
 //
-// Timeout is clamped to sensible bounds — 1 second is the nft
+// Each timeout is clamped to sensible bounds — 1 second is the nft
 // minimum granularity, and anything longer than an hour is almost
 // certainly a DNS record with a degenerate TTL (we cap to keep
 // the set from growing unbounded).
-func AllowIP(ctx context.Context, sandboxID string, ip netip.Addr, ttl time.Duration) error {
-	if !ip.Is4() {
-		return fmt.Errorf("network: AllowIP only supports IPv4, got %s", ip)
+//
+// Addresses outside public global-unicast space are refused
+// outright. The proxy range-filters before calling; this re-check
+// guarantees no future caller can open egress to link-local,
+// loopback, or private/sandbox-pool space.
+func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) error {
+	if len(ips) == 0 {
+		return nil
 	}
-	if ttl < time.Second {
-		ttl = time.Second
-	}
-	if ttl > time.Hour {
-		ttl = time.Hour
+	elems := make([]string, 0, len(ips))
+	for _, e := range ips {
+		if !e.Addr.Is4() {
+			return fmt.Errorf("network: AllowIPs only supports IPv4, got %s", e.Addr)
+		}
+		if !e.Addr.IsGlobalUnicast() || e.Addr.IsPrivate() {
+			return fmt.Errorf("network: AllowIPs refuses non-public address %s", e.Addr)
+		}
+		ttl := e.TTL
+		if ttl < time.Second {
+			ttl = time.Second
+		}
+		if ttl > time.Hour {
+			ttl = time.Hour
+		}
+		elems = append(elems, fmt.Sprintf("%s timeout %ds", e.Addr, int64(ttl.Seconds())))
 	}
 	set := sandboxAllowedSetName(sandboxID)
-	elem := fmt.Sprintf("add element inet %s %s { %s timeout %ds }\n",
-		NftTableName, set, ip, int64(ttl.Seconds()))
-	return runCmdStdin(ctx, elem, "nft", "-f", "-")
+	script := fmt.Sprintf("add element inet %s %s { %s }\n",
+		NftTableName, set, strings.Join(elems, ", "))
+	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
 
 // isNoSuchTable recognizes nft's error message for a missing

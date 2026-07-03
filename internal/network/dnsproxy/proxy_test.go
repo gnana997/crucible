@@ -75,10 +75,17 @@ const (
 )
 
 // startStubUpstream spins up a miekg/dns server on 127.0.0.3 that
-// answers any A query with a canned record. Returns its address
+// answers any A query with the canned records. Returns its address
 // and a counter that tests can assert on to verify the proxy
 // actually forwarded (vs. short-circuiting).
-func startStubUpstream(t *testing.T, answerIP string, ttl uint32) (string, *atomic.Int64) {
+func startStubUpstream(t *testing.T, ttl uint32, answerIPs ...string) (string, *atomic.Int64) {
+	t.Helper()
+	return startStubUpstreamDelay(t, 0, ttl, answerIPs...)
+}
+
+// startStubUpstreamDelay is startStubUpstream with an artificial
+// per-query delay, for tests that need handlers to pile up.
+func startStubUpstreamDelay(t *testing.T, delay time.Duration, ttl uint32, answerIPs ...string) (string, *atomic.Int64) {
 	t.Helper()
 	var count atomic.Int64
 
@@ -93,21 +100,29 @@ func startStubUpstream(t *testing.T, answerIP string, ttl uint32) (string, *atom
 		PacketConn: conn,
 		Handler: dns.HandlerFunc(func(w dns.ResponseWriter, r *dns.Msg) {
 			count.Add(1)
+			if delay > 0 {
+				time.Sleep(delay)
+			}
 			reply := new(dns.Msg)
 			reply.SetReply(r)
+			// Compress so many-record replies stay under the plain-
+			// UDP 512-byte limit (test clients don't send EDNS0).
+			reply.Compress = true
 			for _, q := range r.Question {
 				if q.Qtype != dns.TypeA {
 					continue
 				}
-				reply.Answer = append(reply.Answer, &dns.A{
-					Hdr: dns.RR_Header{
-						Name:   q.Name,
-						Rrtype: dns.TypeA,
-						Class:  dns.ClassINET,
-						Ttl:    ttl,
-					},
-					A: net.ParseIP(answerIP).To4(),
-				})
+				for _, ip := range answerIPs {
+					reply.Answer = append(reply.Answer, &dns.A{
+						Hdr: dns.RR_Header{
+							Name:   q.Name,
+							Rrtype: dns.TypeA,
+							Class:  dns.ClassINET,
+							Ttl:    ttl,
+						},
+						A: net.ParseIP(ip).To4(),
+					})
+				}
 			}
 			_ = w.WriteMsg(reply)
 		}),
@@ -127,6 +142,13 @@ func startStubUpstream(t *testing.T, answerIP string, ttl uint32) (string, *atom
 // an allowIP call log so tests can assert nft updates.
 func startTestProxy(t *testing.T, upstream string, patterns []string) (*Proxy, string, *allowIPRecorder) {
 	t.Helper()
+	return startTestProxyCfg(t, upstream, patterns, nil)
+}
+
+// startTestProxyCfg is startTestProxy with a Config-mutating hook
+// for tests exercising non-default limits/prefixes.
+func startTestProxyCfg(t *testing.T, upstream string, patterns []string, mutate func(*Config)) (*Proxy, string, *allowIPRecorder) {
+	t.Helper()
 	recorder := newAllowIPRecorder()
 
 	// bind :0 to get a free port
@@ -137,11 +159,15 @@ func startTestProxy(t *testing.T, upstream string, patterns []string) (*Proxy, s
 	proxyAddr := listener.LocalAddr().String()
 	_ = listener.Close() // release so Start can bind
 
-	p, err := Start(Config{
+	cfg := Config{
 		ListenAddr: proxyAddr,
 		Upstream:   upstream,
 		AllowIP:    recorder.record,
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	p, err := Start(cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -194,17 +220,27 @@ type allowIPCall struct {
 }
 
 type allowIPRecorder struct {
-	mu    sync.Mutex
-	calls []allowIPCall
+	mu      sync.Mutex
+	batches int // one per hook invocation (i.e. per reply)
+	calls   []allowIPCall
 }
 
 func newAllowIPRecorder() *allowIPRecorder { return &allowIPRecorder{} }
 
-func (r *allowIPRecorder) record(_ context.Context, sandboxID string, ip netip.Addr, ttl time.Duration) error {
+func (r *allowIPRecorder) record(_ context.Context, sandboxID string, ips []AllowedIP) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, allowIPCall{SandboxID: sandboxID, IP: ip, TTL: ttl})
+	r.batches++
+	for _, e := range ips {
+		r.calls = append(r.calls, allowIPCall{SandboxID: sandboxID, IP: e.Addr, TTL: e.TTL})
+	}
 	return nil
+}
+
+func (r *allowIPRecorder) batchCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.batches
 }
 
 func (r *allowIPRecorder) snapshot() []allowIPCall {
@@ -218,7 +254,7 @@ func (r *allowIPRecorder) snapshot() []allowIPCall {
 // --- tests ------------------------------------------------------
 
 func TestProxyAllowedQueryForwardsAndPokesNFT(t *testing.T) {
-	upstream, upstreamHits := startStubUpstream(t, "93.184.216.34", 60)
+	upstream, upstreamHits := startStubUpstream(t, 60, "93.184.216.34")
 	_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"example.com"})
 
 	resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
@@ -261,7 +297,7 @@ func TestProxyAllowedQueryForwardsAndPokesNFT(t *testing.T) {
 
 func TestProxyDeniedQueryReturnsNXDOMAIN(t *testing.T) {
 	// Upstream shouldn't be consulted — assert its counter stays 0.
-	upstream, upstreamHits := startStubUpstream(t, "93.184.216.34", 60)
+	upstream, upstreamHits := startStubUpstream(t, 60, "93.184.216.34")
 	_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"pypi.org"})
 
 	resp, err := sendFromGuest(t, proxyAddr, guestIP, "evil.example.com", dns.TypeA)
@@ -283,7 +319,7 @@ func TestProxyDeniedQueryReturnsNXDOMAIN(t *testing.T) {
 }
 
 func TestProxyUnknownSourceIsDropped(t *testing.T) {
-	upstream, _ := startStubUpstream(t, "93.184.216.34", 60)
+	upstream, _ := startStubUpstream(t, 60, "93.184.216.34")
 	_, proxyAddr, _ := startTestProxy(t, upstream, []string{"example.com"})
 
 	// Use a source IP we did NOT register. Proxy should drop
@@ -305,7 +341,7 @@ func TestProxyUnknownSourceIsDropped(t *testing.T) {
 }
 
 func TestProxyWildcardAllowlist(t *testing.T) {
-	upstream, _ := startStubUpstream(t, "10.11.12.13", 30)
+	upstream, _ := startStubUpstream(t, 30, "104.16.1.1")
 	_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"*.npmjs.org"})
 
 	resp, err := sendFromGuest(t, proxyAddr, guestIP, "registry.npmjs.org", dns.TypeA)
@@ -332,7 +368,7 @@ func TestProxyWildcardAllowlist(t *testing.T) {
 }
 
 func TestProxyDeregisterStopsAcceptingQueries(t *testing.T) {
-	upstream, _ := startStubUpstream(t, "1.2.3.4", 30)
+	upstream, _ := startStubUpstream(t, 30, "1.2.3.4")
 	p, proxyAddr, _ := startTestProxy(t, upstream, []string{"example.com"})
 
 	// Warmup: allowed query works.
@@ -378,8 +414,8 @@ func TestProxyUpstreamFailureReturnsServfail(t *testing.T) {
 
 func TestStartRejectsEmptyConfig(t *testing.T) {
 	cases := []Config{
-		{Upstream: "1.1.1.1:53", AllowIP: func(context.Context, string, netip.Addr, time.Duration) error { return nil }},
-		{ListenAddr: "127.0.0.2:0", AllowIP: func(context.Context, string, netip.Addr, time.Duration) error { return nil }},
+		{Upstream: "1.1.1.1:53", AllowIP: func(context.Context, string, []AllowedIP) error { return nil }},
+		{ListenAddr: "127.0.0.2:0", AllowIP: func(context.Context, string, []AllowedIP) error { return nil }},
 		{ListenAddr: "127.0.0.2:0", Upstream: "1.1.1.1:53"},
 	}
 	for i, cfg := range cases {
@@ -396,7 +432,7 @@ func TestStartFailsOnUnbindableAddress(t *testing.T) {
 	_, err := Start(Config{
 		ListenAddr: "240.0.0.1:53",
 		Upstream:   "1.1.1.1:53",
-		AllowIP:    func(context.Context, string, netip.Addr, time.Duration) error { return nil },
+		AllowIP:    func(context.Context, string, []AllowedIP) error { return nil },
 	})
 	if err == nil {
 		t.Fatal("expected bind error for unbindable address")
@@ -410,7 +446,7 @@ func TestPolicyForSourceIPLookup(t *testing.T) {
 
 	// We re-use startTestProxy's side effect (registers guestIP)
 	// but reach into a fresh proxy for direct introspection.
-	upstream, _ := startStubUpstream(t, "1.2.3.4", 30)
+	upstream, _ := startStubUpstream(t, 30, "1.2.3.4")
 	p, _, _ := startTestProxy(t, upstream, []string{"x.com"})
 
 	if _, ok := p.policyFor(mustAddr(t, guestIP)); !ok {
@@ -465,4 +501,165 @@ func TestSourceIPHelper(t *testing.T) {
 	}
 
 	_ = fmt.Sprintf // silence unused import in case we trim stubs later
+}
+
+// TestProxyStripsUnroutableAnswers is the C1 regression test: an
+// attacker-controlled upstream answering with metadata, sandbox-
+// pool, LAN, or other non-public addresses must get NOTHING — no
+// allow-set update, no record returned to the guest.
+func TestProxyStripsUnroutableAnswers(t *testing.T) {
+	cases := []string{
+		"169.254.169.254", // cloud metadata (link-local)
+		"10.20.3.2",       // sandbox pool (also RFC1918)
+		"192.168.1.10",    // host LAN
+		"127.0.0.1",       // loopback
+		"224.0.0.1",       // multicast
+		"255.255.255.255", // broadcast
+		"0.0.0.0",         // unspecified
+	}
+	for _, bad := range cases {
+		t.Run(bad, func(t *testing.T) {
+			upstream, _ := startStubUpstream(t, 60, bad)
+			_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"example.com"})
+
+			resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
+			if err != nil {
+				t.Fatalf("Exchange: %v", err)
+			}
+			if resp.Rcode != dns.RcodeSuccess {
+				t.Fatalf("Rcode = %d, want NOERROR", resp.Rcode)
+			}
+			if len(resp.Answer) != 0 {
+				t.Errorf("%s not stripped from reply: %v", bad, resp.Answer)
+			}
+			if calls := recorder.snapshot(); len(calls) != 0 {
+				t.Errorf("AllowIP called for %s: %+v", bad, calls)
+			}
+		})
+	}
+}
+
+func TestProxyBlockedPrefixes(t *testing.T) {
+	// 100.64.0.0/10 (CGNAT) is global-unicast and not RFC1918, so
+	// only the configured prefix — how the manager passes a
+	// non-RFC1918 sandbox pool — can catch it.
+	upstream, _ := startStubUpstream(t, 60, "100.64.1.2")
+	_, proxyAddr, recorder := startTestProxyCfg(t, upstream, []string{"example.com"}, func(c *Config) {
+		c.BlockedPrefixes = []netip.Prefix{netip.MustParsePrefix("100.64.0.0/10")}
+	})
+
+	resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("blocked-prefix address not stripped: %v", resp.Answer)
+	}
+	if calls := recorder.snapshot(); len(calls) != 0 {
+		t.Errorf("AllowIP called for blocked prefix: %+v", calls)
+	}
+}
+
+// TestProxyBatchesAndCapsAnswerRecords covers the H3 fan-out fix:
+// a fat reply produces exactly one AllowIP invocation carrying at
+// most maxAnswerIPs records, and the guest sees the same capped
+// set.
+func TestProxyBatchesAndCapsAnswerRecords(t *testing.T) {
+	ips := make([]string, 20)
+	for i := range ips {
+		ips[i] = fmt.Sprintf("93.184.216.%d", i+1)
+	}
+	upstream, _ := startStubUpstream(t, 60, ips...)
+	_, proxyAddr, recorder := startTestProxy(t, upstream, []string{"example.com"})
+
+	resp, err := sendFromGuest(t, proxyAddr, guestIP, "example.com", dns.TypeA)
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	if len(resp.Answer) != maxAnswerIPs {
+		t.Errorf("guest sees %d answers, want cap %d", len(resp.Answer), maxAnswerIPs)
+	}
+	if got := recorder.batchCount(); got != 1 {
+		t.Errorf("AllowIP invocations = %d, want 1 (batched per reply)", got)
+	}
+	if calls := recorder.snapshot(); len(calls) != maxAnswerIPs {
+		t.Errorf("AllowIP records = %d, want cap %d", len(calls), maxAnswerIPs)
+	}
+}
+
+func TestProxyRateLimitsPerSource(t *testing.T) {
+	upstream, upstreamHits := startStubUpstream(t, 60, "93.184.216.34")
+	_, proxyAddr, _ := startTestProxyCfg(t, upstream, []string{"example.com"}, func(c *Config) {
+		c.SourceQPS = 5 // burst 10
+	})
+
+	// Fire 40 queries as fast as possible. The bucket admits the
+	// burst (10) plus a small refill trickle; the rest must be
+	// dropped before reaching upstream.
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := &dns.Client{
+				Net:     "udp",
+				Timeout: 300 * time.Millisecond,
+				Dialer: &net.Dialer{
+					LocalAddr: &net.UDPAddr{IP: net.ParseIP(guestIP), Port: 0},
+					Timeout:   300 * time.Millisecond,
+				},
+			}
+			req := new(dns.Msg)
+			req.SetQuestion(dns.Fqdn("example.com"), dns.TypeA)
+			_, _, _ = c.Exchange(req, proxyAddr)
+		}()
+	}
+	wg.Wait()
+	time.Sleep(100 * time.Millisecond) // let in-flight handlers settle
+
+	hits := upstreamHits.Load()
+	if hits == 0 {
+		t.Fatal("all queries dropped — rate limiter over-aggressive")
+	}
+	if hits > 20 {
+		t.Errorf("upstream hits = %d for 40 rapid queries with burst 10 — limiter not limiting", hits)
+	}
+}
+
+func TestProxyBoundsInflightConcurrency(t *testing.T) {
+	// Slow upstream so handlers hold their semaphore slot; with
+	// MaxInflight=2, at most the first 2 of a 10-query burst do
+	// real work — the rest are shed at the gate.
+	upstream, upstreamHits := startStubUpstreamDelay(t, 500*time.Millisecond, 60, "93.184.216.34")
+	_, proxyAddr, _ := startTestProxyCfg(t, upstream, []string{"example.com"}, func(c *Config) {
+		c.MaxInflight = 2
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c := &dns.Client{
+				Net:     "udp",
+				Timeout: time.Second,
+				Dialer: &net.Dialer{
+					LocalAddr: &net.UDPAddr{IP: net.ParseIP(guestIP), Port: 0},
+					Timeout:   time.Second,
+				},
+			}
+			req := new(dns.Msg)
+			req.SetQuestion(dns.Fqdn("example.com"), dns.TypeA)
+			_, _, _ = c.Exchange(req, proxyAddr)
+		}()
+	}
+	wg.Wait()
+
+	hits := upstreamHits.Load()
+	if hits == 0 {
+		t.Fatal("all queries dropped — inflight gate over-aggressive")
+	}
+	if hits > 4 {
+		t.Errorf("upstream hits = %d for a 10-query burst with MaxInflight=2", hits)
+	}
 }

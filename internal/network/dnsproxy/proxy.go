@@ -13,15 +13,26 @@ import (
 	"github.com/miekg/dns"
 )
 
+// AllowedIP is one range-vetted A record from an upstream reply:
+// the resolved address plus the record's TTL (floored to 1s here;
+// the nft layer clamps the upper bound).
+type AllowedIP struct {
+	Addr netip.Addr
+	TTL  time.Duration
+}
+
 // AllowIPFunc is the hook the proxy calls after a successful
-// upstream resolution, once per A record in the answer section.
-// The daemon wires it to network.AllowIP, which in turn pokes
-// the per-sandbox nftables allowed-IPs set.
+// upstream resolution, once per reply with every vetted A record
+// from the answer section. The daemon wires it to
+// network.AllowIPs, which pokes the per-sandbox nftables
+// allowed-IPs set in a single nft invocation — batched per reply
+// (not per record) so a fat DNS response can't force one process
+// fork per A record.
 //
 // Exposed as a function value (not an interface) so test code
 // can pass a closure directly and assert call order without
 // stubbing a type.
-type AllowIPFunc func(ctx context.Context, sandboxID string, ip netip.Addr, ttl time.Duration) error
+type AllowIPFunc func(ctx context.Context, sandboxID string, ips []AllowedIP) error
 
 // Config bundles everything needed to construct a Proxy. Logger
 // and Timeout have sensible zero values; ListenAddr, Upstream,
@@ -38,17 +49,35 @@ type Config struct {
 	// time out and the guest sees SERVFAIL.
 	Upstream string
 
-	// AllowIP is called once per answer-section A record. See
-	// AllowIPFunc's doc. Required.
+	// AllowIP is called once per reply with the vetted A records.
+	// See AllowIPFunc's doc. Required.
 	AllowIP AllowIPFunc
+
+	// BlockedPrefixes lists CIDR ranges whose A records are
+	// stripped from replies and never passed to AllowIP, on top
+	// of the built-in rejection of everything that isn't public
+	// global-unicast. The manager passes the sandbox subnet pool
+	// here so a pool configured outside RFC1918 space stays
+	// unreachable too.
+	BlockedPrefixes []netip.Prefix
 
 	// UpstreamTimeout bounds one upstream query round-trip. Zero
 	// means DefaultUpstreamTimeout.
 	UpstreamTimeout time.Duration
 
 	// AllowIPTimeout bounds the time spent updating the nft set
-	// per A record. Zero means DefaultAllowIPTimeout.
+	// per reply. Zero means DefaultAllowIPTimeout.
 	AllowIPTimeout time.Duration
+
+	// MaxInflight caps concurrently served queries across all
+	// sandboxes; packets beyond it are dropped before any work is
+	// done. Zero means DefaultMaxInflight.
+	MaxInflight int
+
+	// SourceQPS is the sustained per-source query rate (burst is
+	// twice this); queries beyond it are dropped. Zero means
+	// DefaultSourceQPS.
+	SourceQPS int
 
 	// Logger receives lifecycle events and per-query summaries.
 	// Nil means slog.Default().
@@ -61,6 +90,24 @@ type Config struct {
 const (
 	DefaultUpstreamTimeout = 5 * time.Second
 	DefaultAllowIPTimeout  = 2 * time.Second
+
+	// DefaultMaxInflight bounds handler concurrency. miekg/dns
+	// spawns one goroutine per packet with no cap of its own, so
+	// this semaphore is what stands between a guest's UDP flood
+	// and unbounded goroutines each holding an upstream socket.
+	DefaultMaxInflight = 64
+
+	// DefaultSourceQPS is the sustained per-sandbox query rate.
+	// Generous for real workloads (package installs burst well
+	// below this) while keeping one guest from monopolizing the
+	// inflight slots.
+	DefaultSourceQPS = 50
+
+	// maxAnswerIPs caps how many A records of a single reply are
+	// returned to the guest and passed to AllowIP. Legitimate
+	// answers rarely carry more than a handful; a 64 KB TCP-
+	// fallback reply can carry thousands.
+	maxAnswerIPs = 16
 )
 
 // Matcher is the minimal interface the DNS proxy needs to
@@ -94,12 +141,20 @@ type Proxy struct {
 	cfg      Config
 	srv      *dns.Server
 	client   *dns.Client
-	tcp      *dns.Client // fallback on truncation
-	policies sync.Map    // key: netip.Addr (guest source IP), value: *Policy
+	tcp      *dns.Client   // fallback on truncation
+	policies sync.Map      // key: netip.Addr (guest source IP), value: *policyEntry
+	sem      chan struct{} // inflight-handler semaphore
 	log      *slog.Logger
 
 	started  chan struct{}
 	serveErr chan error
+}
+
+// policyEntry pairs the caller's Policy with the proxy-internal
+// per-source rate limiter.
+type policyEntry struct {
+	pol *Policy
+	lim *rateLimiter
 }
 
 // Start binds a UDP listener at cfg.ListenAddr and spawns the
@@ -123,6 +178,12 @@ func Start(cfg Config) (*Proxy, error) {
 	if cfg.AllowIPTimeout == 0 {
 		cfg.AllowIPTimeout = DefaultAllowIPTimeout
 	}
+	if cfg.MaxInflight <= 0 {
+		cfg.MaxInflight = DefaultMaxInflight
+	}
+	if cfg.SourceQPS <= 0 {
+		cfg.SourceQPS = DefaultSourceQPS
+	}
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
@@ -133,6 +194,7 @@ func Start(cfg Config) (*Proxy, error) {
 		cfg:      cfg,
 		client:   &dns.Client{Net: "udp", Timeout: cfg.UpstreamTimeout},
 		tcp:      &dns.Client{Net: "tcp", Timeout: cfg.UpstreamTimeout},
+		sem:      make(chan struct{}, cfg.MaxInflight),
 		log:      log,
 		started:  make(chan struct{}),
 		serveErr: make(chan error, 1),
@@ -201,7 +263,14 @@ func (p *Proxy) Register(guestIP netip.Addr, pol *Policy) {
 	if pol == nil || pol.Allowlist == nil {
 		return
 	}
-	p.policies.Store(guestIP, pol)
+	qps := p.cfg.SourceQPS
+	if qps <= 0 {
+		qps = DefaultSourceQPS
+	}
+	p.policies.Store(guestIP, &policyEntry{
+		pol: pol,
+		lim: newRateLimiter(float64(qps), float64(2*qps)),
+	})
 }
 
 // Deregister removes the policy for guestIP. Queries arriving
@@ -213,6 +282,18 @@ func (p *Proxy) Deregister(guestIP netip.Addr) {
 // ServeDNS is the miekg/dns Handler entry. Implements the flow
 // described in the package doc.
 func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+	// Concurrency gate first. miekg/dns has already spawned this
+	// goroutine (one per packet, uncapped); what the semaphore
+	// bounds is the expensive part — upstream sockets and nft
+	// invocations — so a UDP flood sheds load here instead of
+	// exhausting the host.
+	select {
+	case p.sem <- struct{}{}:
+		defer func() { <-p.sem }()
+	default:
+		return // saturated: drop, resolver retries
+	}
+
 	srcIP, ok := sourceIP(w.RemoteAddr())
 	if !ok {
 		// Non-UDP or parse failure — drop silently. The proxy
@@ -221,12 +302,19 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		// one.
 		return
 	}
-	pol, ok := p.policyFor(srcIP)
+	ent, ok := p.policyFor(srcIP)
 	if !ok {
 		// Unknown source. Could be a stray packet or a sandbox
 		// whose policy was deregistered mid-query. Either way,
 		// silent drop is the right answer — no NXDOMAIN, no log
 		// (would be noisy under misconfiguration).
+		return
+	}
+	pol := ent.pol
+	// Per-source rate limit, before any real work. Silent drop
+	// like unknown sources — a reply would just be amplification
+	// during a flood.
+	if !ent.lim.allow(time.Now()) {
 		return
 	}
 
@@ -274,27 +362,52 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	reply.Answer = filterOutAAAA(reply.Answer)
 	reply.Extra = filterOutAAAA(reply.Extra)
 
-	// Walk the answer section for A records, feeding each to the
-	// nft set with the record's TTL. Errors are logged but do
-	// not fail the DNS response; a missed nft update is better
-	// than a confused guest.
+	// Walk the answer section: vet each A record's address range,
+	// cap the count, and collect the survivors for one batched
+	// AllowIP call. Records that fail vetting are stripped from
+	// the reply as well — the guest must never see an address the
+	// allow-set won't open, and the allow-set must never open
+	// link-local (cloud metadata), private, or sandbox-pool space
+	// no matter what an attacker-controlled upstream answers.
+	var allowed []AllowedIP
+	seen := make(map[netip.Addr]bool)
+	kept := reply.Answer[:0]
 	for _, rr := range reply.Answer {
 		a, ok := rr.(*dns.A)
 		if !ok {
+			kept = append(kept, rr)
 			continue
 		}
 		ip, ok := netip.AddrFromSlice(a.A.To4())
-		if !ok {
+		if !ok || p.blockedIP(ip) {
+			p.log.Debug("stripped unroutable A record",
+				"sandbox", pol.SandboxID, "name", a.Hdr.Name, "ip", a.A)
 			continue
 		}
+		if len(allowed) >= maxAnswerIPs {
+			continue
+		}
+		kept = append(kept, rr)
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
 		ttl := time.Duration(a.Hdr.Ttl) * time.Second
 		if ttl <= 0 {
 			ttl = time.Second // nft requires a positive timeout
 		}
+		allowed = append(allowed, AllowedIP{Addr: ip, TTL: ttl})
+	}
+	reply.Answer = kept
+
+	// One nft invocation per reply, with the record TTLs. Errors
+	// are logged but do not fail the DNS response; a missed nft
+	// update is better than a confused guest.
+	if len(allowed) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), p.cfg.AllowIPTimeout)
-		if err := p.cfg.AllowIP(ctx, pol.SandboxID, ip, ttl); err != nil {
+		if err := p.cfg.AllowIP(ctx, pol.SandboxID, allowed); err != nil {
 			p.log.Warn("nft allow-ip failed",
-				"sandbox", pol.SandboxID, "ip", ip, "err", err)
+				"sandbox", pol.SandboxID, "ips", len(allowed), "err", err)
 		}
 		cancel()
 	}
@@ -302,6 +415,26 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if err := w.WriteMsg(reply); err != nil {
 		p.log.Debug("write reply failed", "err", err)
 	}
+}
+
+// blockedIP reports whether a resolved address must never reach a
+// guest or its egress allow-set. Everything that isn't public
+// global-unicast is rejected — loopback, link-local (the cloud
+// metadata endpoint lives at 169.254.169.254), multicast,
+// broadcast, unspecified — plus RFC1918 private space, which
+// covers the default 10.20.0.0/16 sandbox pool and typical host
+// LANs. Config.BlockedPrefixes extends this to operator-configured
+// pools outside those ranges.
+func (p *Proxy) blockedIP(ip netip.Addr) bool {
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return true
+	}
+	for _, pfx := range p.cfg.BlockedPrefixes {
+		if pfx.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // filterOutAAAA returns rrs with every *dns.AAAA removed. Other
@@ -319,12 +452,42 @@ func filterOutAAAA(rrs []dns.RR) []dns.RR {
 
 // --- helpers ----------------------------------------------------
 
-func (p *Proxy) policyFor(src netip.Addr) (*Policy, bool) {
+func (p *Proxy) policyFor(src netip.Addr) (*policyEntry, bool) {
 	v, ok := p.policies.Load(src)
 	if !ok {
 		return nil, false
 	}
-	return v.(*Policy), true
+	return v.(*policyEntry), true
+}
+
+// rateLimiter is a minimal token bucket, one per registered
+// source. (golang.org/x/time is not a dependency; this is the
+// small subset we need.)
+type rateLimiter struct {
+	mu     sync.Mutex
+	rate   float64 // tokens replenished per second
+	burst  float64 // bucket capacity
+	tokens float64
+	last   time.Time
+}
+
+func newRateLimiter(rate, burst float64) *rateLimiter {
+	return &rateLimiter{rate: rate, burst: burst, tokens: burst}
+}
+
+func (l *rateLimiter) allow(now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.tokens += now.Sub(l.last).Seconds() * l.rate
+	if l.tokens > l.burst {
+		l.tokens = l.burst
+	}
+	l.last = now
+	if l.tokens < 1 {
+		return false
+	}
+	l.tokens--
+	return true
 }
 
 // writeRcode builds a minimal response carrying only an RCODE

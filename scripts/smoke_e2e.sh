@@ -721,8 +721,9 @@ else
 fi
 
 nft list table inet crucible 2>/dev/null > "$TEST_DIR/nft_table.txt" || true
-# The base table contains a map + two chains. Per-sandbox state
-# lives in objects named sandbox_*. Assert none of those exist.
+# The base table contains a map, the guest_sources set, and three
+# chains (forward/input/postrouting). Per-sandbox state lives in
+# objects named sandbox_*. Assert none of those exist.
 if grep -E "^\s*(chain|set)\s+sandbox_" "$TEST_DIR/nft_table.txt" > /dev/null; then
   fail "nft_clean" "per-sandbox objects remain (see $TEST_DIR/nft_table.txt)"
 else
