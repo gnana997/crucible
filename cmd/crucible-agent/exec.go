@@ -22,6 +22,14 @@ import (
 // are JSON — a cmd, env, cwd, timeout — nothing large.
 const maxExecRequestBody = 1 << 20 // 1 MiB
 
+// execWaitDelay bounds how long cmd.Wait blocks after the process exits or
+// its context is cancelled. A backgrounded guest child can inherit the
+// command's stdout/stderr pipe and hold it open long after the parent exits;
+// without this grace Wait would block on that pipe until the child closes it
+// (potentially never), wedging the handler + pollIO goroutines and the vsock
+// conn. After the grace, Go unblocks the pipe reads and returns.
+const execWaitDelay = 2 * time.Second
+
 // handleExec runs a command inside the guest and streams the result
 // back as a sequence of agentwire frames.
 //
@@ -72,9 +80,10 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	}
 	cmd.Stdout = fw.Stream(agentwire.FrameStdout)
 	cmd.Stderr = fw.Stream(agentwire.FrameStderr)
-	// Put the command in its own process group so we can SIGKILL the
-	// whole group (the command + any children it spawns) on timeout.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Put the command in its own process group and wire a cancel that
+	// SIGKILLs the whole group on timeout/disconnect, plus a WaitDelay
+	// backstop so an inherited pipe can't wedge Wait. See configureExecProcess.
+	configureExecProcess(cmd)
 
 	// Use Start + Wait rather than Run so we can run a /proc/<pid>/io
 	// poller alongside the child. Start failures (ENOENT, EACCES,
@@ -167,6 +176,35 @@ func commandContext(parent context.Context, timeoutSec int) (context.Context, co
 		return context.WithCancel(parent)
 	}
 	return context.WithTimeout(parent, time.Duration(timeoutSec)*time.Second)
+}
+
+// configureExecProcess wires the timeout-kill and pipe-drain discipline onto
+// cmd. It must be called before cmd.Start (Cancel/WaitDelay are read at Start).
+//
+//   - Setpgid puts the command in its own process group so a single kill can
+//     reach the command *and* every child it spawns.
+//   - Cancel fires when the command's context is cancelled (timeout or client
+//     disconnect). exec.CommandContext's default cancel is Process.Kill(),
+//     which — with a positive pid — signals only the group *leader*, leaving
+//     backgrounded children alive and defeating the timeout. We SIGKILL the
+//     negative pid (the whole group) instead. ESRCH means the group already
+//     exited, which we report as ErrProcessDone (a success for cancel).
+//   - WaitDelay bounds Wait after exit/cancel so a child that inherited our
+//     stdout/stderr pipe can't keep Wait blocked forever.
+func configureExecProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// Negative pid = the whole process group; Setpgid made the group id
+		// equal the leader's pid.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
+		return nil
+	}
+	cmd.WaitDelay = execWaitDelay
 }
 
 // resultFromError inspects cmd.Run's error and the context's error to

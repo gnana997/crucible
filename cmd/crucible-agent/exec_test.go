@@ -3,9 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"sort"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -110,6 +113,106 @@ func TestResultFromErrorCommandNotFound(t *testing.T) {
 	}
 	if got.Error == "" {
 		t.Error("Error is empty, want populated")
+	}
+}
+
+// groupAlive reports whether any process remains in the given process group.
+// kill(-pgid, 0) delivers no signal but returns ESRCH once the group is empty.
+func groupAlive(pgid int) bool {
+	return syscall.Kill(-pgid, 0) == nil
+}
+
+// waitInBackground runs cmd.Wait in a goroutine and reports whether it returned
+// within limit — the core anti-wedge property.
+func waitInBackground(cmd *exec.Cmd, limit time.Duration) bool {
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(limit):
+		return false
+	}
+}
+
+// TestExecTimeoutDoesNotWedgeOnInheritedPipe is the primary N4 guard: a command
+// that backgrounds a long sleep and exits 0 leaves the sleep holding the
+// command's inherited stdout pipe. Without configureExecProcess's WaitDelay,
+// cmd.Wait blocks on that pipe until the sleep closes it (effectively forever),
+// leaking the handler + pollIO goroutines and the vsock conn. The fix must make
+// Wait return within the grace even though the child never closes the pipe.
+func TestExecTimeoutDoesNotWedgeOnInheritedPipe(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("bash unavailable: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sleep 999 & exit 0")
+	// A non-*os.File writer forces exec to create an internal pipe that the
+	// backgrounded sleep inherits — exactly the production frame-writer case.
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	configureExecProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	// The orphaned sleep outlives the exec (the leader exited before the
+	// deadline, so cancel never fires) — reap the group so the test leaves
+	// nothing behind.
+	defer func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }()
+
+	if !waitInBackground(cmd, execWaitDelay+5*time.Second) {
+		t.Fatal("cmd.Wait() wedged past the grace on an inherited stdout pipe")
+	}
+}
+
+// TestExecTimeoutKillsWholeGroup verifies the second N4 property: when the
+// timeout fires while the command is still running, the SIGKILL reaches the
+// whole process group, not just the leader. Here bash stays alive on a
+// foreground sleep while a second sleep is backgrounded in the same group;
+// exec's default cancel (Process.Kill, positive pid) would signal only bash and
+// leave both sleeps alive. configureExecProcess's negative-pid kill takes the
+// whole group down.
+func TestExecTimeoutKillsWholeGroup(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skipf("bash unavailable: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", "sleep 999 & sleep 999")
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	configureExecProcess(cmd)
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	defer func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }() // belt-and-suspenders
+
+	if !waitInBackground(cmd, execWaitDelay+5*time.Second) {
+		t.Fatal("cmd.Wait() did not return after the timeout fired")
+	}
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Errorf("ctx.Err() = %v, want DeadlineExceeded", ctx.Err())
+	}
+
+	// The whole group (bash + both sleeps) must be gone. Poll briefly: after
+	// the SIGKILL the members linger as zombies until their reaper collects them.
+	deadline := time.Now().Add(5 * time.Second)
+	for groupAlive(pgid) {
+		if time.Now().After(deadline) {
+			t.Fatal("process group still alive after timeout — SIGKILL did not reach the whole group")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
