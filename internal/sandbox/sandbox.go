@@ -59,6 +59,32 @@ const (
 	DefaultMemoryMiB = 512
 )
 
+// Per-request resource ceilings. crucible is a multi-tenant node running
+// untrusted code, so a single (unauthenticated) request must not be able
+// to reserve the whole host. These bound the create-time sizing and the
+// fork fan-out at the Manager boundary; the HTTP layer rejects violations
+// as 400 rather than surfacing an opaque Firecracker 500 or OOM-killing
+// the daemon.
+const (
+	// MaxVCPUs caps per-sandbox vCPUs. Firecracker itself rejects absurd
+	// counts, but we bound it here for a clean error and to leave the host
+	// headroom.
+	MaxVCPUs = 32
+	// MaxMemoryMiB caps per-sandbox guest memory (64 GiB). A larger value
+	// flows straight into PUT /machine-config → mmap and can exhaust host
+	// memory.
+	MaxMemoryMiB = 64 * 1024
+	// DefaultMaxForkCount bounds how many sandboxes a single Fork request
+	// may create when ManagerConfig.MaxForkCount is left at 0. Fork
+	// allocates and spawns proportional to count before the concurrency
+	// semaphore throttles anything, so an unbounded count OOMs the daemon.
+	DefaultMaxForkCount = 64
+)
+
+// ErrInvalidConfig marks a request that violates a resource bound (vCPUs,
+// memory, or fork count). The HTTP layer maps it to 400.
+var ErrInvalidConfig = errors.New("sandbox: invalid config")
+
 // DefaultAgentReadyTimeout is the time Create will wait for the guest
 // agent's /healthz to start answering when WaitForAgent is enabled.
 // Bounded higher than a typical microVM boot (~2s) with slack for
@@ -189,6 +215,12 @@ type ManagerConfig struct {
 	// Fork never spends more than `count` workers regardless of this
 	// value.
 	ForkConcurrency int
+
+	// MaxForkCount bounds how many sandboxes a single Fork request may
+	// create. Fork allocates and spawns proportional to count up front, so
+	// this is the guard that stops an unauthenticated ?count=N from OOMing
+	// the daemon by fan-out alone. Zero means DefaultMaxForkCount.
+	MaxForkCount int
 
 	// StatePath is the file backing the durable sandbox/snapshot
 	// registry journal (docs/GAPS.md gap 3). When non-empty, the
@@ -362,9 +394,15 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	if vcpus <= 0 {
 		vcpus = DefaultVCPUs
 	}
+	if vcpus > MaxVCPUs {
+		return nil, fmt.Errorf("%w: vcpus %d exceeds max %d", ErrInvalidConfig, vcpus, MaxVCPUs)
+	}
 	memMiB := req.MemoryMiB
 	if memMiB <= 0 {
 		memMiB = DefaultMemoryMiB
+	}
+	if memMiB > MaxMemoryMiB {
+		return nil, fmt.Errorf("%w: memory_mib %d exceeds max %d", ErrInvalidConfig, memMiB, MaxMemoryMiB)
 	}
 	workdir := filepath.Join(m.cfg.WorkBase, id)
 
@@ -795,6 +833,17 @@ func defaultForkConcurrency() int {
 	return 1
 }
 
+// MaxForkCount reports the effective per-request fork ceiling, honoring
+// ManagerConfig.MaxForkCount and falling back to DefaultMaxForkCount.
+// Exposed so the HTTP layer can reject an oversized ?count before calling
+// Fork.
+func (m *Manager) MaxForkCount() int {
+	if m.cfg.MaxForkCount > 0 {
+		return m.cfg.MaxForkCount
+	}
+	return DefaultMaxForkCount
+}
+
 // Fork creates `count` new sandboxes from a snapshot. Each fork gets
 // its own workdir, per-fork memory file (cloned from the snapshot's),
 // and per-fork rootfs (cloned from the snapshot's frozen rootfs).
@@ -816,6 +865,13 @@ func defaultForkConcurrency() int {
 func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sandbox, error) {
 	if count <= 0 {
 		return nil, errors.New("sandbox: Fork count must be > 0")
+	}
+	// Reject an oversized count *before* allocating results/goroutines
+	// proportional to it — the concurrency semaphore below bounds only how
+	// many forkOne bodies run at once, not the up-front fan-out, so an
+	// unclamped count would OOM the daemon before it throttled anything.
+	if max := m.MaxForkCount(); count > max {
+		return nil, fmt.Errorf("%w: fork count %d exceeds max %d", ErrInvalidConfig, count, max)
 	}
 	snap, err := m.GetSnapshot(snapshotID)
 	if err != nil {

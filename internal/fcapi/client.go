@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// defaultRequestTimeout bounds any single Firecracker API call. Individual
-// callers can shorten it by passing a context with an earlier deadline.
-const defaultRequestTimeout = 10 * time.Second
-
 // Client talks to a single Firecracker VMM over its unix-domain API socket.
 //
 // The only Firecracker-specific trick here is the transport: we use Go's
@@ -44,7 +40,13 @@ func NewClient(socketPath string) *Client {
 				MaxIdleConns:    1,
 				IdleConnTimeout: 30 * time.Second,
 			},
-			Timeout: defaultRequestTimeout,
+			// No Client.Timeout: it is a fixed wall-clock cap on the whole
+			// request and always wins over a longer ctx deadline, so a 10s
+			// cap here would silently abort synchronous snapshot/load of a
+			// large guest (Firecracker returns 204 only after writing/reading
+			// the full mem_size_mib file). Every call is bounded by the ctx
+			// its caller threads in via http.NewRequestWithContext; callers
+			// size that deadline to the guest.
 		},
 	}
 }

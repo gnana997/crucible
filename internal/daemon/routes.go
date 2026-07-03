@@ -283,6 +283,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		Network:    netCfg,
 	})
 	if err != nil {
+		if errors.Is(err, sandbox.ErrInvalidConfig) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -373,6 +377,14 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+
+	// Exec streams for as long as the command runs — untrusted builds and
+	// tests routinely exceed the server's WriteTimeout. That timeout is
+	// armed once at request start and never reset per write, so leaving it
+	// in place truncates any exec > WriteTimeout mid-stream. Clear the write
+	// deadline for this response; r.Context() still bounds the exec.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 
 	// Commit to streaming.
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -482,11 +494,22 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		count = n
 	}
+	// Reject an oversized fan-out here so we never even hand a huge count to
+	// Fork (which allocates proportional to it). Fork enforces the same
+	// bound as defense-in-depth.
+	if max := s.cfg.Manager.MaxForkCount(); count > max {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("count %d exceeds max %d", count, max))
+		return
+	}
 
 	forks, err := s.cfg.Manager.Fork(r.Context(), id, count)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
 			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		if errors.Is(err, sandbox.ErrInvalidConfig) {
+			writeError(w, http.StatusBadRequest, err)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, err)

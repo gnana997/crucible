@@ -579,6 +579,46 @@ func TestManagerForkBoundsConcurrency(t *testing.T) {
 	}
 }
 
+func TestManagerForkRejectsOversizedCount(t *testing.T) {
+	// The Manager boundary must reject count > MaxForkCount before
+	// allocating results/goroutines proportional to it, independent of the
+	// HTTP layer's own guard.
+	m, _ := newTestManager(t)
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.Fork(context.Background(), snap.ID, m.MaxForkCount()+1)
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Fork oversized count: err = %v, want ErrInvalidConfig", err)
+	}
+	// No fork should have been created — only the source remains.
+	if list := m.List(); len(list) != 1 {
+		t.Errorf("sandbox count = %d, want 1 (no forks created)", len(list))
+	}
+}
+
+func TestManagerCreateRejectsOversizedResources(t *testing.T) {
+	m, _ := newTestManager(t)
+	cases := map[string]CreateConfig{
+		"vcpus":  {VCPUs: MaxVCPUs + 1},
+		"memory": {MemoryMiB: MaxMemoryMiB + 1},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := m.Create(context.Background(), cfg)
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("Create: err = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+}
+
 func TestManagerLifetimeTimeoutAutoDeletes(t *testing.T) {
 	m, _ := newTestManager(t)
 	// 1 second is the smallest granularity the CreateConfig exposes; use

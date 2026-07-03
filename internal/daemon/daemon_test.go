@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/runner"
@@ -175,6 +176,26 @@ func TestCreateSandboxWithBody(t *testing.T) {
 	decodeJSON(t, resp, &got)
 	if got.VCPUs != 4 || got.MemoryMiB != 2048 {
 		t.Errorf("got %+v", got)
+	}
+}
+
+func TestCreateSandboxRejectsOversizedResources(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	cases := map[string]string{
+		"vcpus":      `{"vcpus": 1000}`,
+		"memory_mib": `{"memory_mib": 999999999}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp, err := http.Post(ts.URL+"/sandboxes", "application/json", bytes.NewBufferString(body))
+			if err != nil {
+				t.Fatalf("POST: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		})
 	}
 }
 
@@ -703,7 +724,10 @@ func TestForkSnapshotRejectsBadCount(t *testing.T) {
 	sbxID := createSandboxViaHTTP(t, ts)
 	snap := createSnapshotViaHTTP(t, ts, sbxID)
 
-	for _, q := range []string{"0", "-1", "not-a-number"} {
+	// Includes oversized counts: the upper bound (DefaultMaxForkCount) must
+	// be rejected cleanly with a 400 rather than allocating proportional to
+	// count and OOMing the daemon.
+	for _, q := range []string{"0", "-1", "not-a-number", "65", "50000000"} {
 		t.Run("count="+q, func(t *testing.T) {
 			resp, err := http.Post(ts.URL+"/snapshots/"+snap.ID+"/fork?count="+q, "application/json", nil)
 			if err != nil {
@@ -714,6 +738,79 @@ func TestForkSnapshotRejectsBadCount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// streamPastWriteTimeout serves a chunked body that streams for longer than
+// the server's WriteTimeout, optionally clearing the write deadline the way
+// handleExecSandbox does. It is the mechanism M7's fix relies on: the exec
+// route must SetWriteDeadline(zero) so a long exec isn't truncated mid-stream.
+func streamPastWriteTimeout(clearDeadline bool) http.HandlerFunc {
+	const chunks = 6
+	return func(w http.ResponseWriter, r *http.Request) {
+		if clearDeadline {
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+		}
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < chunks; i++ {
+			if _, err := w.Write([]byte("x")); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			time.Sleep(40 * time.Millisecond) // total ~240ms, well past WriteTimeout
+		}
+	}
+}
+
+// serveWith starts a real http.Server (not httptest's default, which has no
+// WriteTimeout) with the given WriteTimeout and handler.
+func serveWith(t *testing.T, writeTimeout time.Duration, h http.Handler) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(h)
+	ts.Config.WriteTimeout = writeTimeout
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func TestExecClearsWriteDeadlineSoLongStreamsSurvive(t *testing.T) {
+	const writeTimeout = 80 * time.Millisecond
+
+	// Control: without clearing the deadline, a stream longer than
+	// WriteTimeout is cut off — proving the test actually exercises the
+	// timeout and isn't a no-op.
+	t.Run("not cleared truncates", func(t *testing.T) {
+		ts := serveWith(t, writeTimeout, streamPastWriteTimeout(false))
+		resp, err := http.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err == nil && len(body) == 6 {
+			t.Fatalf("stream completed (%d bytes) despite WriteTimeout — control is broken", len(body))
+		}
+	})
+
+	// Fix: clearing the deadline (as handleExecSandbox does) lets the full
+	// stream through even though it runs well past WriteTimeout.
+	t.Run("cleared streams to completion", func(t *testing.T) {
+		ts := serveWith(t, writeTimeout, streamPastWriteTimeout(true))
+		resp, err := http.Get(ts.URL)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v (stream truncated despite cleared deadline)", err)
+		}
+		if len(body) != 6 {
+			t.Fatalf("got %d bytes, want 6 — stream did not complete", len(body))
+		}
+	})
 }
 
 func TestForkSnapshotNotFound(t *testing.T) {
