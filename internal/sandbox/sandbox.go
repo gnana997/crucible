@@ -1032,11 +1032,17 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	// failure, unlike the network refresh below: duplicated entropy
 	// doesn't self-heal, and a fork without the uniqueness guarantee
 	// is worse than no fork.
-	if s.execClient != nil {
-		if err := m.refreshIdentity(ctx, s.execClient, id); err != nil {
-			_ = handle.Shutdown(context.Background())
-			return nil, fmt.Errorf("identity refresh: %w", err)
-		}
+	//
+	// A fork with no agent channel can't be refreshed at all, so it must
+	// fail rather than register un-refreshed. Unreachable today (jailer
+	// restores always set VSockPath) but fatal by design intent.
+	if s.execClient == nil {
+		_ = handle.Shutdown(context.Background())
+		return nil, fmt.Errorf("fork %s: no agent channel for clone-safety refresh", id)
+	}
+	if err := m.refreshIdentity(ctx, s.execClient, id); err != nil {
+		_ = handle.Shutdown(context.Background())
+		return nil, fmt.Errorf("identity refresh: %w", err)
 	}
 
 	// If the fork has network, ask the guest to bounce eth0 so

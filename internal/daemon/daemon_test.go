@@ -7,9 +7,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +26,7 @@ import (
 
 type stubHandle struct {
 	workdir  string
+	vsock    string // agent UDS path; empty for cold-boot handles
 	shutdown chan struct{}
 }
 
@@ -32,7 +35,7 @@ func newStubHandle(workdir string) *stubHandle {
 }
 
 func (h *stubHandle) Workdir() string                               { return h.workdir }
-func (h *stubHandle) VSockPath() string                             { return "" }
+func (h *stubHandle) VSockPath() string                             { return h.vsock }
 func (h *stubHandle) Pause(context.Context) error                   { return nil }
 func (h *stubHandle) Resume(context.Context) error                  { return nil }
 func (h *stubHandle) PatchRootfs(_ context.Context, _ string) error { return nil }
@@ -52,6 +55,10 @@ func (h *stubHandle) Shutdown(context.Context) error {
 func (h *stubHandle) Wait() error { <-h.shutdown; return nil }
 
 type stubRunner struct {
+	// t, when set, makes Restore serve a stub agent behind the handle's
+	// vsock so the fork path's clone-safety refresh (now fatal without an
+	// agent channel) succeeds.
+	t     *testing.T
 	mu    sync.Mutex
 	calls []runner.Spec
 }
@@ -68,8 +75,68 @@ func (r *stubRunner) Restore(_ context.Context, spec runner.RestoreSpec) (runner
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	_ = os.MkdirAll(spec.Workdir, 0o755)
-	return newStubHandle(spec.Workdir), nil
+	h := newStubHandle(spec.Workdir)
+	if r.t != nil {
+		sock := filepath.Join(spec.Workdir, "a.sock")
+		serveStubAgent(r.t, sock)
+		h.vsock = sock
+	}
+	return h, nil
 }
+
+// serveStubAgent stands up a happy-path guest agent behind Firecracker's
+// hybrid-vsock handshake on sock, answering the refresh routes the fork
+// path calls so clone-safety succeeds without a real guest.
+func serveStubAgent(t *testing.T, sock string) {
+	t.Helper()
+	raw, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Errorf("listen unix: %v", err)
+		return
+	}
+	mux := http.NewServeMux()
+	ok := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}
+	mux.HandleFunc("POST /identity/refresh", ok)
+	mux.HandleFunc("POST /network/refresh", ok)
+	srv := &http.Server{Handler: mux, ReadTimeout: 10 * time.Second}
+	done := make(chan struct{})
+	go func() { _ = srv.Serve(hybridVsockListener{raw: raw}); close(done) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-done
+	})
+}
+
+// hybridVsockListener answers the "CONNECT <port>\n" → "OK 42\n" handshake
+// Firecracker's hybrid vsock uses, then hands the stream to net/http.
+type hybridVsockListener struct{ raw net.Listener }
+
+func (l hybridVsockListener) Accept() (net.Conn, error) {
+	conn, err := l.raw.Accept()
+	if err != nil {
+		return nil, err
+	}
+	one := make([]byte, 1)
+	var line strings.Builder
+	for !strings.HasSuffix(line.String(), "\n") {
+		if _, err := conn.Read(one); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		line.Write(one)
+	}
+	if _, err := conn.Write([]byte("OK 42\n")); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (l hybridVsockListener) Close() error   { return l.raw.Close() }
+func (l hybridVsockListener) Addr() net.Addr { return l.raw.Addr() }
 
 // --- test harness -----------------------------------------------------
 
@@ -86,7 +153,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *sandbox.Manager) {
 	}
 
 	mgr, err := sandbox.NewManager(sandbox.ManagerConfig{
-		Runner:   &stubRunner{},
+		Runner:   &stubRunner{t: t},
 		WorkBase: workBase,
 		Kernel:   "/fake/vmlinux",
 		Rootfs:   tmpl,

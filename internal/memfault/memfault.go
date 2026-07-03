@@ -93,6 +93,16 @@ type Config struct {
 	// the snapshot may be unlinked while restored VMs still run.
 	MemPath string
 
+	// SocketUID/SocketGID, when non-zero, own the socket inode: under
+	// jailer firecracker connects as an unprivileged uid, so the socket is
+	// chowned to it and made owner-only (0600) rather than world-writable.
+	// Zero (direct-exec/dev/test) leaves the socket owned by the crucible
+	// process — which is also the uid firecracker runs as there — and
+	// still owner-only. This closes the window where any local process
+	// could connect first and feed a bogus layout/fd.
+	SocketUID uint32
+	SocketGID uint32
+
 	// Logger receives lifecycle events. Nil means slog.Default.
 	Logger *slog.Logger
 }
@@ -137,9 +147,18 @@ func Serve(cfg Config) (*Handler, error) {
 		_ = memF.Close()
 		return nil, fmt.Errorf("memfault: listen on %s: %w", cfg.SocketPath, err)
 	}
-	// Under jailer, firecracker connects as an unprivileged uid; the
-	// socket inode needs to be writable for it.
-	if err := os.Chmod(cfg.SocketPath, 0o666); err != nil {
+	// Restrict the socket to the single uid firecracker runs as instead of
+	// leaving it world-writable. Under jailer that's an unprivileged jail
+	// uid, so hand it ownership; without one, firecracker runs as our own
+	// uid and owner-only already suffices.
+	if cfg.SocketUID != 0 || cfg.SocketGID != 0 {
+		if err := os.Chown(cfg.SocketPath, int(cfg.SocketUID), int(cfg.SocketGID)); err != nil {
+			_ = ln.Close()
+			_ = memF.Close()
+			return nil, fmt.Errorf("memfault: chown socket: %w", err)
+		}
+	}
+	if err := os.Chmod(cfg.SocketPath, 0o600); err != nil {
 		_ = ln.Close()
 		_ = memF.Close()
 		return nil, fmt.Errorf("memfault: chmod socket: %w", err)

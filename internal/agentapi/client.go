@@ -24,6 +24,13 @@ const DefaultHandshakeTimeout = 5 * time.Second
 // The real response is ~12 bytes ("OK 1073741824\n"); this is defensive.
 const maxHandshakeLine = 128
 
+// maxRefreshBody caps how much of a guest agent's refresh response we
+// buffer. Root-in-guest is in the threat model, so a compromised agent
+// could otherwise stream a multi-GB body over vsock (GB/s) and OOM the
+// host — the 15s ctx is not a meaningful cap. Real responses are a short
+// error string at most. Mirrors exec.go's maxErrorBody.
+const maxRefreshBody = 8 << 10
+
 // Client talks HTTP to a single sandbox's guest agent over Firecracker's
 // hybrid-vsock unix socket. One Client per sandbox.
 type Client struct {
@@ -104,7 +111,7 @@ func (c *Client) RefreshNetwork(ctx context.Context) error {
 		return fmt.Errorf("agentapi: network refresh: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBody))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("agentapi: network refresh returned %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
@@ -148,7 +155,7 @@ func (c *Client) RefreshIdentity(ctx context.Context, seed []byte, sandboxID str
 		return fmt.Errorf("agentapi: identity refresh: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBody))
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrIdentityRefreshUnsupported
 	}

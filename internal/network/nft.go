@@ -162,12 +162,12 @@ func BuildSandboxTeardownScript(sandboxID string, hostIface string, guestIP neti
 func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr) error {
 	// Flush any prior state, ignoring "no such table" errors.
 	if err := runCmd(ctx, "nft", "flush", "table", "inet", NftTableName); err != nil {
-		if !isNoSuchTable(err) {
+		if !isNoSuchObject(err) {
 			return fmt.Errorf("flush existing table: %w", err)
 		}
 	}
 	if err := runCmd(ctx, "nft", "delete", "table", "inet", NftTableName); err != nil {
-		if !isNoSuchTable(err) {
+		if !isNoSuchObject(err) {
 			return fmt.Errorf("delete existing table: %w", err)
 		}
 	}
@@ -201,7 +201,7 @@ func TeardownBaseTable(ctx context.Context) error {
 	_ = removeIptablesForward(ctx)
 
 	if err := runCmd(ctx, "nft", "delete", "table", "inet", NftTableName); err != nil {
-		if isNoSuchTable(err) {
+		if isNoSuchObject(err) {
 			return nil
 		}
 		return err
@@ -320,28 +320,17 @@ func AllowIPs(ctx context.Context, sandboxID string, ips []dnsproxy.AllowedIP) e
 	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
 
-// isNoSuchTable recognizes nft's error message for a missing
-// table. Matched by substring because nft doesn't surface a
-// stable exit code for this case.
-func isNoSuchTable(err error) bool {
-	if err == nil {
-		return false
-	}
-	return containsAny(err.Error(),
-		"No such file or directory",
-		"does not exist",
-	)
-}
-
-// isNoSuchObject is the same pattern for missing sets/chains/map
-// entries during teardown.
+// isNoSuchObject recognizes nft's "object already gone" result for a
+// missing table/set/chain/element during teardown — the only failure we
+// treat as success for idempotency. nft returns a bare exit 1 for every
+// error, so we still key on its stderr phrase, but only after confirming
+// the command actually ran and exited (ranAndExitedNonZero) — otherwise a
+// context timeout or netlink failure could be misread as "already gone"
+// and leak a live chain.
 func isNoSuchObject(err error) bool {
-	if err == nil {
-		return false
-	}
-	return containsAny(err.Error(),
-		"No such file or directory",
-		"does not exist",
-		"not exist",
-	)
+	return ranAndExitedNonZero(err) &&
+		containsAny(err.Error(),
+			"No such file or directory",
+			"does not exist",
+		)
 }

@@ -3,8 +3,11 @@ package runner
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -132,6 +135,45 @@ func TestWaitReady(t *testing.T) {
 			t.Errorf("waitReady err = %v, want ctx.DeadlineExceeded wrapped", err)
 		}
 	})
+}
+
+// TestShutdownKillsWedgedProcessWithoutDeadline guards M3: internal
+// teardown passes context.Background (no deadline), and Shutdown must
+// still escalate to SIGKILL. A process that ignores SIGINT stands in for a
+// wedged firecracker — before the fix, Shutdown's ctx.Done() was nil and
+// this would block forever, leaking the process.
+func TestShutdownKillsWedgedProcessWithoutDeadline(t *testing.T) {
+	// `trap '' INT` makes the shell ignore SIGINT; it prints "ready" only
+	// after the trap is installed, so the test doesn't race SIGINT against
+	// shell startup. The child sleep keeps it alive until SIGKILL, which
+	// can't be trapped.
+	cmd := exec.Command("sh", "-c", "trap '' INT; echo ready; sleep 30")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := newHandle(cmd, nil, nil, t.TempDir(), "", "", log)
+
+	// Block until the trap is installed before signaling.
+	if _, err := io.ReadFull(stdout, make([]byte, len("ready\n"))); err != nil {
+		t.Fatalf("waiting for shell ready: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- h.Shutdown(context.Background()) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Shutdown returned nil, want a timeout-then-kill error")
+		}
+	case <-time.After(defaultShutdownGrace + 10*time.Second):
+		t.Fatal("Shutdown hung on a SIGINT-ignoring process (M3 regression)")
+	}
 }
 
 // serveInstanceInfo starts a mock UDS HTTP server that answers GET / with

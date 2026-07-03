@@ -23,6 +23,14 @@ const (
 	rootfsDriveID       = "rootfs"
 	defaultReadyTimeout = 5 * time.Second
 	readyPollInterval   = 20 * time.Millisecond
+
+	// defaultShutdownGrace bounds SIGINT→exit before Shutdown escalates to
+	// SIGKILL when the caller passes a ctx with no deadline (internal
+	// teardown paths use context.Background). Without it, a wedged
+	// firecracker that ignores SIGINT — often the very reason teardown ran —
+	// would leave ctx.Done() nil forever and Shutdown would block for good,
+	// leaking the process, uffd handler, and log fd.
+	defaultShutdownGrace = 5 * time.Second
 )
 
 // Firecracker is a Runner that launches VMs using the upstream firecracker
@@ -468,7 +476,16 @@ func (h *fcHandle) Wait() error {
 // Shutdown implements Handle. It sends SIGINT, then waits up to ctx's
 // deadline for firecracker to exit. On ctx expiry it escalates to SIGKILL.
 // If firecracker has already exited on its own, Shutdown returns nil.
+//
+// A ctx with no deadline (the internal teardown paths pass
+// context.Background) is given a defaultShutdownGrace bound so a wedged
+// firecracker still gets SIGKILL'd instead of blocking Shutdown forever.
 func (h *fcHandle) Shutdown(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultShutdownGrace)
+		defer cancel()
+	}
 	// Fast path: process already exited (e.g. guest rebooted with reboot=k).
 	select {
 	case <-h.done:

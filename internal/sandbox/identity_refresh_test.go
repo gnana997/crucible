@@ -68,6 +68,20 @@ func serveHybrid(t *testing.T, sock string, handler http.Handler) {
 	})
 }
 
+// stubAgentHandler is a minimal happy-path agent for fork tests: it
+// answers /identity/refresh and /network/refresh with 200 so the fork
+// path's clone-safety refresh succeeds without a real guest.
+func stubAgentHandler() http.Handler {
+	mux := http.NewServeMux()
+	ok := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}
+	mux.HandleFunc("POST /identity/refresh", ok)
+	mux.HandleFunc("POST /network/refresh", ok)
+	return mux
+}
+
 // identityRecorder collects the requests a stub agent receives.
 type identityRecorder struct {
 	mu   sync.Mutex

@@ -159,7 +159,7 @@ func (j *JailerRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 
 	// Stage kernel + rootfs. The kernel is the shared daemon-wide
 	// template staged into every cold-boot chroot, so it is copied to
-	// a private read-only inode (Shared) — never hardlinked-then-
+	// a private read-only inode (Shared) — never hard-linked-then-
 	// chowned, which would downgrade the shared file's ownership and
 	// let a compromised VMM poison the kernel for future tenants. The
 	// rootfs is already a per-sandbox clone, so it takes the fast
@@ -247,6 +247,8 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		uffd, err = memfault.Serve(memfault.Config{
 			SocketPath: jailer.HostPath(jSpec, chrootUffdSocketPath),
 			MemPath:    spec.MemPath,
+			SocketUID:  j.UID,
+			SocketGID:  j.GID,
 			Logger:     j.logger(),
 		})
 		if err != nil {

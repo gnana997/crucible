@@ -76,6 +76,7 @@ func TestIsValidID(t *testing.T) {
 // and synthesizes a done channel.
 type stubHandle struct {
 	workdir  string
+	vsock    string // agent UDS path; empty for cold-boot handles
 	shutdown chan struct{}
 	shutErr  error
 }
@@ -85,7 +86,7 @@ func newStubHandle(workdir string) *stubHandle {
 }
 
 func (h *stubHandle) Workdir() string                               { return h.workdir }
-func (h *stubHandle) VSockPath() string                             { return "" } // stub handle has no vsock
+func (h *stubHandle) VSockPath() string                             { return h.vsock }
 func (h *stubHandle) Pause(context.Context) error                   { return nil }
 func (h *stubHandle) Resume(context.Context) error                  { return nil }
 func (h *stubHandle) PatchRootfs(_ context.Context, _ string) error { return nil }
@@ -117,6 +118,11 @@ func (h *stubHandle) Wait() error { <-h.shutdown; return nil }
 // stubRunner is a runner.Runner for tests: records Start calls and
 // produces stubHandles, optionally returning a pre-canned error.
 type stubRunner struct {
+	// t, when set, makes Restore stand up an in-process agent behind the
+	// handle's vsock so the fork path exercises the real clone-safety
+	// refresh (a fork with no agent channel is now fatal — see forkRestore).
+	t *testing.T
+
 	mu           sync.Mutex
 	calls        []runner.Spec
 	restoreCalls []runner.RestoreSpec
@@ -168,6 +174,14 @@ func (r *stubRunner) Restore(_ context.Context, spec runner.RestoreSpec) (runner
 	}
 	_ = os.MkdirAll(spec.Workdir, 0o755)
 	h := newStubHandle(spec.Workdir)
+	// Forks require an agent channel for clone-safety; serve a stub agent
+	// on a per-fork socket so refreshIdentity (and any RefreshNetwork)
+	// succeeds against the real code path.
+	if r.t != nil {
+		sock := filepath.Join(spec.Workdir, "a.sock")
+		serveHybrid(r.t, sock, stubAgentHandler())
+		h.vsock = sock
+	}
 	r.handles = append(r.handles, h)
 	return h, nil
 }
@@ -186,7 +200,7 @@ func newTestManager(t *testing.T) (*Manager, *stubRunner) {
 		t.Fatalf("write template rootfs: %v", err)
 	}
 
-	r := &stubRunner{}
+	r := &stubRunner{t: t}
 	m, err := NewManager(ManagerConfig{
 		Runner:   r,
 		WorkBase: workBase,
@@ -603,6 +617,30 @@ func TestManagerForkRejectsOversizedCount(t *testing.T) {
 	}
 }
 
+func TestManagerForkFailsWithoutAgentChannel(t *testing.T) {
+	// A restored fork with no vsock → nil execClient → clone-safety can't
+	// be applied, so the fork must fail rather than register un-refreshed.
+	m, r := newTestManager(t)
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.t = nil // stop Restore serving a stub agent → forks get no channel
+	_, err = m.Fork(context.Background(), snap.ID, 1)
+	if err == nil || !strings.Contains(err.Error(), "no agent channel") {
+		t.Fatalf("Fork without agent channel: err = %v, want 'no agent channel'", err)
+	}
+	// The failed fork must roll back — only the source remains.
+	if list := m.List(); len(list) != 1 {
+		t.Errorf("sandbox count = %d, want 1 (fork rolled back)", len(list))
+	}
+}
+
 func TestManagerCreateRejectsOversizedResources(t *testing.T) {
 	m, _ := newTestManager(t)
 	cases := map[string]CreateConfig{
@@ -701,7 +739,7 @@ func TestManagerConcurrentCreateDelete(t *testing.T) {
 func newPersistentManager(t *testing.T, workBase, statePath, template string) *Manager {
 	t.Helper()
 	m, err := NewManager(ManagerConfig{
-		Runner:    &stubRunner{},
+		Runner:    &stubRunner{t: t},
 		WorkBase:  workBase,
 		Kernel:    "/fake/vmlinux",
 		Rootfs:    template,

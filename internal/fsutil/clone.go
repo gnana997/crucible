@@ -59,7 +59,20 @@ func Clone(src, dst string) error {
 	slog.Default().Warn("reflink unavailable, falling back to full byte copy",
 		"component", "fsutil", "src", src, "dst", dst, "err", cloneErr)
 	_, copyErr := io.Copy(dstF, srcF)
-	return closeWithError(dstF, copyErr)
+	if copyErr == nil {
+		// fsync before declaring success: reconcile can adopt this artifact
+		// (snapshot rootfs/memory file) after a host crash, and an unsynced
+		// copy may be zero-length or truncated after power loss.
+		copyErr = dstF.Sync()
+	}
+	if copyErr != nil {
+		// Don't leave a partial/corrupt dst behind — a retry should start
+		// clean and reconcile must never adopt a half-written file.
+		_ = dstF.Close()
+		_ = os.Remove(dst)
+		return fmt.Errorf("fsutil: copy %s -> %s: %w", src, dst, copyErr)
+	}
+	return closeWithError(dstF, nil)
 }
 
 // closeWithError closes f and returns either the pre-existing err or a

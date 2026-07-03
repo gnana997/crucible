@@ -151,6 +151,32 @@ func TestServesPagesFromMemoryFile(t *testing.T) {
 // TestCloseBeforeConnect exercises the lifecycle where the VM never
 // arrives (e.g. LoadSnapshot failed for another reason): Close must
 // not hang and must be idempotent.
+// TestSocketIsOwnerOnly guards L4: the uffd socket must not be
+// world-writable (the old 0o666), so a stray local process can't connect
+// first and feed a bogus layout/fd. Without a jail uid it stays owned by
+// us at 0o600.
+func TestSocketIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	memPath := filepath.Join(dir, "memory.file")
+	if err := os.WriteFile(memPath, make([]byte, 4096), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sock := filepath.Join(dir, "uffd.sock")
+	h, err := Serve(Config{SocketPath: sock, MemPath: memPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = h.Close() }()
+
+	fi, err := os.Stat(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("socket perm = %04o, want 0600 (not world-writable)", perm)
+	}
+}
+
 func TestCloseBeforeConnect(t *testing.T) {
 	dir := t.TempDir()
 	memPath := filepath.Join(dir, "memory.file")

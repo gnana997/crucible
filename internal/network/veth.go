@@ -256,15 +256,15 @@ func Teardown(ctx context.Context, spec VethSpec) error {
 // decide whether it represents "already gone" — the only failure
 // mode Teardown wants to treat as success.
 func isCannotFindDevice(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return containsAny(msg,
-		"Cannot find device",
-		"does not exist",
-		"No such device",
-	)
+	// Require that `ip` actually ran and exited non-zero before trusting
+	// its stderr text — a context cancellation or missing binary must not
+	// be misread as "already gone", which would leave a live veth behind.
+	return ranAndExitedNonZero(err) &&
+		containsAny(err.Error(),
+			"Cannot find device",
+			"does not exist",
+			"No such device",
+		)
 }
 
 func containsAny(s string, subs ...string) bool {
