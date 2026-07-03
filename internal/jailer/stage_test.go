@@ -111,31 +111,60 @@ func TestStageOverwritesExisting(t *testing.T) {
 	}
 }
 
-func TestStageHardlinkSharesInode(t *testing.T) {
-	// When src and dst live on the same filesystem (both under t.TempDir,
-	// which they do), Stage must use os.Link — preserving inode. This is
-	// the fast-path we rely on for snapshot restore (multiple forks share
-	// one memory.file inode until they write, via COW at the firecracker
-	// layer).
-	s := stageSpec(t)
+// TestStageSnapshotArtifactsPrivatePerFork is the N1 regression
+// (H1's second half). It replaces a test that asserted restore
+// artifacts were hardlinked — one inode shared by every fork — on
+// the theory that "COW at the firecracker layer" protected them.
+// That reasoning was wrong: COW protects a fork's memory *mapping*,
+// not the file. Staging hardlink-then-chowns, so a compromised fork
+// VMM could open("/snap.state", O_RDWR) on the shared, owner-writable
+// inode inside its chroot and corrupt the state every sibling and
+// future fork restores from. Snapshot state and eager-restore memory
+// are therefore staged Shared: each fork gets its own 0o444 inode.
+func TestStageSnapshotArtifactsPrivatePerFork(t *testing.T) {
 	srcDir := t.TempDir()
-	src := filepath.Join(srcDir, "mem.file")
-	writeSrc(t, src, "mem")
+	state := filepath.Join(srcDir, "snap.state")
+	mem := filepath.Join(srcDir, "mem.file")
+	writeSrc(t, state, "state")
+	writeSrc(t, mem, "mem")
 
-	if err := Stage(s, map[string]StageFile{"/mem.file": {Src: src}}); err != nil {
-		t.Fatalf("Stage: %v", err)
+	// Two forks of one snapshot, staged exactly as Restore's eager
+	// path does. Sources and chroots share a filesystem (all under
+	// TMPDIR), so a regression to os.Link would visibly re-share
+	// the inode.
+	forks := []Spec{stageSpec(t), stageSpec(t)}
+	for _, s := range forks {
+		err := Stage(s, map[string]StageFile{
+			"/snap.state": {Src: state, Shared: true},
+			"/mem.file":   {Src: mem, Shared: true},
+		})
+		if err != nil {
+			t.Fatalf("Stage: %v", err)
+		}
 	}
 
-	srcStat, err := os.Stat(src)
-	if err != nil {
-		t.Fatalf("stat src: %v", err)
-	}
-	dstStat, err := os.Stat(HostPath(s, "/mem.file"))
-	if err != nil {
-		t.Fatalf("stat dst: %v", err)
-	}
-	if !os.SameFile(srcStat, dstStat) {
-		t.Fatal("expected hardlink (same inode) for same-filesystem Stage")
+	for rel, src := range map[string]string{"/snap.state": state, "/mem.file": mem} {
+		srcStat, err := os.Stat(src)
+		if err != nil {
+			t.Fatalf("stat src %s: %v", src, err)
+		}
+		var forkStats []os.FileInfo
+		for i, s := range forks {
+			st, err := os.Stat(HostPath(s, rel))
+			if err != nil {
+				t.Fatalf("stat fork %d %s: %v", i, rel, err)
+			}
+			if os.SameFile(srcStat, st) {
+				t.Errorf("fork %d %s shares the snapshot's inode — a compromised VMM could corrupt state for sibling and future forks", i, rel)
+			}
+			if perm := st.Mode().Perm(); perm != 0o444 {
+				t.Errorf("fork %d %s mode = %o, want 0444", i, rel, perm)
+			}
+			forkStats = append(forkStats, st)
+		}
+		if os.SameFile(forkStats[0], forkStats[1]) {
+			t.Errorf("both forks' %s resolve to one inode — must be private per fork", rel)
+		}
 	}
 }
 

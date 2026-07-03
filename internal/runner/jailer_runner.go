@@ -223,15 +223,21 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		return nil, err
 	}
 
-	// All snapshot artifacts are this fork's own files (the rootfs is
-	// a frozen per-snapshot clone, state/mem are read back by this
-	// firecracker only), so they take the private hardlink path.
+	// The rootfs is this fork's own clone, so the private hardlink
+	// path is fine. State and (eager-restore) memory come straight
+	// from the snapshot — one file shared by every fork — so they
+	// must be staged Shared: a same-filesystem hardlink would hand
+	// this VMM an owner-writable inode aliasing the state that
+	// sibling and future forks restore from. Firecracker only reads
+	// both, so the private 0o444 copy suffices. (LazyMem needs no
+	// mem staging at all: the daemon serves pages from a read-only
+	// fd over uffd.)
 	stage := map[string]jailer.StageFile{
-		chrootStatePath:  {Src: spec.StatePath},
+		chrootStatePath:  {Src: spec.StatePath, Shared: true},
 		chrootRootfsPath: {Src: spec.RootfsPath},
 	}
 	if !spec.LazyMem {
-		stage[chrootMemPath] = jailer.StageFile{Src: spec.MemPath}
+		stage[chrootMemPath] = jailer.StageFile{Src: spec.MemPath, Shared: true}
 	}
 	if err := jailer.Stage(jSpec, stage); err != nil {
 		_ = jailer.Cleanup(jSpec)
