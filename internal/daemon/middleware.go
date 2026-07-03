@@ -38,3 +38,13 @@ func (w *loggingResponseWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Unwrap exposes the wrapped ResponseWriter so http.NewResponseController
+// can walk to the underlying connection. The exec, snapshot, and fork routes
+// call SetWriteDeadline(zero) to shed the server WriteTimeout for a
+// long-running response; without Unwrap the controller stops at this wrapper
+// and returns ErrNotSupported, silently leaving the deadline armed and
+// truncating the response.
+func (w *loggingResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}

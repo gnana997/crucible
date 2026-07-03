@@ -503,6 +503,76 @@ func TestManagerSnapshotUnknownSandbox(t *testing.T) {
 	}
 }
 
+// wedgedHandle models a firecracker that has wedged during CreateSnapshot:
+// Snapshot fails (triggering Manager.Snapshot's resume rollback) and Resume
+// only unblocks if handed a ctx with a deadline. Before the N3 fix the
+// rollback passed context.Background() — deadline-less — so a wedged Resume
+// blocked the Snapshot goroutine forever.
+type wedgedHandle struct {
+	*stubHandle
+	resumeCtx chan context.Context
+}
+
+func (h *wedgedHandle) Snapshot(context.Context, string, string) error {
+	return errors.New("wedged: create snapshot failed")
+}
+
+func (h *wedgedHandle) Resume(ctx context.Context) error {
+	select {
+	case h.resumeCtx <- ctx:
+	default:
+	}
+	if _, ok := ctx.Deadline(); ok {
+		// Bounded ctx: a cancel-respecting firecracker returns by the
+		// deadline. Model that as an immediate error so the test is fast.
+		return errors.New("wedged: resume failed")
+	}
+	// Deadline-less ctx (the pre-fix bug): a wedged VMM blocks forever.
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestSnapshotRollbackResumeIsBounded proves the N3 fix: when CreateSnapshot
+// fails against a wedged firecracker, the rollback Resume runs on a bounded
+// ctx so Manager.Snapshot returns instead of hanging the daemon goroutine.
+func TestSnapshotRollbackResumeIsBounded(t *testing.T) {
+	m, _ := newTestManager(t)
+	src, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Swap in a handle that fails the snapshot and wedges on resume.
+	src.handle = &wedgedHandle{
+		stubHandle: src.handle.(*stubHandle),
+		resumeCtx:  make(chan context.Context, 1),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, e := m.Snapshot(context.Background(), src.ID)
+		done <- e
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Snapshot succeeded, want failure from wedged handle")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Snapshot hung: rollback Resume was not bounded (deadline-less ctx)")
+	}
+
+	wedged := src.handle.(*wedgedHandle)
+	select {
+	case ctx := <-wedged.resumeCtx:
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("rollback Resume got a deadline-less ctx — would hang on a wedged VMM")
+		}
+	default:
+		t.Fatal("rollback Resume was never called")
+	}
+}
+
 func TestManagerForkUnknownSnapshot(t *testing.T) {
 	m, _ := newTestManager(t)
 	_, err := m.Fork(context.Background(), "snap_0000000000000", 1)

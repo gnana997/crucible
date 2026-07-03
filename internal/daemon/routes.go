@@ -390,8 +390,12 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 
-	flusher, _ := w.(http.Flusher)
-	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
+	// Flush per frame through the ResponseController so it walks the
+	// middleware's Unwrap chain to the real Flusher — a direct w.(http.Flusher)
+	// assertion fails against loggingResponseWriter (its embedded-interface
+	// method set doesn't promote Flush), leaving frames buffered until the
+	// command exits. rc is the controller created above.
+	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, rc: rc})
 
 	stdoutStream := fw.Stream(agentwire.FrameStdout)
 	stderrStream := fw.Stream(agentwire.FrameStderr)
@@ -417,6 +421,17 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
 		return
 	}
+
+	// A large-guest snapshot writes the whole guest memory file and can run
+	// well past the server's WriteTimeout, which is armed once at request
+	// start and never reset per write. Left in place it truncates the
+	// response: the snapshot is written, registered, and journaled
+	// server-side, but writeJSON fails on the long-passed deadline and the
+	// client never learns the snapshot ID (orphan). Clear the write deadline
+	// as /exec does; r.Context() still bounds the request.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	snap, err := s.cfg.Manager.Snapshot(r.Context(), id)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrNotFound) {
@@ -502,6 +517,15 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Forking N large guests can outlast the server's WriteTimeout (armed
+	// once at request start, never reset per write). Left in place the forks
+	// boot, refresh identity, and register server-side, but writeJSON fails
+	// on the long-passed deadline: the client believes the fork failed while
+	// the sandboxes are live and unreaped (leak). Clear the write deadline as
+	// /exec does; r.Context() still bounds the request.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	forks, err := s.cfg.Manager.Fork(r.Context(), id, count)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
@@ -527,14 +551,16 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 // agent produces them. Without the Flush the stdlib would buffer and
 // the client would only see output when the command exits.
 type flushOnWrite struct {
-	w       http.ResponseWriter
-	flusher http.Flusher
+	w  http.ResponseWriter
+	rc *http.ResponseController
 }
 
 func (f flushOnWrite) Write(p []byte) (int, error) {
 	n, err := f.w.Write(p)
-	if err == nil && f.flusher != nil {
-		f.flusher.Flush()
+	if err == nil {
+		// ErrNotSupported only on a writer with no Flusher anywhere in its
+		// Unwrap chain (e.g. HTTP/2 already auto-flushes); ignore it.
+		_ = f.rc.Flush()
 	}
 	return n, err
 }

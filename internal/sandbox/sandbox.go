@@ -81,6 +81,37 @@ const (
 	DefaultMaxForkCount = 64
 )
 
+// Snapshot/restore deadline budget. A snapshot or restore's dominant cost
+// is writing/reading the guest memory file, which scales with guest size
+// and, on non-NVMe storage, can run well past a minute (a 4 GiB guest
+// already blows a 10s budget). The fcapi client carries no wall-clock cap
+// (so a large guest can complete) and the HTTP request ctx carries no
+// deadline, so these size a per-operation ctx to guest memory: a
+// legitimately large guest completes, while a wedged firecracker still
+// can't hang the daemon goroutine forever.
+const (
+	snapshotBaseTimeout   = 30 * time.Second
+	snapshotTimeoutPerMiB = 20 * time.Millisecond
+)
+
+// snapshotTimeout returns the deadline budget for a snapshot or restore of
+// a guest with the given memory size.
+func snapshotTimeout(memoryMiB int) time.Duration {
+	d := snapshotBaseTimeout
+	if memoryMiB > 0 {
+		d += time.Duration(memoryMiB) * snapshotTimeoutPerMiB
+	}
+	return d
+}
+
+// resumeRollbackTimeout bounds the best-effort Resume that unpauses the
+// source after a failed snapshot. The caller ctx is unusable there — it may
+// be why the snapshot failed, and is cancelled once the sized budget above
+// expires — so the rollback runs on a fresh, bounded ctx, mirroring the
+// Shutdown grace (M3): a wedged firecracker must not hang the Snapshot
+// goroutine forever with an unbounded Resume(context.Background()).
+const resumeRollbackTimeout = 10 * time.Second
+
 // ErrInvalidConfig marks a request that violates a resource bound (vCPUs,
 // memory, or fork count). The HTTP layer maps it to 400.
 var ErrInvalidConfig = errors.New("sandbox: invalid config")
@@ -693,6 +724,13 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 		return nil, err
 	}
 
+	// Bound the operation to guest memory. r.Context() carries no deadline
+	// and CreateSnapshot (which writes the whole memory file) has no fcapi
+	// wall-clock cap, so without this a wedged firecracker would hang this
+	// goroutine forever. A large guest still gets ample headroom.
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(src.MemoryMiB))
+	defer cancel()
+
 	snapID, err := NewSnapshotID()
 	if err != nil {
 		return nil, err
@@ -717,10 +755,15 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	if err := src.handle.Pause(ctx); err != nil {
 		return nil, fmt.Errorf("sandbox: pause %s: %w", src.ID, err)
 	}
-	// From here on, any failure must attempt to resume the source.
+	// From here on, any failure must attempt to resume the source. The
+	// operation ctx is unusable for the rollback — it may be why we failed,
+	// and is cancelled once the sized budget expires — so resume on a fresh,
+	// bounded ctx so a wedged firecracker can't hang this goroutine forever.
 	defer func() {
 		if !success {
-			_ = src.handle.Resume(context.Background())
+			rbCtx, rbCancel := context.WithTimeout(context.Background(), resumeRollbackTimeout)
+			defer rbCancel()
+			_ = src.handle.Resume(rbCtx)
 		}
 	}()
 
@@ -940,6 +983,14 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sa
 // forkOne creates a single fork. Split out so Fork's all-or-nothing
 // loop stays readable.
 func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error) {
+	// Bound the restore to guest memory, for the same reason Snapshot does:
+	// LoadSnapshot carries no fcapi wall-clock cap and r.Context() no
+	// deadline, so a wedged firecracker must not hang this goroutine. Forks
+	// restore with LazyMem (pages served on demand), so this is headroom, not
+	// a tight budget.
+	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(snap.MemoryMiB))
+	defer cancel()
+
 	id, err := NewID()
 	if err != nil {
 		return nil, err
