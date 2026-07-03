@@ -67,7 +67,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		dnsUpstream    = fs.String("dns-upstream", "system", `upstream DNS resolver for sandboxes. "system" reads first nameserver from /etc/resolv.conf (falls back to 1.1.1.1); otherwise specify "ip" or "ip:port"`)
 	)
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `Usage: crucible daemon [flags]
+		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
 
 Run the crucible HTTP daemon.
 
@@ -96,12 +96,12 @@ Required flags:
 		{"rootfs", *rootfs},
 	} {
 		if req.val == "" {
-			fmt.Fprintf(stderr, "error: --%s is required\n\n", req.name)
+			_, _ = fmt.Fprintf(stderr, "error: --%s is required\n\n", req.name)
 			fs.Usage()
 			return 2
 		}
 		if _, err := os.Stat(req.val); err != nil {
-			fmt.Fprintf(stderr, "error: --%s %q: %v\n", req.name, req.val, err)
+			_, _ = fmt.Fprintf(stderr, "error: --%s %q: %v\n", req.name, req.val, err)
 			return 2
 		}
 	}
@@ -109,31 +109,31 @@ Required flags:
 	// Eagerly create the work base so permission errors surface now, not
 	// on the first create.
 	if err := os.MkdirAll(*workBase, 0o750); err != nil {
-		fmt.Fprintf(stderr, "error: create --work-base %q: %v\n", *workBase, err)
+		_, _ = fmt.Fprintf(stderr, "error: create --work-base %q: %v\n", *workBase, err)
 		return 2
 	}
 
 	// --- logger -----------------------------------------------------------
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: --log-level: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: --log-level: %v\n", err)
 		return 2
 	}
 	logger, err := buildLogger(*logFormat, level, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: --log-format: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: --log-format: %v\n", err)
 		return 2
 	}
 	slog.SetDefault(logger)
 
 	drainTimeout, err := time.ParseDuration(*drainStr)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: --drain-timeout: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: --drain-timeout: %v\n", err)
 		return 2
 	}
 	agentReady, err := time.ParseDuration(*agentTimeout)
 	if err != nil {
-		fmt.Fprintf(stderr, "error: --agent-ready-timeout: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "error: --agent-ready-timeout: %v\n", err)
 		return 2
 	}
 
@@ -153,7 +153,7 @@ Required flags:
 	var r runner.Runner
 	if *jailerBin != "" {
 		if _, err := os.Stat(*jailerBin); err != nil {
-			fmt.Fprintf(stderr, "error: --jailer-bin %q: %v\n", *jailerBin, err)
+			_, _ = fmt.Fprintf(stderr, "error: --jailer-bin %q: %v\n", *jailerBin, err)
 			return 2
 		}
 		// Reap any chroots left behind by a previous daemon run that
@@ -201,7 +201,7 @@ Required flags:
 	if *netEgressIface != "" && *jailerBin != "" {
 		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
 		if perr != nil {
-			fmt.Fprintf(stderr, "error: --network-subnet-pool: %v\n", perr)
+			_, _ = fmt.Fprintf(stderr, "error: --network-subnet-pool: %v\n", perr)
 			return 2
 		}
 		nmgr, nerr := network.Start(context.Background(), network.ManagerConfig{
@@ -225,7 +225,7 @@ Required flags:
 		// Half-configured — operator asked for network but not
 		// jailer. That's a structural mismatch, not a usage
 		// error we can work around; reject loudly at startup.
-		fmt.Fprintln(stderr, "error: --network-egress-iface requires --jailer-bin (network needs per-sandbox netns)")
+		_, _ = fmt.Fprintln(stderr, "error: --network-egress-iface requires --jailer-bin (network needs per-sandbox netns)")
 		return 2
 	}
 

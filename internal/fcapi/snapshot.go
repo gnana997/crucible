@@ -7,6 +7,7 @@ import "context"
 // backing memory file and are a v0.2+ optimization.
 type SnapshotType string
 
+// SnapshotType values accepted by Firecracker.
 const (
 	SnapshotTypeFull SnapshotType = "Full"
 	SnapshotTypeDiff SnapshotType = "Diff"
@@ -42,6 +43,7 @@ func (c *Client) CreateSnapshot(ctx context.Context, cfg SnapshotCreate) error {
 // UffdHandler so the snapshot memory is shared instead of copied.
 type MemBackendType string
 
+// MemBackendType values accepted by Firecracker.
 const (
 	MemBackendFile        MemBackendType = "File"
 	MemBackendUffdHandler MemBackendType = "Uffd"

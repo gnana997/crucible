@@ -35,11 +35,15 @@ import (
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+	os.Exit(run(logger))
+}
 
+// run holds main's body so deferred cleanup runs before os.Exit.
+func run(logger *slog.Logger) int {
 	ln, err := listenVSock(agentwire.AgentVSockPort)
 	if err != nil {
 		logger.Error("vsock listen failed", "err", err)
-		os.Exit(1)
+		return 1
 	}
 	logger.Info("crucible-agent listening", "vsock_port", agentwire.AgentVSockPort)
 
@@ -73,7 +77,7 @@ func main() {
 	case err := <-errCh:
 		if err != nil {
 			logger.Error("serve failed", "err", err)
-			os.Exit(1)
+			return 1
 		}
 	}
 
@@ -83,6 +87,7 @@ func main() {
 		logger.Warn("shutdown did not complete cleanly", "err", err)
 	}
 	logger.Info("crucible-agent stopped")
+	return 0
 }
 
 // handleHealthz is a trivial readiness probe. The host can poll this

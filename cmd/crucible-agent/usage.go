@@ -51,7 +51,7 @@ func readProcIO(pid int) (procIOStats, error) {
 	if err != nil {
 		return procIOStats{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var stats procIOStats
 	scanner := bufio.NewScanner(f)
@@ -186,7 +186,7 @@ func guestMemTotalBytes() int64 {
 	if err != nil {
 		return 0
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

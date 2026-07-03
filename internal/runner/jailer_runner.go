@@ -578,7 +578,7 @@ func (h *jailerHandle) Snapshot(ctx context.Context, statePath, memPath string) 
 func (h *jailerHandle) cleanupJailer() {
 	h.cleanupOnce.Do(func() {
 		if err := jailer.Cleanup(h.jailerSpec); err != nil {
-			h.fcHandle.log.Warn("jailer cleanup failed", "err", err)
+			h.log.Warn("jailer cleanup failed", "err", err)
 		}
 	})
 }

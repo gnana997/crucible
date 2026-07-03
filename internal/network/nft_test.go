@@ -46,7 +46,7 @@ func TestBuildSandboxTeardownScript(t *testing.T) {
 	if mapIdx < 0 || chainIdx < 0 || setIdx < 0 {
 		t.Fatalf("teardown script missing expected lines:\n%s", got)
 	}
-	if !(mapIdx < chainIdx && chainIdx < setIdx) {
+	if mapIdx >= chainIdx || chainIdx >= setIdx {
 		t.Errorf("teardown order wrong: map(%d) chain(%d) set(%d)", mapIdx, chainIdx, setIdx)
 	}
 }

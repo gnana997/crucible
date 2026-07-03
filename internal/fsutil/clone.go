@@ -39,7 +39,7 @@ func Clone(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("fsutil: open src %s: %w", src, err)
 	}
-	defer srcF.Close()
+	defer func() { _ = srcF.Close() }()
 
 	dstF, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {

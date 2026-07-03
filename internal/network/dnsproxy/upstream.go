@@ -32,10 +32,10 @@ const cloudflareFallback = "1.1.1.1:53"
 //
 //   - ""             → treated as "system"
 //   - "system"       → read SystemResolvConf, first nameserver,
-//                      append :53. Falls back to cloudflareFallback
-//                      on any failure (the reason is returned via
-//                      the second error; the caller typically logs
-//                      it at WARN and continues).
+//     append :53. Falls back to cloudflareFallback
+//     on any failure (the reason is returned via
+//     the second error; the caller typically logs
+//     it at WARN and continues).
 //   - "1.2.3.4"      → "1.2.3.4:53"
 //   - "1.2.3.4:5353" → unchanged
 //
@@ -102,7 +102,7 @@ func firstNameserver(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {

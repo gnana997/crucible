@@ -95,11 +95,11 @@ func (c Config) validate() error {
 // Responder is a running per-netns DHCP server. Construct with
 // Start; stop with Stop. Safe to Stop multiple times.
 type Responder struct {
-	cfg     Config
-	conn    net.PacketConn
-	stopped chan struct{}
+	cfg      Config
+	conn     net.PacketConn
+	stopped  chan struct{}
 	stopOnce sync.Once
-	log     *slog.Logger
+	log      *slog.Logger
 }
 
 // Start launches a responder goroutine bound inside cfg.Netns.
@@ -142,11 +142,11 @@ func Start(cfg Config) (*Responder, error) {
 		runtime.LockOSThread()
 
 		if err := unix.Setns(nsFd, unix.CLONE_NEWNET); err != nil {
-			unix.Close(nsFd)
+			_ = unix.Close(nsFd)
 			ch <- bound{err: fmt.Errorf("dhcp: setns: %w", err)}
 			return
 		}
-		unix.Close(nsFd)
+		_ = unix.Close(nsFd)
 
 		// Bind UDP/67 inside the now-current netns.
 		conn, err := net.ListenPacket("udp4", ":67")

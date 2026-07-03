@@ -114,7 +114,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *sandbox.Manager) {
 // decodeJSON asserts the response carries a JSON body and decodes it.
 func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if got := resp.Header.Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
 	}
@@ -459,7 +459,7 @@ func TestExecSandboxRouteStubAgentSynthesizesExitFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /exec: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

@@ -69,7 +69,7 @@ func (c *Client) GetHealthz(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("agentapi: healthz: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("agentapi: healthz returned %d", resp.StatusCode)
@@ -103,7 +103,7 @@ func (c *Client) RefreshNetwork(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("agentapi: network refresh: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("agentapi: network refresh returned %d: %s",
@@ -147,7 +147,7 @@ func (c *Client) RefreshIdentity(ctx context.Context, seed []byte, sandboxID str
 	if err != nil {
 		return fmt.Errorf("agentapi: identity refresh: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrIdentityRefreshUnsupported

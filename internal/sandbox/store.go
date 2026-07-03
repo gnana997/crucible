@@ -152,7 +152,7 @@ func replayJournal(path string) ([]sandboxRecord, []snapshotRecord, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("sandbox: open state journal: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sbx := make(map[string]sandboxRecord)
 	snaps := make(map[string]snapshotRecord)
@@ -251,16 +251,16 @@ func (s *store) compact(snaps []snapshotRecord) error {
 	for i := range snaps {
 		r := snaps[i]
 		if err := enc.Encode(journalEntry{Op: "put", Kind: kindSnapshot, ID: r.ID, Snapshot: &r}); err != nil {
-			f.Close()
+			_ = f.Close()
 			return fmt.Errorf("sandbox: compact journal: %w", err)
 		}
 	}
 	if err := w.Flush(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("sandbox: compact journal: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("sandbox: compact journal: %w", err)
 	}
 	if err := f.Close(); err != nil {

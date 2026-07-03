@@ -25,25 +25,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "version", "--version", "-v":
-		fmt.Fprintf(stdout, "crucible %s\n", version.String())
+		_, _ = fmt.Fprintf(stdout, "crucible %s\n", version.String())
 		return 0
 	case "daemon":
 		return runDaemon(args[1:], stdout, stderr)
 	case "run":
-		fmt.Fprintln(stderr, "crucible run: not yet implemented (wk2 target)")
+		_, _ = fmt.Fprintln(stderr, "crucible run: not yet implemented (wk2 target)")
 		return 1
 	case "help", "--help", "-h":
 		usage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "unknown command: %q\n\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "unknown command: %q\n\n", args[0])
 		usage(stderr)
 		return 2
 	}
 }
 
 func usage(w io.Writer) {
-	fmt.Fprint(w, `crucible - OSS sandbox runtime for AI coding agents
+	_, _ = fmt.Fprint(w, `crucible - OSS sandbox runtime for AI coding agents
 
 Usage:
   crucible <command> [flags]

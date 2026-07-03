@@ -104,7 +104,7 @@ func TestMatchesWildcard(t *testing.T) {
 		"registry.npmjs.org.": true,
 
 		// single-label wildcard must not match multi-level subdomains
-		"a.b.npmjs.org": false,
+		"a.b.npmjs.org":   false,
 		"x.y.z.npmjs.org": false,
 
 		// must not match the bare apex

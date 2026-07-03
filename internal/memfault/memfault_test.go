@@ -80,7 +80,7 @@ func TestServesPagesFromMemoryFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer h.Close()
+			defer func() { _ = h.Close() }()
 
 			// --- play Firecracker ---
 			region, err := unix.Mmap(-1, 0, npages*pageSize,
@@ -88,15 +88,15 @@ func TestServesPagesFromMemoryFile(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer unix.Munmap(region)
+			defer func() { _ = unix.Munmap(region) }()
 			uffd := newTestUffd(t, region)
-			defer unix.Close(uffd)
+			defer func() { _ = unix.Close(uffd) }()
 
 			conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 			layout := fmt.Sprintf(`[{"base_host_virt_addr":%d,"size":%d,"offset":0,%q:%d}]`,
 				uintptr(unsafe.Pointer(&region[0])), npages*pageSize, field, pageSize)
 			if _, _, err := conn.WriteMsgUnix([]byte(layout), unix.UnixRights(uffd), nil); err != nil {
@@ -194,15 +194,15 @@ func TestCloseDuringServing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer unix.Munmap(region)
+	defer func() { _ = unix.Munmap(region) }()
 	uffd := newTestUffd(t, region)
-	defer unix.Close(uffd)
+	defer func() { _ = unix.Close(uffd) }()
 
 	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: sock, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	layout := fmt.Sprintf(`[{"base_host_virt_addr":%d,"size":%d,"offset":0,"page_size":%d}]`,
 		uintptr(unsafe.Pointer(&region[0])), pageSize, pageSize)
 	if _, _, err := conn.WriteMsgUnix([]byte(layout), unix.UnixRights(uffd), nil); err != nil {

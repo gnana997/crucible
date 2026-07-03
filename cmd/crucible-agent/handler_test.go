@@ -60,7 +60,7 @@ func TestHandleExecHello(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
@@ -91,7 +91,7 @@ func TestHandleExecStderrAndNonZeroExit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	stdout, stderr, result := collectFrames(t, resp.Body)
 	if result.ExitCode != 7 {
@@ -116,7 +116,7 @@ func TestHandleExecCommandNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	_, _, result := collectFrames(t, resp.Body)
 	if result.ExitCode != -1 {
@@ -138,7 +138,7 @@ func TestHandleExecTimedOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	_, _, result := collectFrames(t, resp.Body)
 	if !result.TimedOut {

@@ -8,8 +8,8 @@
 //
 // The responder handles two message-type pairs:
 //
-//   DHCPDISCOVER → DHCPOFFER    fresh guest booting for the first time
-//   DHCPREQUEST  → DHCPACK       guest confirming the offer
+//	DHCPDISCOVER → DHCPOFFER    fresh guest booting for the first time
+//	DHCPREQUEST  → DHCPACK       guest confirming the offer
 //
 // On a REQUEST whose ciaddr or requested-IP option doesn't match
 // the configured lease — typical for a forked VM whose kernel

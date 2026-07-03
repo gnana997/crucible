@@ -102,12 +102,18 @@ func (s VethSpec) Validate() error {
 	return nil
 }
 
-// Interface names derived from the sandbox ID via ifaceSuffix.
+// Interface names below are derived from the sandbox ID via ifaceSuffix.
 // Deterministic so Teardown reconstructs the same names as Setup.
 // Length = prefix (3) + hash (8) = 11 chars, well within
 // IFNAMSIZ.
-func (s VethSpec) HostVeth() string   { return vethHostPrefix + ifaceSuffix(s.SandboxID) }
-func (s VethSpec) GuestVeth() string  { return vethGuestPrefix + ifaceSuffix(s.SandboxID) }
+
+// HostVeth returns the host-side veth interface name.
+func (s VethSpec) HostVeth() string { return vethHostPrefix + ifaceSuffix(s.SandboxID) }
+
+// GuestVeth returns the guest-side veth interface name.
+func (s VethSpec) GuestVeth() string { return vethGuestPrefix + ifaceSuffix(s.SandboxID) }
+
+// BridgeName returns the per-sandbox bridge name.
 func (s VethSpec) BridgeName() string { return bridgePrefix + ifaceSuffix(s.SandboxID) }
 
 // Tap returns the fixed tap name every sandbox's netns uses. Same

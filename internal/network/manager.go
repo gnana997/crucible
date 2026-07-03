@@ -78,8 +78,8 @@ type Manager struct {
 	proxy *dnsproxy.Proxy
 	log   *slog.Logger
 
-	mu       sync.Mutex
-	started  bool
+	mu        sync.Mutex
+	started   bool
 	sandboxes map[string]*SandboxHandle // sanitized ID → handle
 }
 

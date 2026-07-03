@@ -197,7 +197,7 @@ func (h *Handler) run() {
 		h.log.Error("uffd conn detach failed", "err", err)
 		return
 	}
-	defer connF.Close()
+	defer func() { _ = connF.Close() }()
 	connFd := int(connF.Fd())
 
 	uffd, regions, err := h.handshake(connFd)
@@ -207,7 +207,7 @@ func (h *Handler) run() {
 		}
 		return
 	}
-	defer unix.Close(uffd)
+	defer func() { _ = unix.Close(uffd) }()
 
 	var guestBytes uint64
 	for _, r := range regions {

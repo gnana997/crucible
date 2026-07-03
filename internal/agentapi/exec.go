@@ -60,7 +60,7 @@ func (c *Client) Exec(
 	if err != nil {
 		return agentwire.ExecResult{}, fmt.Errorf("agentapi: exec: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		// Headers came back non-2xx — no streamed body, just a JSON

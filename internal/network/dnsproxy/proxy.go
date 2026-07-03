@@ -98,7 +98,7 @@ type Proxy struct {
 	policies sync.Map    // key: netip.Addr (guest source IP), value: *Policy
 	log      *slog.Logger
 
-	started chan struct{}
+	started  chan struct{}
 	serveErr chan error
 }
 

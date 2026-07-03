@@ -12,11 +12,12 @@ import (
 // actually produces.
 //
 // Fields:
-//   op=1 htype=1 hlen=6 hops=0
-//   xid=0xdeadbeef
-//   flags=0x8000 (broadcast)
-//   chaddr starts 02:00:00:00:00:01
-//   options: 53=1 (DISCOVER), 55 (parameter list), 255 (end)
+//
+//	op=1 htype=1 hlen=6 hops=0
+//	xid=0xdeadbeef
+//	flags=0x8000 (broadcast)
+//	chaddr starts 02:00:00:00:00:01
+//	options: 53=1 (DISCOVER), 55 (parameter list), 255 (end)
 func sampleDiscover() []byte {
 	b := make([]byte, 240, 300)
 	b[0] = 1
@@ -33,9 +34,9 @@ func sampleDiscover() []byte {
 	// magic cookie at 236..240
 	b[236], b[237], b[238], b[239] = 0x63, 0x82, 0x53, 0x63
 	// options: 53=1 (len=1 value DISCOVER), 55 param list, end.
-	b = append(b, 53, 1, 1)     // message type = DISCOVER
+	b = append(b, 53, 1, 1)       // message type = DISCOVER
 	b = append(b, 55, 3, 1, 3, 6) // parameter request list: subnet mask, router, DNS
-	b = append(b, 255)          // end
+	b = append(b, 255)            // end
 	return b
 }
 

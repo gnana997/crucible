@@ -119,9 +119,9 @@ func Parse(buf []byte) (*Message, error) {
 //
 // Special codes:
 //
-//   0   (pad): skip one byte, no length. Used for alignment;
-//              common as a no-op filler.
-//   255 (end): stop parsing. Anything after is padding.
+//	0   (pad): skip one byte, no length. Used for alignment;
+//	           common as a no-op filler.
+//	255 (end): stop parsing. Anything after is padding.
 //
 // All other codes are followed by a 1-byte length and then length
 // data bytes.

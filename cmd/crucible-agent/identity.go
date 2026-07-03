@@ -64,7 +64,7 @@ func injectEntropy(seed []byte) error {
 	if err != nil {
 		return fmt.Errorf("open %s: %w", randomDevicePath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// struct rand_pool_info { int entropy_count; int buf_size; __u32 buf[]; }
 	info := make([]byte, 8+len(seed))

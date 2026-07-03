@@ -11,8 +11,8 @@ import (
 // Never invoked — just needs to be non-nil.
 type stubAllowlist struct{}
 
-func (stubAllowlist) Matches(string) bool   { return true }
-func (stubAllowlist) Patterns() []string    { return nil }
+func (stubAllowlist) Matches(string) bool { return true }
+func (stubAllowlist) Patterns() []string  { return nil }
 
 // stubProvisioner records Setup/Teardown calls without doing
 // anything real. Used to exercise the sandbox-layer branches
@@ -119,13 +119,13 @@ func TestProvisionNetworkWrapsUnderlyingError(t *testing.T) {
 
 func TestSanitizeNetworkID(t *testing.T) {
 	cases := map[string]string{
-		"sbx_abc":        "sbx-abc",
-		"snap_l87p5q":    "snap-l87p5q",
-		"already-clean":  "already-clean",
-		"":               "",
-		"_leading":       "-leading",
-		"trailing_":      "trailing-",
-		"a_b_c_d":        "a-b-c-d",
+		"sbx_abc":       "sbx-abc",
+		"snap_l87p5q":   "snap-l87p5q",
+		"already-clean": "already-clean",
+		"":              "",
+		"_leading":      "-leading",
+		"trailing_":     "trailing-",
+		"a_b_c_d":       "a-b-c-d",
 	}
 	for in, want := range cases {
 		if got := sanitizeNetworkID(in); got != want {

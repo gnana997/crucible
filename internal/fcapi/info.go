@@ -6,6 +6,7 @@ import "context"
 // values come directly from the API — we don't translate them.
 type InstanceState string
 
+// InstanceState values, spelled exactly as Firecracker reports them.
 const (
 	StateNotStarted InstanceState = "Not started"
 	StateRunning    InstanceState = "Running"
