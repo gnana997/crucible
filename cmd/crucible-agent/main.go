@@ -47,6 +47,7 @@ func main() {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("POST /exec", handleExec)
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
+	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
 
 	// No Read/Write timeouts on the server: exec responses can stream for
 	// as long as the command takes. Per-request deadlines come from

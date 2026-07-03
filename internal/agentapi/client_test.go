@@ -425,3 +425,92 @@ func TestRefreshNetworkContextCancel(t *testing.T) {
 		t.Errorf("err = %v, want context cancellation to surface", err)
 	}
 }
+
+// --- RefreshIdentity tests --------------------------------------
+
+func TestRefreshIdentityHappy(t *testing.T) {
+	seed := bytes.Repeat([]byte{0xA5}, 32)
+	var got agentwire.IdentityRefreshRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /identity/refresh", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	if err := c.RefreshIdentity(context.Background(), seed, "sb-fork-1"); err != nil {
+		t.Fatalf("RefreshIdentity: %v", err)
+	}
+	if !bytes.Equal(got.Seed, seed) {
+		t.Errorf("seed did not round-trip: got %x", got.Seed)
+	}
+	if got.SandboxID != "sb-fork-1" {
+		t.Errorf("sandbox_id = %q, want sb-fork-1", got.SandboxID)
+	}
+}
+
+func TestRefreshIdentityStaleAgent404(t *testing.T) {
+	// A rootfs built with an old agent has no /identity/refresh
+	// route; ServeMux answers 404. The client must map that to the
+	// sentinel so Fork can fail with the rebuild-rootfs cause.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	err := c.RefreshIdentity(context.Background(), make([]byte, 32), "sb-fork-1")
+	if !errors.Is(err, ErrIdentityRefreshUnsupported) {
+		t.Fatalf("err = %v, want ErrIdentityRefreshUnsupported", err)
+	}
+	if !strings.Contains(err.Error(), "rebuild the rootfs") {
+		t.Errorf("err = %v, want the rebuild-rootfs hint", err)
+	}
+}
+
+func TestRefreshIdentityServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /identity/refresh", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "identity refresh failed (entropy): ioctl RNDADDENTROPY: EPERM", http.StatusInternalServerError)
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	err := c.RefreshIdentity(context.Background(), make([]byte, 32), "sb-fork-1")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("err = %v, want to mention 500", err)
+	}
+	if !strings.Contains(err.Error(), "RNDADDENTROPY") {
+		t.Errorf("err = %v, want to include server's body", err)
+	}
+	if errors.Is(err, ErrIdentityRefreshUnsupported) {
+		t.Error("a 500 must not be mistaken for the stale-rootfs sentinel")
+	}
+}
+
+func TestRefreshIdentityDialFailure(t *testing.T) {
+	// Agent not up yet: the dial fails. Callers (Manager.refreshIdentity)
+	// retry on this until their window closes, so it must be an
+	// ordinary error, not the unsupported sentinel.
+	sock := filepath.Join(t.TempDir(), "does-not-exist.sock")
+	c := NewClient(sock, 52)
+	err := c.RefreshIdentity(context.Background(), make([]byte, 32), "sb-fork-1")
+	if err == nil {
+		t.Fatal("expected dial error")
+	}
+	if errors.Is(err, ErrIdentityRefreshUnsupported) {
+		t.Error("a dial failure must not be mistaken for the stale-rootfs sentinel")
+	}
+	if !strings.Contains(err.Error(), "identity refresh") {
+		t.Errorf("err = %v, want to mention 'identity refresh'", err)
+	}
+}

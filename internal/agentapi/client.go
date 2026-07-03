@@ -1,7 +1,9 @@
 package agentapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gnana997/crucible/internal/agentwire"
 )
 
 // DefaultHandshakeTimeout bounds the CONNECT/OK exchange when the caller
@@ -104,6 +108,53 @@ func (c *Client) RefreshNetwork(ctx context.Context) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("agentapi: network refresh returned %d: %s",
 			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+// ErrIdentityRefreshUnsupported reports that the guest agent predates
+// the /identity/refresh endpoint (HTTP 404) — the rootfs was built
+// with an older crucible-agent. Callers must treat this as fatal:
+// continuing would hand out forks with duplicated RNG state and
+// identifiers. Fix: rebuild the rootfs with the current agent
+// (scripts/build-rootfs.sh).
+var ErrIdentityRefreshUnsupported = errors.New(
+	"agentapi: guest agent does not support identity refresh — rebuild the rootfs with the current crucible-agent")
+
+// RefreshIdentity asks the guest agent to give a freshly-forked VM
+// unique state: credit the host-generated 32-byte seed to the kernel
+// entropy pool (forcing a CRNG reseed), rotate /etc/machine-id, set
+// the hostname to sandboxID, and write the /run/crucible/fork-id
+// marker. Called by sandbox.Manager.Fork after resume, before the
+// fork is registered — and thus before anything can exec into it.
+// See docs/clone-safety.md.
+//
+// Unlike RefreshNetwork, failures ARE fatal to Fork: duplicated
+// entropy doesn't self-heal on a renewal cycle the way a stale DHCP
+// lease does. A 404 maps to ErrIdentityRefreshUnsupported so callers
+// can surface the stale-rootfs cause directly.
+func (c *Client) RefreshIdentity(ctx context.Context, seed []byte, sandboxID string) error {
+	body, err := json.Marshal(agentwire.IdentityRefreshRequest{Seed: seed, SandboxID: sandboxID})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/identity/refresh", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentapi: identity refresh: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrIdentityRefreshUnsupported
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agentapi: identity refresh returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ package sandbox
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -756,6 +757,12 @@ func (m *Manager) ListSnapshots() []*Snapshot {
 // files. Forks already created from it are unaffected — they have their
 // own per-fork rootfs and memory copies.
 func (m *Manager) DeleteSnapshot(ctx context.Context, id string) error {
+	// Checked before touching the registry: once the entry is removed the
+	// on-disk delete must run to completion, or the files leak with no
+	// record pointing at them.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sandbox: delete snapshot %s: %w", id, err)
+	}
 	m.mu.Lock()
 	snap, ok := m.snapshots[id]
 	if !ok {
@@ -771,7 +778,6 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, id string) error {
 		}
 	}
 
-	_ = ctx // reserved for future cancellation bounds on large deletes
 	if err := os.RemoveAll(snap.Dir); err != nil {
 		return fmt.Errorf("sandbox: remove snapshot dir %s: %w", snap.Dir, err)
 	}
@@ -963,6 +969,20 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		}
 	}
 
+	// Clone-safety (docs/clone-safety.md): before the fork is
+	// registered — and therefore before anything can exec into it —
+	// hand the guest a fresh 32-byte seed and have the agent reseed
+	// the kernel CRNG and rotate machine-id + hostname. Fatal on
+	// failure, unlike the network refresh below: duplicated entropy
+	// doesn't self-heal, and a fork without the uniqueness guarantee
+	// is worse than no fork.
+	if s.execClient != nil {
+		if err := m.refreshIdentity(ctx, s.execClient, id); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("identity refresh: %w", err)
+		}
+	}
+
 	// If the fork has network, ask the guest to bounce eth0 so
 	// systemd-networkd runs a fresh DHCP cycle and picks up the
 	// fork's per-netns-assigned IP. The guest's kernel restored
@@ -992,6 +1012,54 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 // (10s for the down→up→wait dance) plus slack for the vsock
 // round-trip.
 const networkRefreshTimeout = 15 * time.Second
+
+// identityRefreshTimeout bounds the post-resume identity refresh,
+// retries included. Generous relative to the work (two ioctls plus a
+// few file writes) because the window has to absorb agent wake-up
+// when WaitForAgent is disabled.
+const identityRefreshTimeout = 15 * time.Second
+
+// identityRefreshPollInterval is the retry cadence within
+// identityRefreshTimeout, mirroring agentReadyPollInterval.
+const identityRefreshPollInterval = 200 * time.Millisecond
+
+// identitySeedSize is the per-fork entropy payload: 32 bytes
+// (256 bits), a full reseed's worth for the guest kernel CRNG.
+const identitySeedSize = 32
+
+// refreshIdentity drives the guest agent's POST /identity/refresh for
+// a just-restored fork with a fresh host-generated seed — the
+// clone-safety guarantee that no two forks wake with the same RNG
+// state, machine-id, or hostname. It retries on the agent-readiness
+// cadence because the agent may still be waking and the refresh must
+// not depend on the optional WaitForAgent setting. A stale-rootfs 404
+// aborts immediately — retrying cannot fix an agent that lacks the
+// endpoint.
+func (m *Manager) refreshIdentity(ctx context.Context, c *agentapi.Client, sandboxID string) error {
+	seed := make([]byte, identitySeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return fmt.Errorf("generate seed: %w", err)
+	}
+
+	refreshCtx, cancel := context.WithTimeout(ctx, identityRefreshTimeout)
+	defer cancel()
+
+	var lastErr error
+	for {
+		lastErr = c.RefreshIdentity(refreshCtx, seed, sandboxID)
+		if lastErr == nil {
+			return nil
+		}
+		if errors.Is(lastErr, agentapi.ErrIdentityRefreshUnsupported) {
+			return lastErr
+		}
+		select {
+		case <-refreshCtx.Done():
+			return fmt.Errorf("%w (last attempt: %v)", refreshCtx.Err(), lastErr)
+		case <-time.After(identityRefreshPollInterval):
+		}
+	}
+}
 
 // Delete shuts the sandbox down and removes it from the manager. It is
 // idempotent: deleting an unknown ID returns ErrNotFound; deleting twice

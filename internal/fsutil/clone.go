@@ -9,6 +9,7 @@ package fsutil
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -47,13 +48,16 @@ func Clone(src, dst string) error {
 
 	// Try FICLONE. On success the kernel has already made dst == src
 	// via shared extents; no further IO is needed.
-	if err := unix.IoctlFileClone(int(dstF.Fd()), int(srcF.Fd())); err == nil {
+	cloneErr := unix.IoctlFileClone(int(dstF.Fd()), int(srcF.Fd()))
+	if cloneErr == nil {
 		return closeWithError(dstF, nil)
 	}
 
 	// Fallback path: full byte copy. The ioctl doesn't modify the
 	// file on failure, so we can start writing at position 0 (we
 	// opened with O_TRUNC).
+	slog.Default().Warn("reflink unavailable, falling back to full byte copy",
+		"component", "fsutil", "src", src, "dst", dst, "err", cloneErr)
 	_, copyErr := io.Copy(dstF, srcF)
 	return closeWithError(dstF, copyErr)
 }
