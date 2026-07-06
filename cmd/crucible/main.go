@@ -44,11 +44,22 @@ func (e exitCodeError) Error() string { return fmt.Sprintf("exit status %d", e.c
 
 // globalOpts holds flags shared by every client subcommand.
 type globalOpts struct {
-	addr   string
-	output string
+	addr          string
+	token         string
+	output        string
+	tlsSkipVerify bool
 }
 
-func (o *globalOpts) client() *client.Client { return client.New(o.addr) }
+func (o *globalOpts) client() *client.Client {
+	var opts []client.Option
+	if o.token != "" {
+		opts = append(opts, client.WithToken(o.token))
+	}
+	if o.tlsSkipVerify {
+		opts = append(opts, client.WithInsecureSkipVerify())
+	}
+	return client.New(o.addr, opts...)
+}
 
 func (o *globalOpts) isJSON() bool { return o.output == "json" }
 
@@ -81,7 +92,9 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		defAddr = client.DefaultAddr
 	}
 	root.PersistentFlags().StringVar(&opts.addr, "addr", defAddr, "daemon address (env CRUCIBLE_ADDR)")
+	root.PersistentFlags().StringVar(&opts.token, "token", os.Getenv("CRUCIBLE_TOKEN"), "API key for an authenticated daemon (env CRUCIBLE_TOKEN)")
 	root.PersistentFlags().StringVarP(&opts.output, "output", "o", "table", "output format: table|json")
+	root.PersistentFlags().BoolVar(&opts.tlsSkipVerify, "tls-skip-verify", false, "skip TLS certificate verification (self-signed daemon; dev only)")
 
 	root.AddCommand(
 		newVersionCmd(),

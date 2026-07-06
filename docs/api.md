@@ -3,11 +3,20 @@
 crucible is driven entirely over HTTP. This is the `v0.1` reference for the daemon's REST surface.
 
 - **Base URL:** whatever you pass to `--listen` (default `http://127.0.0.1:7878`).
-- **No authentication.** The daemon binds loopback by default and has no access control — do not expose it to untrusted callers. See [SECURITY.md](../SECURITY.md).
+- **Authentication.** Off by default on loopback; required as soon as any API key exists. Pass `Authorization: Bearer <key>`. See [Authentication](#authentication) below and [SECURITY.md](../SECURITY.md).
 - **Content type:** requests and responses are JSON, except the exec stream (see below). Request bodies are size-capped; oversized bodies are rejected.
 - **Errors:** any non-2xx JSON response has the shape `{"error": "message"}`.
 
 IDs are validated on every path; a malformed sandbox or snapshot ID returns `400` before any work happens.
+
+## Authentication
+
+The daemon supports bearer-token API keys, on the same model as the Docker or Kubernetes CLIs.
+
+- **Loopback default: no auth.** With no keys configured, the daemon (bound to `127.0.0.1`) serves every request unauthenticated — the single-operator local case.
+- **Enabling auth.** Create a key with `crucible daemon token add --name <label>`. The raw key is printed **once** (`crucible_…`); only its SHA-256 hash is stored. As soon as one key exists, every request must carry `Authorization: Bearer <key>` or it is rejected `401` with a `WWW-Authenticate: Bearer` header. Manage keys with `crucible daemon token list` / `revoke <id>` (rotate = add a new key, then revoke the old); changes take effect without a daemon restart.
+- **`/healthz` is always exempt**, so liveness probes work without a key.
+- **Binding non-loopback requires auth + TLS.** The daemon refuses to bind a non-loopback address unless at least one key exists and `--tls-cert`/`--tls-key` are set. Clients send the key over TLS with `--token` / `CRUCIBLE_TOKEN`.
 
 ## Endpoints
 

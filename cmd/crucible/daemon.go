@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -22,7 +23,11 @@ import (
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/internal/tokenstore"
 )
+
+// defaultTokenFile is where the daemon's API-key store lives by default.
+const defaultTokenFile = "/var/lib/crucible/tokens.json"
 
 // runDaemon implements the `crucible daemon` subcommand.
 //
@@ -37,6 +42,11 @@ import (
 //
 // The return value is the exit code for the parent main().
 func runDaemon(args []string, stdout, stderr io.Writer) int {
+	// `crucible daemon token …` manages the API-key store (not the daemon).
+	if len(args) > 0 && args[0] == "token" {
+		return runDaemonToken(args[1:], stdout, stderr)
+	}
+
 	fs := flag.NewFlagSet("crucible daemon", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -72,6 +82,13 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		netEgressIface = fs.String("network-egress-iface", "", "host interface to masquerade outbound sandbox traffic on (e.g. eth0); enables network feature when set")
 		netSubnetPool  = fs.String("network-subnet-pool", "10.20.0.0/16", "base CIDR for per-sandbox /30 allocations")
 		dnsUpstream    = fs.String("dns-upstream", "system", `upstream DNS resolver for sandboxes. "system" reads first nameserver from /etc/resolv.conf (falls back to 1.1.1.1); otherwise specify "ip" or "ip:port"`)
+		// Auth / TLS. When the token store holds any keys, requests require
+		// Authorization: Bearer. Binding a non-loopback --listen requires
+		// both keys and TLS (validated below). Manage keys with
+		// `crucible daemon token add|list|revoke`.
+		tokenFile = fs.String("token-file", defaultTokenFile, "API-key store; when it holds keys, requests require Authorization: Bearer")
+		tlsCert   = fs.String("tls-cert", "", "TLS certificate (PEM); required to bind a non-loopback --listen")
+		tlsKey    = fs.String("tls-key", "", "TLS private key (PEM); required with --tls-cert")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -109,6 +126,23 @@ Required flags:
 		}
 		if _, err := os.Stat(req.val); err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: --%s %q: %v\n", req.name, req.val, err)
+			return 2
+		}
+	}
+
+	// --- auth / TLS -------------------------------------------------------
+	tokens := tokenstore.Open(*tokenFile)
+	if (*tlsCert == "") != (*tlsKey == "") {
+		_, _ = fmt.Fprintln(stderr, "error: --tls-cert and --tls-key must be set together")
+		return 2
+	}
+	if !isLoopbackAddr(*addr) {
+		if !tokens.Enabled() {
+			_, _ = fmt.Fprintf(stderr, "error: refusing to bind non-loopback %q without API keys — run 'crucible daemon token add' first\n", *addr)
+			return 2
+		}
+		if *tlsCert == "" {
+			_, _ = fmt.Fprintf(stderr, "error: refusing to serve non-loopback %q without TLS — set --tls-cert and --tls-key\n", *addr)
 			return 2
 		}
 	}
@@ -301,10 +335,13 @@ Required flags:
 	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
 
 	srv, err := daemon.New(daemon.Config{
-		Manager: mgr,
-		Addr:    *addr,
-		Logger:  logger,
-		Metrics: mx,
+		Manager:    mgr,
+		Addr:       *addr,
+		Logger:     logger,
+		Metrics:    mx,
+		TokenStore: tokens,
+		TLSCert:    *tlsCert,
+		TLSKey:     *tlsKey,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)
@@ -375,6 +412,117 @@ func discoverProfiles(dir string) (map[string]string, error) {
 		profiles[strings.TrimSuffix(name, ".ext4")] = resolved
 	}
 	return profiles, nil
+}
+
+// isLoopbackAddr reports whether a listen address binds only loopback (so
+// auth/TLS is optional). Empty host / 0.0.0.0 / any routable IP is
+// non-loopback.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// parseTokenArgs pulls the `--token-file`/`--name` flags out of args from
+// any position (Go's flag package stops at the first positional, which
+// makes `token revoke <id> --token-file X` silently ignore the flag), and
+// returns the remaining positionals.
+func parseTokenArgs(args []string) (tokenFile, name string, positionals []string) {
+	tokenFile = defaultTokenFile
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--token-file" && i+1 < len(args):
+			tokenFile, i = args[i+1], i+1
+		case strings.HasPrefix(a, "--token-file="):
+			tokenFile = strings.TrimPrefix(a, "--token-file=")
+		case a == "--name" && i+1 < len(args):
+			name, i = args[i+1], i+1
+		case strings.HasPrefix(a, "--name="):
+			name = strings.TrimPrefix(a, "--name=")
+		default:
+			positionals = append(positionals, a)
+		}
+	}
+	return tokenFile, name, positionals
+}
+
+// runDaemonToken handles `crucible daemon token <add|list|revoke>` — the
+// operator-side management of the daemon's API keys. It edits the token
+// file directly; a running daemon picks up changes without a restart.
+func runDaemonToken(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintln(stderr, "usage: crucible daemon token <add|list|revoke> [--token-file PATH] [--name NAME] [id...]")
+		return 2
+	}
+	sub := args[0]
+	tokenFile, name, positionals := parseTokenArgs(args[1:])
+
+	switch sub {
+	case "add":
+		if err := os.MkdirAll(filepath.Dir(tokenFile), 0o750); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: create token dir: %v\n", err)
+			return 2
+		}
+		raw, e, err := tokenstore.Add(tokenFile, name)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		_, _ = fmt.Fprintf(stdout, "key created (id %s). Copy it now — it is not shown again:\n\n  %s\n\n", e.ID, raw)
+		return 0
+
+	case "list":
+		entries, err := tokenstore.List(tokenFile)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		if len(entries) == 0 {
+			_, _ = fmt.Fprintln(stdout, "no API keys")
+			return 0
+		}
+		for _, e := range entries {
+			label := e.Name
+			if label == "" {
+				label = "-"
+			}
+			_, _ = fmt.Fprintf(stdout, "%s  %-20s  %s\n", e.ID, label, e.CreatedAt.Format(time.RFC3339))
+		}
+		return 0
+
+	case "revoke":
+		if len(positionals) == 0 {
+			_, _ = fmt.Fprintln(stderr, "usage: crucible daemon token revoke <id>...")
+			return 2
+		}
+		for _, id := range positionals {
+			ok, err := tokenstore.Revoke(tokenFile, id)
+			if err != nil {
+				_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+				return 2
+			}
+			if !ok {
+				_, _ = fmt.Fprintf(stderr, "no such key id %q\n", id)
+				return 2
+			}
+			_, _ = fmt.Fprintf(stdout, "revoked %s\n", id)
+		}
+		return 0
+
+	default:
+		_, _ = fmt.Fprintf(stderr, "unknown token subcommand %q (want add|list|revoke)\n", sub)
+		return 2
+	}
 }
 
 func parseLogLevel(s string) (slog.Level, error) {

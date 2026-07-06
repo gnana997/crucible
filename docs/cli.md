@@ -11,6 +11,12 @@ crucible --addr 127.0.0.1:7878 sandbox ls
 CRUCIBLE_ADDR=10.0.0.5:7878 crucible sandbox ls
 ```
 
+If the daemon has API keys configured, pass one with `--token` (or the `CRUCIBLE_TOKEN` env var). A remote daemon is served over TLS; use `--tls-skip-verify` only against a self-signed cert you trust:
+
+```bash
+CRUCIBLE_TOKEN=crucible_… crucible --addr https://vps.example:7878 sandbox ls
+```
+
 ## Output
 
 Human-readable tables by default; `-o json` on any command emits machine-readable JSON for scripts and agents:
@@ -87,6 +93,16 @@ List the rootfs profiles the daemon was started with (`--rootfs-dir`). See [prof
 ### `crucible daemon` / `crucible version`
 
 `daemon` runs the HTTP server (its own flags — `crucible daemon --help`). `version` prints the build version.
+
+**API keys.** `crucible daemon token` manages the daemon's bearer keys (stored hashed in `--token-file`, default `/var/lib/crucible/tokens.json`):
+
+```bash
+crucible daemon token add --name laptop    # prints the raw key once — save it
+crucible daemon token list                  # id, name, created — never the key
+crucible daemon token revoke <id>           # rotate = add a new key, then revoke the old
+```
+
+With no keys, a loopback daemon serves unauthenticated. Once any key exists, auth is required. Binding a non-loopback `--listen` is refused unless keys and `--tls-cert`/`--tls-key` are both set. See [SECURITY.md](../SECURITY.md) and [api.md](api.md#authentication).
 
 ## Exit codes
 

@@ -9,6 +9,7 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,20 +30,42 @@ var ErrNotFound = errors.New("not found")
 
 // Client talks to a crucible daemon over HTTP.
 type Client struct {
-	base string
-	http *http.Client
+	base  string
+	token string
+	http  *http.Client
+}
+
+// Option configures a Client.
+type Option func(*Client)
+
+// WithToken sends "Authorization: Bearer <token>" on every request. Empty
+// token is a no-op (unauthenticated, for a loopback daemon).
+func WithToken(token string) Option {
+	return func(c *Client) { c.token = token }
+}
+
+// WithInsecureSkipVerify disables TLS certificate verification — for a
+// self-signed daemon in development only. Never use against production.
+func WithInsecureSkipVerify() Option {
+	return func(c *Client) {
+		c.http.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	}
 }
 
 // New returns a Client for the given daemon address. addr may be a
-// "host:port" or a full "http://host:port" URL; empty means DefaultAddr.
-func New(addr string) *Client {
+// "host:port" or a full "http(s)://host:port" URL; empty means DefaultAddr.
+func New(addr string, opts ...Option) *Client {
 	if addr == "" {
 		addr = DefaultAddr
 	}
 	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
 		addr = "http://" + addr
 	}
-	return &Client{base: strings.TrimRight(addr, "/"), http: &http.Client{}}
+	c := &Client{base: strings.TrimRight(addr, "/"), http: &http.Client{}}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // Health reports whether the daemon is serving (GET /healthz).
@@ -224,6 +247,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

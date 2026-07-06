@@ -16,7 +16,7 @@ Each sandbox is a **Firecracker microVM with its own guest kernel** — escape r
 
 crucible is **`v0.1` and is not yet hardened for production or for untrusted multi-tenant use.** Please treat the following as known, deliberate limitations of a pre-release:
 
-- **No authentication or authorization.** The HTTP API has no access control. The daemon **binds `127.0.0.1` by default** — do not bind it to a non-loopback address or expose it to callers you don't trust, as that grants unauthenticated code execution on the host's behalf.
+- **Authentication is coarse-grained.** The daemon supports bearer-token API keys (`crucible daemon token add`), stored as SHA-256 hashes; once any key exists every request must present it, and binding a non-loopback address is refused unless keys **and** TLS are configured. But a key is all-or-nothing — there are no per-key scopes or authorization yet, so any valid key can drive the full API. The daemon still **binds `127.0.0.1` by default**; treat any exposed instance as granting full code execution on the host's behalf to any key-holder.
 - **Single-host, single-operator.** crucible assumes a trusted operator running it on their own host. It has not been validated for hosting mutually-distrusting tenants.
 - **No audit trail** beyond operational logs.
 

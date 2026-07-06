@@ -24,10 +24,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/internal/tokenstore"
 )
 
 // Server hosts the crucible HTTP API.
@@ -62,6 +64,16 @@ type Config struct {
 	// Metrics, when non-nil, is served at GET /metrics. Nil disables the
 	// endpoint (the route returns 404), which is the default in tests.
 	Metrics *metrics.Metrics
+
+	// TokenStore, when non-nil and holding at least one key, requires every
+	// request (except /healthz) to present a valid `Authorization: Bearer
+	// <key>`. Nil or empty means no auth — the loopback-only default.
+	TokenStore *tokenstore.Store
+
+	// TLSCert/TLSKey, when set, make ListenAndServe serve HTTPS. Required
+	// when binding a non-loopback address (the caller enforces that).
+	TLSCert string
+	TLSKey  string
 }
 
 const (
@@ -96,7 +108,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg}
 	s.http = &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      s.logRequests(s.routes()),
+		Handler:      s.logRequests(s.auth(s.routes())),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
@@ -113,8 +125,40 @@ func (s *Server) Handler() http.Handler { return s.http.Handler }
 // is shut down or an error occurs. Returns http.ErrServerClosed on clean
 // shutdown (which callers typically treat as non-error).
 func (s *Server) ListenAndServe() error {
+	if s.cfg.TLSCert != "" {
+		s.cfg.Logger.Info("crucible daemon listening (TLS)", "addr", s.cfg.Addr)
+		return s.http.ListenAndServeTLS(s.cfg.TLSCert, s.cfg.TLSKey)
+	}
 	s.cfg.Logger.Info("crucible daemon listening", "addr", s.cfg.Addr)
 	return s.http.ListenAndServe()
+}
+
+// auth enforces bearer-token auth whenever the token store holds any keys.
+// /healthz is always exempt so liveness probes work without a credential.
+func (s *Server) auth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		store := s.cfg.TokenStore
+		if store == nil || r.URL.Path == "/healthz" || !store.Enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !store.Verify(bearerToken(r.Header.Get("Authorization"))) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="crucible"`)
+			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid API key"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// bearerToken extracts the credential from an "Authorization: Bearer <key>"
+// header, or returns "" if the header is absent or a different scheme.
+func bearerToken(header string) string {
+	const prefix = "Bearer "
+	if len(header) > len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
+		return strings.TrimSpace(header[len(prefix):])
+	}
+	return ""
 }
 
 // Serve serves requests on the already-bound listener. Parallels

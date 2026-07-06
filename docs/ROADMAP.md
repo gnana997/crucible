@@ -31,10 +31,12 @@ With that, the v0.1 core runtime is feature-complete.
 
 *(The Python SDK moved to v0.3 alongside observability: driving the API through the CLI first stabilizes the surface an SDK should target. A TUI and an MCP server are v0.2.)*
 
-## v0.2 — Policy, profiles, and language expansion
+## v0.2 — Interfaces, policy, and language expansion
 
-Extend language coverage and give operators real policy control.
+Make crucible pleasant to drive — for agents and humans — and give operators real policy control. The two new interfaces below are deliberately thin: v0.1 factored the daemon's REST surface into shared wire types (`internal/api`) and a typed client (`internal/client`) that the CLI already sits on, so the MCP server and TUI are consumers of that same client, not parallel reimplementations.
 
+- **MCP server.** Expose crucible as a [Model Context Protocol](https://modelcontextprotocol.io) server so any MCP-compatible agent (Claude Code, Cursor, and others) can create sandboxes, `exec`, snapshot, and fork as native tools — no shell wrapping, no SDK. Built directly on `internal/client`, so an MCP tool call and a CLI command hit the exact same API path and can't drift.
+- **TUI.** A live terminal dashboard — running sandboxes, fork trees, per-sandbox resource usage (from the `/metrics` data), and streaming `exec` logs — for driving and observing workloads at a glance. Also a thin consumer of `internal/client`; the output layer built for the CLI feeds it.
 - Language profiles: Rust, Java, Ruby, Swift, C/C++, bash-only, minimal-alpine
 - **Per-language seccomp policies.** Hand-tuned syscall allowlists for Python, Node, Go, Rust runtimes. Generic policies are too loose; per-language is the right granularity.
 - **Custom rootfs builder.** `crucible rootfs build ./Dockerfile` produces a Firecracker-compatible rootfs image you can use as a custom profile. Most teams will want this.
@@ -66,7 +68,7 @@ Make parallel agent exploration a first-class workflow, not just a primitive.
 Directions that matter once the core is solid. Not committed to a version or a fixed order yet.
 
 - **Interactive and streaming execution.** Streaming stdout/stderr (SSE or gRPC), bidirectional stdin so agents can drive REPLs and language servers, and persistent workspaces that survive beyond a single exec.
-- **First-party agent integrations.** Native hooks for Claude Code, Cursor, and the common agent frameworks, plus an MCP server so any MCP-compatible agent can drive crucible directly.
+- **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and the common agent frameworks, building on the v0.2 MCP server.
 - **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
 - **Benchmarking harness.** Published regression numbers for cold start, fork latency, and network throughput.
 - **Stable API + external security audit.** A versioned API with a deprecation policy, and a published third-party audit — the bar for calling anything `v1.0`.
