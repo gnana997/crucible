@@ -15,6 +15,7 @@ IDs are validated on every path; a malformed sandbox or snapshot ID returns `400
 |---|---|---|
 | `GET` | `/healthz` | Liveness check |
 | `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/profiles` | List configured rootfs profiles |
 | `POST` | `/sandboxes` | Create a sandbox |
 | `GET` | `/sandboxes` | List sandboxes |
 | `GET` | `/sandboxes/{id}` | Inspect a sandbox |
@@ -48,6 +49,18 @@ Prometheus metrics in the standard text exposition format. Label-free in `v0.1`:
 | `snapshot_restore_duration_seconds` | histogram | Time for the runner to restore a VM from a snapshot |
 
 Like the rest of the API this endpoint is unauthenticated and loopback-bound — scrape it from a colocated agent, not across a trust boundary.
+
+---
+
+### `GET /profiles`
+
+Returns the rootfs profiles the daemon was configured with via `--rootfs-dir`, sorted (empty when none):
+
+```json
+{ "profiles": ["base", "node-22", "python-3.12"] }
+```
+
+These are the values accepted by the `profile` field of `POST /sandboxes`. See [profiles.md](profiles.md).
 
 ---
 

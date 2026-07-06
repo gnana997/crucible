@@ -24,11 +24,13 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - [x] Host-side cgroup quotas (cpu.max / memory.max / pids.max) sized per sandbox, on by default under jailer
 - [x] Prometheus `/metrics` endpoint — `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`
 - [x] Native language rootfs profiles (`base`, `python`, `node`, `go`, versioned) — built from official language images via `make profile`, selected by the create `profile` field ([profiles.md](profiles.md))
+- [x] CLI over the REST API — `sandbox` (create/ls/inspect/rm/exec), `snapshot`, `fork`, `profile ls`, and a `run` one-shot, on a reusable typed Go client; `-o json` everywhere ([cli.md](cli.md))
 
 **Still planned for v0.1:**
 
-- [ ] Python SDK
 - [ ] Install script + systemd unit
+
+*(The Python SDK moved to v0.3 alongside observability: driving the API through the CLI first stabilizes the surface an SDK should target. A TUI and an MCP server are v0.2.)*
 
 ## v0.2 — Policy, profiles, and language expansion
 

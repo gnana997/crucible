@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
@@ -233,7 +234,7 @@ func TestCreateSandboxDefaults(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	var got sandboxResponse
+	var got api.SandboxResponse
 	decodeJSON(t, resp, &got)
 	if !strings.HasPrefix(got.ID, "sbx_") {
 		t.Errorf("ID = %q, want sbx_ prefix", got.ID)
@@ -251,7 +252,7 @@ func TestCreateSandboxWithBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	var got sandboxResponse
+	var got api.SandboxResponse
 	decodeJSON(t, resp, &got)
 	if got.VCPUs != 4 || got.MemoryMiB != 2048 {
 		t.Errorf("got %+v", got)
@@ -289,7 +290,7 @@ func TestCreateSandboxImageRefRejectsBothSet(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 (mutually exclusive)", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "mutually exclusive") {
 		t.Errorf("error = %q, want 'mutually exclusive' substring", e.Error)
@@ -320,7 +321,7 @@ func TestCreateSandboxImageRefOCIReturns501(t *testing.T) {
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "not implemented") {
 		t.Errorf("error = %q, want 'not implemented' substring", e.Error)
@@ -365,7 +366,7 @@ func TestCreateSandboxBadJSON(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "invalid json") {
 		t.Errorf("error = %q, want substring 'invalid json'", e.Error)
@@ -379,7 +380,7 @@ func TestGetSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	var created sandboxResponse
+	var created api.SandboxResponse
 	decodeJSON(t, resp, &created)
 
 	resp, err = http.Get(ts.URL + "/sandboxes/" + created.ID)
@@ -389,7 +390,7 @@ func TestGetSandbox(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var got sandboxResponse
+	var got api.SandboxResponse
 	decodeJSON(t, resp, &got)
 	if got.ID != created.ID {
 		t.Errorf("ID = %q, want %q", got.ID, created.ID)
@@ -427,7 +428,7 @@ func TestListSandboxes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	var empty listResponse
+	var empty api.ListResponse
 	decodeJSON(t, resp, &empty)
 	if len(empty.Sandboxes) != 0 {
 		t.Errorf("expected empty list, got %d", len(empty.Sandboxes))
@@ -443,7 +444,7 @@ func TestListSandboxes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	var got listResponse
+	var got api.ListResponse
 	decodeJSON(t, resp, &got)
 	if len(got.Sandboxes) != 2 {
 		t.Errorf("len = %d, want 2", len(got.Sandboxes))
@@ -457,7 +458,7 @@ func TestDeleteSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	var created sandboxResponse
+	var created api.SandboxResponse
 	decodeJSON(t, resp, &created)
 
 	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/sandboxes/"+created.ID, nil)
@@ -527,7 +528,7 @@ func TestExecSandboxRouteRejectsEmptyCmd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	var created sandboxResponse
+	var created api.SandboxResponse
 	decodeJSON(t, resp, &created)
 
 	body := strings.NewReader(`{"cmd":[]}`)
@@ -551,7 +552,7 @@ func TestExecSandboxRouteStubAgentSynthesizesExitFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	var created sandboxResponse
+	var created api.SandboxResponse
 	decodeJSON(t, resp, &created)
 
 	body := strings.NewReader(`{"cmd":["/bin/true"]}`)
@@ -620,12 +621,12 @@ func createSandboxViaHTTP(t *testing.T, ts *httptest.Server) string {
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)
 	}
-	var out sandboxResponse
+	var out api.SandboxResponse
 	decodeJSON(t, resp, &out)
 	return out.ID
 }
 
-func createSnapshotViaHTTP(t *testing.T, ts *httptest.Server, sbxID string) snapshotResponse {
+func createSnapshotViaHTTP(t *testing.T, ts *httptest.Server, sbxID string) api.SnapshotResponse {
 	t.Helper()
 	resp, err := http.Post(ts.URL+"/sandboxes/"+sbxID+"/snapshot", "application/json", nil)
 	if err != nil {
@@ -635,7 +636,7 @@ func createSnapshotViaHTTP(t *testing.T, ts *httptest.Server, sbxID string) snap
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("snapshot status = %d, body = %s", resp.StatusCode, body)
 	}
-	var out snapshotResponse
+	var out api.SnapshotResponse
 	decodeJSON(t, resp, &out)
 	return out
 }
@@ -682,7 +683,7 @@ func TestListSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	var empty snapshotListResponse
+	var empty api.SnapshotListResponse
 	decodeJSON(t, resp, &empty)
 	if len(empty.Snapshots) != 0 {
 		t.Errorf("expected empty list, got %d", len(empty.Snapshots))
@@ -696,7 +697,7 @@ func TestListSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	var got snapshotListResponse
+	var got api.SnapshotListResponse
 	decodeJSON(t, resp, &got)
 	if len(got.Snapshots) != 2 {
 		t.Errorf("len = %d, want 2", len(got.Snapshots))
@@ -715,7 +716,7 @@ func TestGetSnapshot(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
-	var got snapshotResponse
+	var got api.SnapshotResponse
 	decodeJSON(t, resp, &got)
 	if got.ID != snap.ID {
 		t.Errorf("ID = %q, want %q", got.ID, snap.ID)
@@ -770,7 +771,7 @@ func TestForkSnapshot(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	var got forkResponse
+	var got api.ForkResponse
 	decodeJSON(t, resp, &got)
 	if len(got.Sandboxes) != 3 {
 		t.Errorf("len = %d, want 3", len(got.Sandboxes))
@@ -791,7 +792,7 @@ func TestForkSnapshotDefaultsCountToOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	var got forkResponse
+	var got api.ForkResponse
 	decodeJSON(t, resp, &got)
 	if len(got.Sandboxes) != 1 {
 		t.Errorf("len = %d, want 1", len(got.Sandboxes))
@@ -1006,7 +1007,7 @@ func TestSnapshotSurvivesWriteTimeoutOverHTTP(t *testing.T) {
 	t.Run("control: unclearing route is truncated", func(t *testing.T) {
 		ts := serveWith(t, writeTimeout, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(snapDelay)
-			writeJSON(w, http.StatusCreated, snapshotResponse{ID: "snap_control"})
+			writeJSON(w, http.StatusCreated, api.SnapshotResponse{ID: "snap_control"})
 		}))
 		resp, err := http.Get(ts.URL)
 		if err != nil {
@@ -1056,7 +1057,7 @@ func TestSnapshotSurvivesWriteTimeoutOverHTTP(t *testing.T) {
 			_ = resp.Body.Close()
 			t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 		}
-		var got snapshotResponse
+		var got api.SnapshotResponse
 		decodeJSON(t, resp, &got)
 		if !strings.HasPrefix(got.ID, "snap_") {
 			t.Fatalf("snapshot id %q: client did not learn a valid ID", got.ID)
@@ -1112,7 +1113,7 @@ func TestForkSurvivesWriteTimeoutOverHTTP(t *testing.T) {
 		_ = resp.Body.Close()
 		t.Fatalf("status = %d, body = %s", resp.StatusCode, body)
 	}
-	var got forkResponse
+	var got api.ForkResponse
 	decodeJSON(t, resp, &got)
 	if len(got.Sandboxes) != 1 || !strings.HasPrefix(got.Sandboxes[0].ID, "sbx_") {
 		t.Fatalf("fork response %+v: client did not learn a valid sandbox ID", got)

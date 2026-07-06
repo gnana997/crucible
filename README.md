@@ -20,7 +20,8 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 
 | Capability | Status |
 |---|---|
-| Go module + CLI (`crucible daemon`, `crucible version`) | ✅ done |
+| Go module + daemon (`crucible daemon`) | ✅ done |
+| CLI over the REST API — `sandbox` (create/ls/inspect/rm/exec), `snapshot`, `fork`, `profile ls`, `run` one-shot; `-o json` | ✅ done |
 | Firecracker runner (boot a microVM from config) | ✅ done |
 | Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
 | Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
@@ -115,42 +116,28 @@ Fork restores memory lazily via `userfaultfd`, so guest RAM is **not** copied pe
 
 Latency numbers land here once the bench harness produces reproducible measurements — we'd rather publish none than misleading ones.
 
-### Exercise the API
+### Drive it with the CLI
 
-Full endpoint reference — request/response shapes, the exec frame protocol, and error codes — is in [docs/api.md](docs/api.md).
+`crucible` is a thin client over the daemon's REST API — point it at a running daemon with `--addr` (or `CRUCIBLE_ADDR`; default `127.0.0.1:7878`).
 
 ```bash
-# Create a sandbox (body optional; defaults: 1 vCPU, 512 MiB, no timeout).
-curl -sS -X POST http://127.0.0.1:7878/sandboxes \
-  -H 'Content-Type: application/json' \
-  -d '{"vcpus": 2, "memory_mib": 512, "timeout_s": 60}'
-# → {"id":"sbx_...","vcpus":2,"memory_mib":512,"workdir":"...","created_at":"..."}
+# One-shot: create a sandbox, run a command, delete it. Exit code propagates.
+crucible run --profile python-3.12 -- python -c 'print(2**10)'
 
-# Run a command — response body is a stream of framed stdout/stderr/exit
-# records; the last frame carries an ExecResult JSON (exit_code, duration_ms,
-# signal, timed_out, oom_killed, and a nested `usage` object).
-curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../exec \
-  -H 'Content-Type: application/json' \
-  -d '{"cmd":["/bin/uname","-a"]}' --output /tmp/exec.bin
+# Or drive the lifecycle explicitly:
+SBX=$(crucible sandbox create --memory 1024 --profile python-3.12)
+crucible sandbox exec $SBX -- pip install requests   # streams stdout/stderr live
+SNP=$(crucible snapshot create $SBX)                  # freeze the warm state
+crucible fork $SNP --count 5                          # 5 parallel children from it
+crucible sandbox ls                                   # table of live sandboxes
+crucible sandbox rm $SBX
 
-# Snapshot, then fork 5 children from it.
-curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../snapshot   # → {"id":"snp_..."}
-curl -sS -X POST 'http://127.0.0.1:7878/snapshots/snp_.../fork?count=5'
-
-curl -sS -X DELETE http://127.0.0.1:7878/sandboxes/sbx_...
+crucible profile ls                                   # profiles the daemon was started with
 ```
 
-Parse the framed exec output in Python:
+Add `-o json` to any command for machine-readable output (scripts and agents). Full command reference: [docs/cli.md](docs/cli.md).
 
-```python
-import struct, json
-with open('/tmp/exec.bin', 'rb') as f:
-    while hdr := f.read(8):
-        typ, size = hdr[0], struct.unpack('>I', hdr[4:8])[0]
-        body = f.read(size)
-        name = {1: 'stdout', 2: 'stderr', 3: 'exit'}.get(typ, f'type{typ}')
-        print(name, json.loads(body) if typ == 3 else body.decode())
-```
+**Prefer raw HTTP?** Everything above is the daemon's REST API — see [docs/api.md](docs/api.md) for the endpoints, the exec frame protocol, and error codes.
 
 Each sandbox gets a workdir under `--work-base` (default `/tmp/crucible/run/`) holding the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` (guest serial console). `Ctrl-C` / `SIGTERM` gracefully drains active sandboxes.
 
@@ -166,7 +153,7 @@ Make targets: `build`, `agent`, `rootfs` (needs `BASE_ROOTFS=`), `profile` (need
 Repository layout:
 
 ```
-cmd/crucible/               CLI entry + daemon wiring
+cmd/crucible/               CLI (cobra: sandbox/snapshot/fork/profile/run) + daemon wiring
 cmd/crucible-agent/         guest-side binary (vsock listener: /exec, /network/refresh, /identity/refresh)
 internal/fcapi/             hand-written Firecracker HTTP-over-UDS client
 internal/fsutil/            Clone (FICLONE reflink / copy), Move
@@ -175,6 +162,8 @@ internal/runner/            firecracker + jailer process lifecycle (Start / Rest
 internal/memfault/          userfaultfd page-fault handler — lazy snapshot memory for fork
 internal/sandbox/           ID gen + Manager (lifecycle, exec, snapshot, fork, clone-safety) + durable registry/reconcile
 internal/daemon/            HTTP server, routes, middleware, network adapter
+internal/api/               REST wire types (shared by daemon + client; the SDK will mirror these)
+internal/client/            typed Go client for the daemon API (used by the CLI; TUI/MCP/SDK later)
 internal/agentwire/         shared protocol (frame format, ExecRequest/Result, identity refresh)
 internal/agentapi/          host-side client over hybrid-vsock UDS
 internal/network/           Manager + subnet pool, per-sandbox netns/veth/tap/bridge, nft base + per-sandbox rules
@@ -182,10 +171,10 @@ internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no
 internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
 scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
 profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, profiles.md, network.md
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, profiles.md, network.md
 ```
 
-Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), and `github.com/prometheus/client_golang` (the `/metrics` endpoint). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
+Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), and `github.com/spf13/cobra` (the CLI). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
 
 CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
 

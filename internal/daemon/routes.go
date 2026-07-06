@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
@@ -36,71 +37,22 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /snapshots/{id}", s.handleGetSnapshot)
 	mux.HandleFunc("DELETE /snapshots/{id}", s.handleDeleteSnapshot)
 	mux.HandleFunc("POST /snapshots/{id}/fork", s.handleForkSnapshot)
+	mux.HandleFunc("GET /profiles", s.handleListProfiles)
 	return mux
 }
 
-// --- request / response DTOs -----------------------------------------
-
-// createSandboxRequest is the JSON body for POST /sandboxes. All fields
-// are optional; sandbox.Manager fills in defaults for zero values.
-type createSandboxRequest struct {
-	VCPUs     int    `json:"vcpus,omitempty"`
-	MemoryMiB int    `json:"memory_mib,omitempty"`
-	BootArgs  string `json:"boot_args,omitempty"`
-	// TimeoutSec sets a maximum lifetime for the sandbox in seconds.
-	// Zero means no timeout; the sandbox lives until an explicit
-	// DELETE or daemon shutdown.
-	TimeoutSec int `json:"timeout_s,omitempty"`
-
-	// Profile names a pre-baked rootfs the daemon boots this sandbox
-	// from (e.g. "python-3.12", "node-22", "base"). Empty uses the
-	// daemon's default --rootfs. Resolved against the daemon's
-	// --rootfs-dir; an unknown profile is a 400.
-	Profile string `json:"profile,omitempty"`
-
-	// Image, when set, overrides the daemon's default rootfs for this
-	// sandbox. See ImageRef for the field shape.
-	//
-	// WIRE CONTRACT LOCK (wk3): the shape is frozen now so the OCI
-	// client landing in wk7/wk8 doesn't force a breaking API change.
-	// For v0.1 both Path and OCI return 501 — callers must leave
-	// Image unset and rely on daemon-level --rootfs.
-	Image *ImageRef `json:"image,omitempty"`
-
-	// Network, when non-nil, attaches a NIC to the sandbox with
-	// an explicit allowlist of hostnames the guest can reach. Nil
-	// means no network (default-deny). See NetworkRequest for the
-	// allowed shapes.
-	Network *NetworkRequest `json:"network,omitempty"`
-}
-
-// NetworkRequest is the per-sandbox network policy on the wire.
-// See docs/network.md for the full semantics.
-type NetworkRequest struct {
-	// Enabled = false (or the field absent from the parent) is
-	// treated as "no network". When true, Allowlist must be
-	// non-empty.
-	Enabled bool `json:"enabled"`
-
-	// Allowlist is the hostname-pattern list enforced by the
-	// host-side DNS proxy + nftables. Each entry is either an
-	// exact hostname ("pypi.org") or a single-label wildcard
-	// ("*.npmjs.org"). Bare "*" is rejected at validation time.
-	Allowlist []string `json:"allowlist,omitempty"`
-}
-
-// validate enforces v0.1 semantics and returns the parsed
-// allowlist on success. The caller passes the typed value into
-// sandbox.Manager.Create.
+// --- request validation & response mapping ---------------------------
 //
-// Rules:
-//   - enabled=false with allowlist populated → 400 (inconsistent)
-//   - enabled=true with empty allowlist → 400 (default-deny
-//     ethos: full-internet requires an explicit opt-in we don't
-//     yet implement)
-//   - enabled=true with invalid allowlist pattern → 400 with the
-//     pattern-level error wrapped in
-func (r *NetworkRequest) validate() (*network.Allowlist, int, error) {
+// The wire types themselves live in internal/api (shared with the
+// client). Validation stays here because it pulls in server-only deps
+// (internal/network); the response mappers stay here because they read
+// the manager's internal sandbox/snapshot structs.
+
+// validateNetwork enforces v0.1 network semantics and returns the parsed
+// allowlist on success. Rules: enabled=false with a populated allowlist
+// is a 400 (inconsistent); enabled=true requires a non-empty allowlist
+// (no full-internet egress in v0.1); an invalid pattern is a 400.
+func validateNetwork(r *api.NetworkRequest) (*network.Allowlist, int, error) {
 	if !r.Enabled {
 		if len(r.Allowlist) > 0 {
 			return nil, http.StatusBadRequest,
@@ -119,26 +71,10 @@ func (r *NetworkRequest) validate() (*network.Allowlist, int, error) {
 	return al, 0, nil
 }
 
-// ImageRef identifies the rootfs to mount into a sandbox. Exactly one
-// of Path / OCI must be set; neither-set and both-set are invalid.
-//
-//   - Path is an absolute host path to a pre-built ext4 image. Same
-//     semantics as the daemon's --rootfs flag, but per-sandbox.
-//   - OCI is an OCI image reference (e.g. "ghcr.io/you/python:3.12").
-//     The daemon will pull + convert it to ext4 at handler time.
-//
-// Neither is implemented in v0.1 — the field lives here as a wire
-// contract so later weekends can add behavior without breaking
-// existing clients.
-type ImageRef struct {
-	Path string `json:"path,omitempty"`
-	OCI  string `json:"oci,omitempty"`
-}
-
-// validate enforces the "exactly one of Path/OCI" rule. v0.1 returns
-// (501, <stub error>) for any set reference so callers get a clear
-// signal rather than silent fallback to the daemon default.
-func (r *ImageRef) validate() (status int, err error) {
+// validateImage enforces the "exactly one of Path/OCI" rule. v0.1 returns
+// (501, stub error) for any set reference so callers get a clear signal
+// rather than a silent fallback to the daemon default.
+func validateImage(r *api.ImageRef) (status int, err error) {
 	pathSet := r.Path != ""
 	ociSet := r.OCI != ""
 	switch {
@@ -153,30 +89,8 @@ func (r *ImageRef) validate() (status int, err error) {
 	}
 }
 
-// sandboxResponse is the JSON shape returned for a single sandbox. Kept
-// separate from sandbox.Sandbox so the daemon can shape the public
-// surface without coupling to the manager's internal struct.
-type sandboxResponse struct {
-	ID        string           `json:"id"`
-	VCPUs     int              `json:"vcpus"`
-	MemoryMiB int              `json:"memory_mib"`
-	Workdir   string           `json:"workdir"`
-	Profile   string           `json:"profile,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
-	Network   *networkResponse `json:"network,omitempty"`
-}
-
-// networkResponse is the applied network policy echoed back to the
-// client after Create. Nil when the sandbox has no NIC.
-type networkResponse struct {
-	Enabled   bool     `json:"enabled"`
-	GuestIP   string   `json:"guest_ip,omitempty"`
-	Gateway   string   `json:"gateway,omitempty"`
-	Allowlist []string `json:"allowlist,omitempty"`
-}
-
-func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
-	resp := sandboxResponse{
+func sandboxResponseFrom(sb *sandbox.Sandbox) api.SandboxResponse {
+	resp := api.SandboxResponse{
 		ID:        sb.ID,
 		VCPUs:     sb.VCPUs,
 		MemoryMiB: sb.MemoryMiB,
@@ -185,7 +99,7 @@ func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
 		CreatedAt: sb.CreatedAt,
 	}
 	if sb.Network != nil {
-		resp.Network = &networkResponse{
+		resp.Network = &api.NetworkResponse{
 			Enabled: true,
 			GuestIP: sb.Network.GuestIP,
 			Gateway: sb.Network.Gateway,
@@ -197,29 +111,8 @@ func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
 	return resp
 }
 
-// listResponse wraps the sandbox list so the response shape can grow
-// without breaking clients (e.g. adding "next_page" later).
-type listResponse struct {
-	Sandboxes []sandboxResponse `json:"sandboxes"`
-}
-
-// snapshotResponse is the JSON shape returned for a single snapshot.
-// The on-disk paths are included because they're useful for operator
-// debugging (ls, debugfs, du) and don't leak any secrets.
-type snapshotResponse struct {
-	ID         string    `json:"id"`
-	SourceID   string    `json:"source_id"`
-	VCPUs      int       `json:"vcpus"`
-	MemoryMiB  int       `json:"memory_mib"`
-	Dir        string    `json:"dir"`
-	StatePath  string    `json:"state_path"`
-	MemPath    string    `json:"mem_path"`
-	RootfsPath string    `json:"rootfs_path"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-func snapshotResponseFrom(s *sandbox.Snapshot) snapshotResponse {
-	return snapshotResponse{
+func snapshotResponseFrom(s *sandbox.Snapshot) api.SnapshotResponse {
+	return api.SnapshotResponse{
 		ID:         s.ID,
 		SourceID:   s.SourceID,
 		VCPUs:      s.VCPUs,
@@ -232,29 +125,24 @@ func snapshotResponseFrom(s *sandbox.Snapshot) snapshotResponse {
 	}
 }
 
-type snapshotListResponse struct {
-	Snapshots []snapshotResponse `json:"snapshots"`
-}
-
-type forkResponse struct {
-	Sandboxes []sandboxResponse `json:"sandboxes"`
-}
-
-type errorResponse struct {
-	Error string `json:"error"`
-}
-
 // --- handlers --------------------------------------------------------
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleListProfiles returns the rootfs profiles the daemon was
+// configured with via --rootfs-dir (empty when none). Lets the CLI show
+// `crucible profile ls` without the operator inspecting the daemon flags.
+func (s *Server) handleListProfiles(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, api.ProfilesResponse{Profiles: s.cfg.Manager.Profiles()})
+}
+
 func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	// Cap request body so a malicious client can't exhaust memory.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 
-	var req createSandboxRequest
+	var req api.CreateSandboxRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// Empty body is acceptable — all fields are optional.
 		if !errors.Is(err, io.EOF) {
@@ -266,7 +154,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	// ImageRef validation — field is frozen as wire contract now but
 	// any populated value returns a stub error in v0.1. See ImageRef.
 	if req.Image != nil {
-		status, err := req.Image.validate()
+		status, err := validateImage(req.Image)
 		writeError(w, status, err)
 		return
 	}
@@ -276,7 +164,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	// NetworkConfig; nil means no NIC.
 	var netCfg *sandbox.NetworkConfig
 	if req.Network != nil {
-		al, status, err := req.Network.validate()
+		al, status, err := validateNetwork(req.Network)
 		if err != nil {
 			writeError(w, status, err)
 			return
@@ -307,11 +195,11 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListSandboxes(w http.ResponseWriter, _ *http.Request) {
 	all := s.cfg.Manager.List()
-	out := make([]sandboxResponse, 0, len(all))
+	out := make([]api.SandboxResponse, 0, len(all))
 	for _, sb := range all {
 		out = append(out, sandboxResponseFrom(sb))
 	}
-	writeJSON(w, http.StatusOK, listResponse{Sandboxes: out})
+	writeJSON(w, http.StatusOK, api.ListResponse{Sandboxes: out})
 }
 
 func (s *Server) handleGetSandbox(w http.ResponseWriter, r *http.Request) {
@@ -458,11 +346,11 @@ func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListSnapshots(w http.ResponseWriter, _ *http.Request) {
 	all := s.cfg.Manager.ListSnapshots()
-	out := make([]snapshotResponse, 0, len(all))
+	out := make([]api.SnapshotResponse, 0, len(all))
 	for _, snap := range all {
 		out = append(out, snapshotResponseFrom(snap))
 	}
-	writeJSON(w, http.StatusOK, snapshotListResponse{Snapshots: out})
+	writeJSON(w, http.StatusOK, api.SnapshotListResponse{Snapshots: out})
 }
 
 func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -551,11 +439,11 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	out := make([]sandboxResponse, 0, len(forks))
+	out := make([]api.SandboxResponse, 0, len(forks))
 	for _, f := range forks {
 		out = append(out, sandboxResponseFrom(f))
 	}
-	writeJSON(w, http.StatusCreated, forkResponse{Sandboxes: out})
+	writeJSON(w, http.StatusCreated, api.ForkResponse{Sandboxes: out})
 }
 
 // flushOnWrite forwards every Write to w and flushes the underlying
@@ -589,5 +477,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, errorResponse{Error: err.Error()})
+	writeJSON(w, status, api.ErrorResponse{Error: err.Error()})
 }

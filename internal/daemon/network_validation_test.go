@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/gnana997/crucible/internal/api"
 )
 
 // Tests that exercise the NetworkRequest.validate path end-to-end
@@ -39,7 +41,7 @@ func TestNetworkDisabledWithAllowlistIsRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "allowlist set but") {
 		t.Errorf("error = %q, want 'allowlist set but ...'", e.Error)
@@ -58,7 +60,7 @@ func TestNetworkEnabledWithEmptyAllowlistIsRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "non-empty allowlist") {
 		t.Errorf("error = %q, want 'non-empty allowlist ...'", e.Error)
@@ -76,7 +78,7 @@ func TestNetworkEnabledBadPatternRejected(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "bare wildcard") {
 		t.Errorf("error = %q, want to mention bare wildcard", e.Error)
@@ -99,7 +101,7 @@ func TestNetworkEnabledWithoutProvisionerErrors(t *testing.T) {
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500 (daemon lacks provisioner)", resp.StatusCode)
 	}
-	var e errorResponse
+	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
 	if !strings.Contains(e.Error, "network") {
 		t.Errorf("error = %q, want to mention network", e.Error)
@@ -116,7 +118,7 @@ func TestNetworkAbsentWorksUnchanged(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Errorf("status = %d, want 201", resp.StatusCode)
 	}
-	var got sandboxResponse
+	var got api.SandboxResponse
 	decodeJSON(t, resp, &got)
 	if got.Network != nil {
 		t.Errorf("Network = %+v, want nil for no-network request", got.Network)

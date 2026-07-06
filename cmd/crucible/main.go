@@ -1,59 +1,96 @@
-// Command crucible is the entry point for the crucible sandbox runtime.
-//
-// v0.1 scaffolding only: subcommands are wired up but their implementations
-// land in subsequent weekends. `crucible version` works today; the rest
-// prints a "not yet implemented" stub so operators can see the CLI shape.
+// Command crucible is the CLI and daemon for the crucible sandbox
+// runtime. `crucible daemon` runs the HTTP server; the other subcommands
+// are a thin client over its REST API (see internal/client).
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 
-	"github.com/gnana997/crucible/internal/version"
+	"github.com/spf13/cobra"
+
+	"github.com/gnana997/crucible/internal/client"
 )
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// run builds the command tree and executes it, translating errors into a
+// process exit code. A command may carry a specific exit code (e.g. exec
+// propagating the guest command's status) via exitCodeError.
 func run(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		usage(stderr)
-		return 2
-	}
-
-	switch args[0] {
-	case "version", "--version", "-v":
-		_, _ = fmt.Fprintf(stdout, "crucible %s\n", version.String())
-		return 0
-	case "daemon":
-		return runDaemon(args[1:], stdout, stderr)
-	case "run":
-		_, _ = fmt.Fprintln(stderr, "crucible run: not yet implemented (wk2 target)")
+	root := newRootCmd(stdout, stderr)
+	root.SetArgs(args)
+	if err := root.Execute(); err != nil {
+		var ec exitCodeError
+		if errors.As(err, &ec) {
+			return ec.code
+		}
+		fmt.Fprintln(stderr, "error:", err)
 		return 1
-	case "help", "--help", "-h":
-		usage(stdout)
-		return 0
-	default:
-		_, _ = fmt.Fprintf(stderr, "unknown command: %q\n\n", args[0])
-		usage(stderr)
-		return 2
 	}
+	return 0
 }
 
-func usage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `crucible - OSS sandbox runtime for AI coding agents
+// exitCodeError lets a command set the process exit code without printing
+// an error — used by `exec`/`run` to propagate the guest command's status.
+type exitCodeError struct{ code int }
 
-Usage:
-  crucible <command> [flags]
+func (e exitCodeError) Error() string { return fmt.Sprintf("exit status %d", e.code) }
 
-Commands:
-  daemon    Run the crucible HTTP daemon
-  run       Run a command inside a new sandbox
-  version   Print version info
-  help      Show this help
+// globalOpts holds flags shared by every client subcommand.
+type globalOpts struct {
+	addr   string
+	output string
+}
 
-See https://github.com/gnana997/crucible for docs.
-`)
+func (o *globalOpts) client() *client.Client { return client.New(o.addr) }
+
+func (o *globalOpts) isJSON() bool { return o.output == "json" }
+
+// printJSON writes v as indented JSON.
+func printJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
+	opts := &globalOpts{}
+	root := &cobra.Command{
+		Use:           "crucible",
+		Short:         "crucible — OSS Firecracker sandbox runtime for AI coding agents",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if opts.output != "table" && opts.output != "json" {
+				return fmt.Errorf("--output must be table or json, got %q", opts.output)
+			}
+			return nil
+		},
+	}
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+
+	defAddr := os.Getenv("CRUCIBLE_ADDR")
+	if defAddr == "" {
+		defAddr = client.DefaultAddr
+	}
+	root.PersistentFlags().StringVar(&opts.addr, "addr", defAddr, "daemon address (env CRUCIBLE_ADDR)")
+	root.PersistentFlags().StringVarP(&opts.output, "output", "o", "table", "output format: table|json")
+
+	root.AddCommand(
+		newVersionCmd(),
+		newDaemonCmd(),
+		newSandboxCmd(opts),
+		newSnapshotCmd(opts),
+		newForkCmd(opts),
+		newProfileCmd(opts),
+		newRunCmd(opts),
+	)
+	return root
 }
