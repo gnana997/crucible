@@ -12,7 +12,6 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/client"
 )
 
 // --- tool input types: the stable contract an agent's tools/list sees -------
@@ -161,72 +160,49 @@ func envMap(kv []string) (map[string]string, error) {
 	return m, nil
 }
 
-// registerTools wires the full crucible catalog to handlers backed by the
-// daemon client. Each handler is a thin translation: MCP input → one (or, for
-// run, a few) internal/client calls → MCP output. Business logic lives in the
-// daemon, so a tool and the equivalent CLI command cannot drift.
+// registerTools wires the crucible catalog to handlers backed by the daemon
+// client. Each handler is a thin translation: MCP input → guardrail checks →
+// one (or, for run, a few) internal/client calls → MCP output. Business logic
+// lives in the daemon, so a tool and the equivalent CLI command cannot drift.
+//
+// A tool disabled by --tools/--deny-tools is never registered, so it never
+// appears in tools/list.
 func registerTools(srv *mcp.Server, cfg Config) {
-	h := &handlers{cl: cfg.Client}
+	h := &handlers{cfg: cfg}
+	add := func(name, desc string, register func(name, desc string)) {
+		if cfg.toolEnabled(name) {
+			register(name, desc)
+		}
+	}
 
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "run",
-		Description: "Create a sandbox, run one command, return its output, then delete the sandbox. The 80% case for running untrusted code.",
-	}, h.run)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "create_sandbox",
-		Description: "Create a persistent sandbox and return its id. Drive it with exec/snapshot/fork, then delete_sandbox.",
-	}, h.createSandbox)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "exec",
-		Description: "Run a command in an existing sandbox and return its captured output.",
-	}, h.exec)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "snapshot",
-		Description: "Snapshot a sandbox's warm state so it can be forked.",
-	}, h.snapshot)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "fork",
-		Description: "Create N independent, clone-safe sandboxes from a snapshot.",
-	}, h.fork)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_sandboxes",
-		Description: "List the live sandboxes.",
-	}, h.listSandboxes)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "inspect_sandbox",
-		Description: "Return full detail for one sandbox.",
-	}, h.inspectSandbox)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "delete_sandbox",
-		Description: "Destroy a sandbox.",
-	}, h.deleteSandbox)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_snapshots",
-		Description: "List the snapshots.",
-	}, h.listSnapshots)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "delete_snapshot",
-		Description: "Delete a snapshot.",
-	}, h.deleteSnapshot)
-
-	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "list_profiles",
-		Description: "List the rootfs profiles the daemon offers.",
-	}, h.listProfiles)
+	add("run", "Create a sandbox, run one command, return its output, then delete the sandbox. The 80% case for running untrusted code.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.run) })
+	add("create_sandbox", "Create a persistent sandbox and return its id. Drive it with exec/snapshot/fork, then delete_sandbox.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createSandbox) })
+	add("exec", "Run a command in an existing sandbox and return its captured output.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.exec) })
+	add("snapshot", "Snapshot a sandbox's warm state so it can be forked.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.snapshot) })
+	add("fork", "Create N independent, clone-safe sandboxes from a snapshot.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.fork) })
+	add("list_sandboxes", "List the live sandboxes.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listSandboxes) })
+	add("inspect_sandbox", "Return full detail for one sandbox.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.inspectSandbox) })
+	add("delete_sandbox", "Destroy a sandbox.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteSandbox) })
+	add("list_snapshots", "List the snapshots.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listSnapshots) })
+	add("delete_snapshot", "Delete a snapshot.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteSnapshot) })
+	add("list_profiles", "List the rootfs profiles the daemon offers.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listProfiles) })
 }
 
-// handlers carries the daemon client the tool handlers translate calls into.
+// handlers carries the operator policy (including the daemon client) the tool
+// handlers enforce and translate calls into.
 type handlers struct {
-	cl *client.Client
+	cfg Config
 }
 
 func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput) (*mcp.CallToolResult, execOutput, error) {
@@ -237,21 +213,32 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 	if err != nil {
 		return nil, execOutput{}, err
 	}
+	profile, err := h.cfg.resolveProfile(in.Profile)
+	if err != nil {
+		return nil, execOutput{}, err
+	}
+	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
+		return nil, execOutput{}, err
+	}
+	if err := h.cfg.checkCapacity(ctx, 1); err != nil {
+		return nil, execOutput{}, err
+	}
+	timeout := h.cfg.clampTimeout(in.TimeoutS)
 
-	req := api.CreateSandboxRequest{Profile: in.Profile, TimeoutSec: in.TimeoutS}
+	req := api.CreateSandboxRequest{Profile: profile, TimeoutSec: timeout}
 	if len(in.NetAllow) > 0 {
 		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
 	}
-	sb, err := h.cl.CreateSandbox(ctx, req)
+	sb, err := h.cfg.Client.CreateSandbox(ctx, req)
 	if err != nil {
 		return nil, execOutput{}, err
 	}
 	// Always delete — background ctx so cleanup runs even if ctx was cancelled.
-	defer func() { _ = h.cl.DeleteSandbox(context.Background(), sb.ID) }()
+	defer func() { _ = h.cfg.Client.DeleteSandbox(context.Background(), sb.ID) }()
 
 	var stdout, stderr bytes.Buffer
-	res, err := h.cl.Exec(ctx, sb.ID, agentwire.ExecRequest{
-		Cmd: in.Command, Env: env, TimeoutSec: in.TimeoutS,
+	res, err := h.cfg.Client.Exec(ctx, sb.ID, agentwire.ExecRequest{
+		Cmd: in.Command, Env: env, TimeoutSec: timeout,
 	}, &stdout, &stderr)
 	if err != nil {
 		return nil, execOutput{}, err
@@ -260,13 +247,23 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 }
 
 func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in createSandboxInput) (*mcp.CallToolResult, sandboxOutput, error) {
+	profile, err := h.cfg.resolveProfile(in.Profile)
+	if err != nil {
+		return nil, sandboxOutput{}, err
+	}
+	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
+		return nil, sandboxOutput{}, err
+	}
+	if err := h.cfg.checkCapacity(ctx, 1); err != nil {
+		return nil, sandboxOutput{}, err
+	}
 	req := api.CreateSandboxRequest{
-		Profile: in.Profile, VCPUs: in.Vcpus, MemoryMiB: in.MemoryMib, TimeoutSec: in.TimeoutS,
+		Profile: profile, VCPUs: in.Vcpus, MemoryMiB: in.MemoryMib, TimeoutSec: in.TimeoutS,
 	}
 	if len(in.NetAllow) > 0 {
 		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
 	}
-	sb, err := h.cl.CreateSandbox(ctx, req)
+	sb, err := h.cfg.Client.CreateSandbox(ctx, req)
 	if err != nil {
 		return nil, sandboxOutput{}, err
 	}
@@ -285,8 +282,8 @@ func (h *handlers) exec(ctx context.Context, _ *mcp.CallToolRequest, in execInpu
 		return nil, execOutput{}, err
 	}
 	var stdout, stderr bytes.Buffer
-	res, err := h.cl.Exec(ctx, in.SandboxID, agentwire.ExecRequest{
-		Cmd: in.Command, Cwd: in.Cwd, Env: env, TimeoutSec: in.TimeoutS,
+	res, err := h.cfg.Client.Exec(ctx, in.SandboxID, agentwire.ExecRequest{
+		Cmd: in.Command, Cwd: in.Cwd, Env: env, TimeoutSec: h.cfg.clampTimeout(in.TimeoutS),
 	}, &stdout, &stderr)
 	if err != nil {
 		return nil, execOutput{}, err
@@ -298,7 +295,7 @@ func (h *handlers) snapshot(ctx context.Context, _ *mcp.CallToolRequest, in sand
 	if in.SandboxID == "" {
 		return nil, snapshotOutput{}, errors.New("sandbox_id is required")
 	}
-	snap, err := h.cl.Snapshot(ctx, in.SandboxID)
+	snap, err := h.cfg.Client.Snapshot(ctx, in.SandboxID)
 	if err != nil {
 		return nil, snapshotOutput{}, err
 	}
@@ -309,11 +306,14 @@ func (h *handlers) fork(ctx context.Context, _ *mcp.CallToolRequest, in forkInpu
 	if in.SnapshotID == "" {
 		return nil, forkOutput{}, errors.New("snapshot_id is required")
 	}
-	count := in.Count
-	if count == 0 {
-		count = 1
+	count, err := h.cfg.checkFork(in.Count)
+	if err != nil {
+		return nil, forkOutput{}, err
 	}
-	forks, err := h.cl.Fork(ctx, in.SnapshotID, count)
+	if err := h.cfg.checkCapacity(ctx, count); err != nil {
+		return nil, forkOutput{}, err
+	}
+	forks, err := h.cfg.Client.Fork(ctx, in.SnapshotID, count)
 	if err != nil {
 		return nil, forkOutput{}, err
 	}
@@ -325,7 +325,7 @@ func (h *handlers) fork(ctx context.Context, _ *mcp.CallToolRequest, in forkInpu
 }
 
 func (h *handlers) listSandboxes(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, sandboxListOutput, error) {
-	sbs, err := h.cl.ListSandboxes(ctx)
+	sbs, err := h.cfg.Client.ListSandboxes(ctx)
 	if err != nil {
 		return nil, sandboxListOutput{}, err
 	}
@@ -340,7 +340,7 @@ func (h *handlers) inspectSandbox(ctx context.Context, _ *mcp.CallToolRequest, i
 	if in.SandboxID == "" {
 		return nil, sandboxOutput{}, errors.New("sandbox_id is required")
 	}
-	sb, err := h.cl.GetSandbox(ctx, in.SandboxID)
+	sb, err := h.cfg.Client.GetSandbox(ctx, in.SandboxID)
 	if err != nil {
 		return nil, sandboxOutput{}, err
 	}
@@ -351,14 +351,14 @@ func (h *handlers) deleteSandbox(ctx context.Context, _ *mcp.CallToolRequest, in
 	if in.SandboxID == "" {
 		return nil, deletedOutput{}, errors.New("sandbox_id is required")
 	}
-	if err := h.cl.DeleteSandbox(ctx, in.SandboxID); err != nil {
+	if err := h.cfg.Client.DeleteSandbox(ctx, in.SandboxID); err != nil {
 		return nil, deletedOutput{}, err
 	}
 	return nil, deletedOutput{Deleted: in.SandboxID}, nil
 }
 
 func (h *handlers) listSnapshots(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, snapshotListOutput, error) {
-	snaps, err := h.cl.ListSnapshots(ctx)
+	snaps, err := h.cfg.Client.ListSnapshots(ctx)
 	if err != nil {
 		return nil, snapshotListOutput{}, err
 	}
@@ -373,14 +373,14 @@ func (h *handlers) deleteSnapshot(ctx context.Context, _ *mcp.CallToolRequest, i
 	if in.SnapshotID == "" {
 		return nil, deletedOutput{}, errors.New("snapshot_id is required")
 	}
-	if err := h.cl.DeleteSnapshot(ctx, in.SnapshotID); err != nil {
+	if err := h.cfg.Client.DeleteSnapshot(ctx, in.SnapshotID); err != nil {
 		return nil, deletedOutput{}, err
 	}
 	return nil, deletedOutput{Deleted: in.SnapshotID}, nil
 }
 
 func (h *handlers) listProfiles(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, profilesOutput, error) {
-	profs, err := h.cl.ListProfiles(ctx)
+	profs, err := h.cfg.Client.ListProfiles(ctx)
 	if err != nil {
 		return nil, profilesOutput{}, err
 	}

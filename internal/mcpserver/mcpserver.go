@@ -7,6 +7,7 @@ package mcpserver
 
 import (
 	"context"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -14,12 +15,44 @@ import (
 	"github.com/gnana997/crucible/internal/version"
 )
 
-// Config is the operator-set policy for one `mcp serve` session. The security
-// guardrails (resource caps, surface reduction, net-allow ceiling) land in a
-// later phase; for now the server just needs a client to bridge to the daemon.
+// Config is the operator-set policy for one `mcp serve` session. The operator
+// fixes this policy at launch; the agent operates strictly within it and can
+// never widen it — an LLM can't rewrite the server's flags.
 type Config struct {
 	// Client talks to the daemon this server fronts.
 	Client *client.Client
+
+	// DefaultProfile is the rootfs used when a tool omits `profile` (required
+	// for run/create to work without an explicit profile). Empty falls through
+	// to the daemon's own default rootfs.
+	DefaultProfile string
+
+	// AllowProfiles, when non-empty, restricts which rootfs profiles the tools
+	// may launch. A launch resolving to a profile outside the list is refused.
+	AllowProfiles []string
+
+	// NetAllowMax, when non-empty, is the ceiling on agent-chosen egress: every
+	// host in a tool's net_allow must appear here (exact match). Empty means the
+	// agent may allowlist any public host (the daemon's range-filter still
+	// blocks internal/metadata addresses regardless).
+	NetAllowMax []string
+
+	// MaxSandboxes caps concurrent live sandboxes on the daemon (best-effort,
+	// checked before each create). Zero means unlimited.
+	MaxSandboxes int
+
+	// MaxFork caps the fork tool's count. Zero means unlimited.
+	MaxFork int
+
+	// MaxTimeout clamps every run/exec command timeout so nothing runs forever.
+	// Zero means no clamp.
+	MaxTimeout time.Duration
+
+	// Tools, when non-empty, is the allowlist of tool names to expose. DenyTools
+	// is subtracted afterward. A tool that is filtered out is never registered,
+	// so it does not appear in tools/list.
+	Tools     []string
+	DenyTools []string
 }
 
 // New builds the MCP server and registers the crucible tool catalog. It is the
