@@ -12,6 +12,14 @@ Each sandbox is a **Firecracker microVM with its own guest kernel** — escape r
 - **Clone-safety.** When a sandbox is forked from a snapshot, the fork's kernel RNG is reseeded with fresh host entropy and its machine identifiers are rotated **before** the fork can be exec'd — so no two forks wake sharing RNG state, UUIDs, or machine-id. (The kernel's VMGenID mechanism further narrows the reseed window on guest kernels that support it.)
 - **Resource ceilings.** Per-request limits on vCPU count, memory, and fork fan-out are enforced at the API boundary to bound the blast radius of a single request. Under jailer, each VMM additionally runs in a cgroup v2 slice whose `cpu.max` / `memory.max` / `pids.max` are sized from the sandbox's own request (on by default; `--cgroup-quotas=off` to disable), so a runaway VMM can't starve the host.
 
+## Agents driving crucible (MCP)
+
+`crucible mcp serve` lets an LLM agent spawn sandboxes and run code as native MCP tools. This shifts the threat model: the Firecracker VM still protects the **host**, but a **prompt-injected** agent (a poisoned page or file it reads) inherits the agent's crucible capability. The MCP guardrails exist to **bound what the agent can do**, on the assumption it may be turned against you.
+
+The operator sets policy at launch (`--net-allow-max`, `--max-sandboxes`, `--max-fork`, `--max-timeout`, `--allow-profiles`, `--tools`/`--deny-tools`); the agent operates strictly within it and cannot widen it. Networking stays default-deny, and even an agent-chosen allowlist is range-filtered, so agent egress reaches only *public* hosts it names — never cloud-metadata or internal services.
+
+**Known bound — the local same-user bypass.** A local daemon key sits in a file your OS user can read. A same-user agent with a shell tool could read it and call the loopback daemon directly, past the MCP guardrails. Bearer keys make the *remote* story solid but don't close this; the future fix is daemon-enforced **scoped tokens** (a stolen token then buys only the capability it already had). Until then, protect a local key like any credential. See [docs/mcp.md](docs/mcp.md#limitations) for the full discussion.
+
 ## Current status and limitations
 
 crucible is **`v0.1` and is not yet hardened for production or for untrusted multi-tenant use.** Please treat the following as known, deliberate limitations of a pre-release:

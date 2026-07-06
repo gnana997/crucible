@@ -42,6 +42,8 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Native language rootfs profiles (base, python, node, go — versioned) | ✅ built from official language images via `make profile PROFILE=…`; selected with the create `profile` field |
 | Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
 | Install script + systemd unit (run the daemon as a managed service) | ✅ `./install.sh` + `packaging/crucible.service` |
+| **MCP server** (`crucible mcp serve`) — full tool catalog over stdio, operator guardrails | ✅ done — drive crucible from any MCP agent; see [docs/mcp.md](docs/mcp.md) |
+| **Daemon API-key auth** — bearer keys, hashed at rest, TLS-required for non-loopback | ✅ done — `crucible daemon token add/list/revoke`; see [SECURITY.md](SECURITY.md) |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
 | Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
 
@@ -131,11 +133,14 @@ sudo ./crucible daemon \
   --kernel          /path/to/vmlinux \
   --rootfs          assets/rootfs.ext4 \
   --chroot-base     /srv/jailer \
-  --jail-uid 10000 --jail-gid 10000 \
   --network-egress-iface eth0   # whichever iface reaches the internet
 ```
 
 With `--jailer-bin`, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, and firecracker runs as the unprivileged `--jail-uid`. **Fork is supported only in jailer mode** — on Firecracker v1.15 the direct (non-jailer) restore path cannot rewire vsock after load, so jailer's per-chroot paths are required for fork to work.
+
+> **Jailer + KVM (two host requirements):** the jailed firecracker opens `/dev/kvm` (which is `root:kvm`, mode `660`) from *inside* its chroot, so:
+> 1. **drop-gid** — it reaches KVM through the group bit, so the daemon defaults `--jail-gid` to the **kvm** group (no `/dev/kvm` ACL needed). If you override it, that gid must still have KVM access.
+> 2. **chroot filesystem** — the jailer `mknod`s `/dev/kvm` under `--chroot-base`, so that path must be on a filesystem that **allows device nodes**. A `nodev` mount (many `/tmp` setups are `tmpfs,nodev`) makes the node inert — you'll get a cryptic `creating KVM object: Permission denied`. `/srv/jailer` on the root fs is a safe default.
 
 With `--network-egress-iface`, every sandbox created with a `network` block gets its own netns, a `/30` from the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs the daemon's DNS proxy resolved for allowlisted names — with resolved addresses range-filtered so a guest can't reach link-local/RFC1918/metadata endpoints. See [docs/network.md](docs/network.md) for the networking design.
 
@@ -222,16 +227,18 @@ internal/memfault/          userfaultfd page-fault handler — lazy snapshot mem
 internal/sandbox/           ID gen + Manager (lifecycle, exec, snapshot, fork, clone-safety) + durable registry/reconcile
 internal/daemon/            HTTP server, routes, middleware, network adapter
 internal/api/               REST wire types (shared by daemon + client; the SDK will mirror these)
-internal/client/            typed Go client for the daemon API (used by the CLI; TUI/MCP/SDK later)
+internal/client/            typed Go client for the daemon API (shared by the CLI and MCP server)
+internal/mcpserver/         MCP server (crucible mcp serve) — thin wrapper over internal/client + operator guardrails
+internal/tokenstore/        daemon API-key store (hashed bearer keys) + runtime verifier
 internal/agentwire/         shared protocol (frame format, ExecRequest/Result, identity refresh)
 internal/agentapi/          host-side client over hybrid-vsock UDS
 internal/network/           Manager + subnet pool, per-sandbox netns/veth/tap/bridge, nft base + per-sandbox rules
 internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no MAC filter so forks work)
 internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
-scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
+scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / smoke_mcp / debug_dns
 profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
 packaging/                  systemd unit (crucible.service) + config template; installed by ./install.sh
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, profiles.md, network.md
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, profiles.md, network.md
 ```
 
 Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), and `github.com/spf13/cobra` (the CLI). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
@@ -240,8 +247,8 @@ CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` 
 
 ## Roadmap (near-term)
 
-- **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd).
-- **v0.2**: a TUI (live dashboard + fork trees), an MCP server, and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus policy files, more language profiles, and a custom rootfs builder.
+- **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd), plus an **MCP server** (`crucible mcp serve`) and **daemon API-key auth** for remote/hosted access.
+- **v0.2**: a TUI (live dashboard + fork trees) and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus policy files (daemon-enforced scoped tokens), more language profiles, and a custom rootfs builder.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 

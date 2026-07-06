@@ -8,7 +8,7 @@ DNS-proxy) + clone-safety + a durable, reconciled registry. Go 1.25, Apache-2.0.
 
 Start with `README.md`. Deeper docs live in `docs/`: [VISION](docs/VISION.md)
 (why it's shaped this way), [architecture](docs/architecture.md) (how the code
-fits together), [api](docs/api.md), [cli](docs/cli.md),
+fits together), [api](docs/api.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
 [profiles](docs/profiles.md), [network](docs/network.md), and
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -60,6 +60,7 @@ install script + systemd unit. See the ROADMAP for what's planned next.
 
 After a nontrivial change, exercise the affected flow end-to-end (drive it, don't
 just typecheck) and report what you observed. `scripts/` has smoke tests
-(`smoke_e2e.sh`, `smoke_fork.sh`, `smoke_clone_safety.sh`, `smoke_restart.sh`).
+(`smoke_e2e.sh`, `smoke_fork.sh`, `smoke_clone_safety.sh`, `smoke_restart.sh`,
+`smoke_mcp.sh`).
 A code-review pass is warranted afterward; changes to the isolation surface —
 jailer, networking, or clone-safety — additionally warrant a security review.

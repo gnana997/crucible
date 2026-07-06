@@ -59,3 +59,12 @@ func TestRunBadOutputFlag(t *testing.T) {
 		t.Fatalf("stderr=%q; want output-format error", stderr.String())
 	}
 }
+
+func TestDefaultJailGIDNeverRoot(t *testing.T) {
+	// The jailer must never drop firecracker to gid 0 — that would defeat the
+	// privilege drop. Whether or not the host has a kvm group, the default is a
+	// safe unprivileged gid.
+	if gid := defaultJailGID(); gid == 0 {
+		t.Fatalf("defaultJailGID() = 0 (root); want an unprivileged gid")
+	}
+}

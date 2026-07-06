@@ -104,6 +104,10 @@ crucible daemon token revoke <id>           # rotate = add a new key, then revok
 
 With no keys, a loopback daemon serves unauthenticated. Once any key exists, auth is required. Binding a non-loopback `--listen` is refused unless keys and `--tls-cert`/`--tls-key` are both set. See [SECURITY.md](../SECURITY.md) and [api.md](api.md#authentication).
 
+### `crucible mcp serve`
+
+Runs a stdio MCP server so any MCP agent (Claude Code, Cursor, …) can drive crucible as native tools. It bridges to the daemon at `--addr` (with `--token`), so it works against a local or a remote daemon. Operator guardrails (`--default-profile`, `--allow-profiles`, `--net-allow-max`, `--max-sandboxes`, `--max-fork`, `--max-timeout`, `--tools`/`--deny-tools`) bound what the agent can do. Full reference and the agent config example are in [docs/mcp.md](mcp.md).
+
 ## Exit codes
 
 - `0` — success

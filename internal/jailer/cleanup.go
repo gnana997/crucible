@@ -23,8 +23,10 @@ import (
 //  2. The cgroup at /sys/fs/cgroup/firecracker/<ID>. Jailer only
 //     creates this when at least one --cgroup flag was passed. An
 //     rmdir on a non-existent cgroup returns ENOENT (fine); an rmdir
-//     on a non-empty cgroup returns EBUSY (a real bug — some
-//     process is still alive in it).
+//     the instant after the last task exits can return EBUSY because
+//     cgroup teardown is asynchronous to task exit — so we retry
+//     briefly (see removeCgroupDir). EBUSY that outlasts the retry
+//     budget is a real leak (a process genuinely still in the cgroup).
 //
 // Both operations are best-effort: we collect the first error and
 // keep going so a partial failure doesn't block the daemon from
@@ -40,17 +42,48 @@ func Cleanup(spec Spec) error {
 		firstErr = fmt.Errorf("jailer: remove chroot %s: %w", vmDir, err)
 	}
 
-	// os.Remove (not RemoveAll) on cgroupDir: cgroupfs rmdir is the
-	// actual kernel destruction call. RemoveAll would try to unlink
-	// files inside the cgroup dir first, which is wrong — cgroup
-	// controller files aren't regular files we should delete.
-	if err := os.Remove(cgroupDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeCgroupDir(cgroupDir); err != nil {
 		if firstErr == nil {
 			firstErr = fmt.Errorf("jailer: remove cgroup %s: %w", cgroupDir, err)
 		}
 	}
 
 	return firstErr
+}
+
+// cgroupRemoveBudget/Interval bound the retry that absorbs the transient
+// EBUSY window between a cgroup's last task exiting and cgroupfs letting us
+// rmdir it. The common case succeeds on the first or second attempt.
+const (
+	cgroupRemoveBudget   = 500 * time.Millisecond
+	cgroupRemoveInterval = 10 * time.Millisecond
+)
+
+// removeCgroupDir rmdir's a cgroup v2 directory, tolerating the brief post-exit
+// window during which cgroupfs still reports the cgroup populated and returns
+// EBUSY. rmdir (os.Remove, not RemoveAll) is the actual kernel destruction call;
+// RemoveAll would wrongly try to unlink the controller files first. ENOENT is
+// success (idempotent). EBUSY still present after the budget is returned as a
+// real error — a process is genuinely alive in the cgroup.
+func removeCgroupDir(dir string) error {
+	return removeWithRetry(func() error { return os.Remove(dir) }, cgroupRemoveBudget, cgroupRemoveInterval)
+}
+
+// removeWithRetry runs remove until it succeeds, hits a non-EBUSY error, or the
+// budget elapses. Factored out (remove injected) so the retry logic is unit-
+// testable without a real busy cgroup.
+func removeWithRetry(remove func() error, budget, interval time.Duration) error {
+	deadline := time.Now().Add(budget)
+	for {
+		err := remove()
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if !errors.Is(err, syscall.EBUSY) || !time.Now().Before(deadline) {
+			return err
+		}
+		time.Sleep(interval)
+	}
 }
 
 // reapKillTimeout bounds how long killJailed waits for a SIGKILL'd VMM

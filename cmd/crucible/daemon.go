@@ -12,7 +12,9 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -69,7 +71,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		jailerBin  = fs.String("jailer-bin", "", "path to jailer binary; when set, run firecracker under jailer (requires root)")
 		chrootBase = fs.String("chroot-base", "/srv/jailer", "parent dir for per-VM jailer chroots (used only when --jailer-bin is set)")
 		jailUID    = fs.Uint("jail-uid", 10000, "unprivileged uid jailer drops to before exec'ing firecracker")
-		jailGID    = fs.Uint("jail-gid", 10000, "unprivileged gid jailer drops to before exec'ing firecracker")
+		jailGID    = fs.Uint("jail-gid", defaultJailGID(), "unprivileged gid jailer drops to before exec'ing firecracker (defaults to the kvm group so the jailed firecracker can open /dev/kvm)")
 		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
 		// pids.max) for each sandbox's VMM from its vCPU/memory request.
 		// Only takes effect under jailer mode; the direct-exec runner has
@@ -430,6 +432,20 @@ func isLoopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// defaultJailGID picks the gid the jailer drops firecracker to when --jail-gid
+// isn't given. It prefers the "kvm" group so the jailed firecracker can open
+// /dev/kvm (root:kvm, mode 660) out of the box — the alternative is a cryptic
+// "creating KVM object: Permission denied" on the first sandbox. Hosts without
+// a kvm group fall back to 10000; an explicit --jail-gid always wins.
+func defaultJailGID() uint {
+	if g, err := user.LookupGroup("kvm"); err == nil {
+		if gid, err := strconv.Atoi(g.Gid); err == nil && gid > 0 {
+			return uint(gid)
+		}
+	}
+	return 10000
 }
 
 // parseTokenArgs pulls the `--token-file`/`--name` flags out of args from
