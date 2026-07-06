@@ -25,10 +25,9 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - [x] Prometheus `/metrics` endpoint — `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`
 - [x] Native language rootfs profiles (`base`, `python`, `node`, `go`, versioned) — built from official language images via `make profile`, selected by the create `profile` field ([profiles.md](profiles.md))
 - [x] CLI over the REST API — `sandbox` (create/ls/inspect/rm/exec), `snapshot`, `fork`, `profile ls`, and a `run` one-shot, on a reusable typed Go client; `-o json` everywhere ([cli.md](cli.md))
+- [x] Install script + systemd unit — `install.sh` drops the binary, a `crucible.service` unit, and a config template; `sudo systemctl enable --now crucible` runs the daemon as a managed service (auto-restart, journald logs, start on boot)
 
-**Still planned for v0.1:**
-
-- [ ] Install script + systemd unit
+With that, the v0.1 core runtime is feature-complete.
 
 *(The Python SDK moved to v0.3 alongside observability: driving the API through the CLI first stabilizes the surface an SDK should target. A TUI and an MCP server are v0.2.)*
 

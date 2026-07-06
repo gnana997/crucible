@@ -1,0 +1,26 @@
+[Unit]
+Description=crucible sandbox runtime daemon
+Documentation=https://github.com/gnana997/crucible
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Daemon flags live in the env file so you configure host paths without
+# editing this unit. The leading '-' makes it optional: if the file is
+# missing the daemon still starts and prints its own "flag required"
+# error to the journal. See /etc/crucible/crucible.env.
+EnvironmentFile=-/etc/crucible/crucible.env
+ExecStart=/usr/local/bin/crucible daemon $CRUCIBLE_FLAGS
+Restart=on-failure
+RestartSec=2
+
+# crucible runs as root by design: it needs KVM (/dev/kvm), the jailer
+# (chroot + mount/PID namespaces + uid drop for each VMM), and
+# per-sandbox netns/nftables. It confines the guest VMM itself via the
+# jailer. Aggressive unit-level sandboxing (ProtectSystem, PrivateTmp,
+# NoNewPrivileges, ...) conflicts with the jailer and is deliberately
+# left off in v0.1 — revisit once the isolation surface is audited.
+
+[Install]
+WantedBy=multi-user.target

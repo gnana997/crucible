@@ -41,9 +41,26 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | ✅ on by default — sized per sandbox from its vCPU/memory request (`--cgroup-quotas=off` to disable) |
 | Native language rootfs profiles (base, python, node, go — versioned) | ✅ built from official language images via `make profile PROFILE=…`; selected with the create `profile` field |
 | Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
-| Install script + systemd unit | ⏳ planned for v0.1 |
+| Install script + systemd unit (run the daemon as a managed service) | ✅ `./install.sh` + `packaging/crucible.service` |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
 | Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
+
+## Install
+
+Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). Install the daemon as a systemd service in one line:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh | sudo sh
+```
+
+That drops the `crucible` binary, a `crucible.service` unit, and a config template. You still supply the pieces crucible doesn't redistribute — a **Firecracker binary** and a **guest kernel** (both from [Firecracker's upstream CI bucket](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md)) — plus at least one rootfs. Grab a profile image from the release instead of building it:
+
+```bash
+sudo curl -fL -o /var/lib/crucible/profiles/python-3.12.ext4 \
+  https://github.com/gnana997/crucible/releases/latest/download/python-3.12.ext4
+```
+
+Then point `/etc/crucible/crucible.env` at those paths and `sudo systemctl enable --now crucible`. (Prefer to build from source? See [Try it locally](#try-it-locally).)
 
 ## Try it locally
 
@@ -95,6 +112,20 @@ With `--jailer-bin`, every microVM gets its own chroot under `<chroot-base>/fire
 With `--network-egress-iface`, every sandbox created with a `network` block gets its own netns, a `/30` from the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs the daemon's DNS proxy resolved for allowlisted names — with resolved addresses range-filtered so a guest can't reach link-local/RFC1918/metadata endpoints. See [docs/network.md](docs/network.md) for the networking design.
 
 On startup the daemon reconciles: it re-adopts recorded snapshots and reaps orphaned sandbox state (chroots, netns, nft, processes) left by a previous run, so you don't have to babysit `/srv/jailer` between restarts.
+
+### Install as a systemd service
+
+For a real host you'll want the daemon running as a managed service — start on boot, auto-restart on crash, logs to journald — rather than a program in a terminal. `install.sh` sets that up:
+
+```bash
+make build                 # produces ./crucible
+sudo ./install.sh          # installs the binary, a crucible.service unit, and a config template
+# edit /etc/crucible/crucible.env for your firecracker / kernel / rootfs paths
+sudo systemctl enable --now crucible
+journalctl -u crucible -f  # watch it boot
+```
+
+The unit ([`packaging/crucible.service`](packaging/crucible.service)) reads its flags from `/etc/crucible/crucible.env`, so you configure paths without editing the unit. `sudo ./install.sh --enable` installs and starts in one step.
 
 ### End-to-end smoke tests
 
@@ -171,6 +202,7 @@ internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no
 internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
 scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
 profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
+packaging/                  systemd unit (crucible.service) + config template; installed by ./install.sh
 docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, profiles.md, network.md
 ```
 
@@ -180,8 +212,8 @@ CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` 
 
 ## Roadmap (near-term)
 
-- **v0.1** (current): finish the core runtime — a Python SDK, install script + systemd unit.
-- **v0.2**: policy files, more language profiles, a custom rootfs builder, hostname-level DNS filtering, a thin Python SDK.
+- **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd).
+- **v0.2**: a TUI (live dashboard + fork trees), an MCP server, and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus policy files, more language profiles, and a custom rootfs builder.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 

@@ -1,0 +1,90 @@
+name: Release
+
+# Cut a release by pushing a semver tag:
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Produces a GitHub Release with:
+#   - crucible_<tag>_linux_amd64.tar.gz  (binary + install.sh + packaging + docs)
+#   - a curated set of native rootfs profiles (base / python / node / go .ext4)
+#   - a .sha256 next to every asset
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # gh release create/upload
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Add --draft to review before publishing.
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "crucible ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag
+
+  binary:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # git describe needs tags + history for the version
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Build
+        run: make build
+      - name: "Package tarball (binary + installer + unit + docs)"
+        run: |
+          pkg="crucible_${GITHUB_REF_NAME}_linux_amd64"
+          mkdir -p "dist/$pkg/packaging"
+          cp crucible LICENSE README.md install.sh "dist/$pkg/"
+          cp packaging/crucible.service packaging/crucible.env.example "dist/$pkg/packaging/"
+          chmod +x "dist/$pkg/install.sh"
+          tar -C dist -czf "dist/${pkg}.tar.gz" "$pkg"
+          ( cd dist && sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256" )
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 --repo "${GITHUB_REPOSITORY}"
+
+  profiles:
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false            # one bad image shouldn't sink the others
+      matrix:
+        profile: [base, python-3.12, node-22, go-1.24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Install rootfs tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fakeroot e2fsprogs
+      - name: Build agent
+        run: make agent
+      - name: Build profile ${{ matrix.profile }}
+        run: ./scripts/build-profile.sh "${{ matrix.profile }}"   # uses Docker (preinstalled on ubuntu-latest)
+      - name: Checksum
+        run: |
+          cd assets/profiles
+          sha256sum "${{ matrix.profile }}.ext4" > "${{ matrix.profile }}.ext4.sha256"
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "assets/profiles/${{ matrix.profile }}.ext4" \
+            "assets/profiles/${{ matrix.profile }}.ext4.sha256" \
+            --repo "${GITHUB_REPOSITORY}"
