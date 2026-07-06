@@ -230,8 +230,8 @@ func TestStageSharedFileIsolatesInode(t *testing.T) {
 // to that uid. Only root can chown to a foreign uid, so this proves
 // the real cross-tenant scenario the unit test can only approximate.
 //
-// Run: sudo CRUCIBLE_ROOT_TEST=1 go test ./internal/jailer \
-//        -run TestStageSharedKernelPreservesOwnershipRoot -v
+//	Run: sudo CRUCIBLE_ROOT_TEST=1 go test ./internal/jailer \
+//	       -run TestStageSharedKernelPreservesOwnershipRoot -v
 func TestStageSharedKernelPreservesOwnershipRoot(t *testing.T) {
 	if os.Getenv("CRUCIBLE_ROOT_TEST") == "" || os.Geteuid() != 0 {
 		t.Skip("privileged test; set CRUCIBLE_ROOT_TEST=1 and run as root")
