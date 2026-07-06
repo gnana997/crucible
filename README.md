@@ -38,7 +38,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Structured execution record | ✅ done — `exit_code`, `duration_ms`, `signal`, `timed_out`, `oom_killed` + nested `usage` (CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes) |
 | JSON lifecycle logs (`--log-format=json`) + graceful SIGTERM drain | ✅ done |
 | Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | ✅ on by default — sized per sandbox from its vCPU/memory request (`--cgroup-quotas=off` to disable) |
-| Pre-baked rootfs profiles (base, python, node, go) | 🔨 planned for v0.1 |
+| Native language rootfs profiles (base, python, node, go — versioned) | ✅ built from official language images via `make profile PROFILE=…`; selected with the create `profile` field |
 | Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
 | Install script + systemd unit | ⏳ planned for v0.1 |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
@@ -161,7 +161,7 @@ git clone https://github.com/gnana997/crucible && cd crucible
 make build && ./crucible version
 ```
 
-Make targets: `build`, `agent`, `rootfs` (needs `BASE_ROOTFS=`), `test`, `race`, `vet`, `fmt`, `lint`, `tidy`, `clean`.
+Make targets: `build`, `agent`, `rootfs` (needs `BASE_ROOTFS=`), `profile` (needs `PROFILE=`, docker), `test`, `race`, `vet`, `fmt`, `lint`, `tidy`, `clean`.
 
 Repository layout:
 
@@ -180,8 +180,9 @@ internal/agentapi/          host-side client over hybrid-vsock UDS
 internal/network/           Manager + subnet pool, per-sandbox netns/veth/tap/bridge, nft base + per-sandbox rules
 internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no MAC filter so forks work)
 internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
-scripts/                    rootfs builder + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, network.md
+scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
+profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, profiles.md, network.md
 ```
 
 Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), and `github.com/prometheus/client_golang` (the `/metrics` endpoint). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
@@ -190,7 +191,7 @@ CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` 
 
 ## Roadmap (near-term)
 
-- **v0.1** (current): finish the core runtime — pre-baked rootfs profiles, a Python SDK, install script + systemd unit.
+- **v0.1** (current): finish the core runtime — a Python SDK, install script + systemd unit.
 - **v0.2**: policy files, more language profiles, a custom rootfs builder, hostname-level DNS filtering, a thin Python SDK.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).

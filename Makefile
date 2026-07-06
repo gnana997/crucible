@@ -10,7 +10,7 @@ BASE_ROOTFS ?=
 OUT_ROOTFS  ?= assets/rootfs.ext4
 ROOTFS_SIZE ?= 1G
 
-.PHONY: all build agent rootfs test race vet fmt lint tidy clean help
+.PHONY: all build agent rootfs profile test race vet fmt lint tidy clean help
 
 all: fmt vet test build
 
@@ -19,6 +19,7 @@ help:
 	@echo "  build    - build the crucible daemon binary"
 	@echo "  agent    - build the guest agent (linux/amd64, static)"
 	@echo "  rootfs   - bake agent into an ext4 rootfs (needs BASE_ROOTFS=...)"
+	@echo "  profile  - build a native language rootfs profile (needs PROFILE=..., docker)"
 	@echo "  test     - go test ./..."
 	@echo "  race     - go test -race ./..."
 	@echo "  vet      - go vet ./..."
@@ -46,6 +47,16 @@ rootfs: agent
 	fi
 	mkdir -p $(dir $(OUT_ROOTFS))
 	./scripts/build-rootfs.sh $(BASE_ROOTFS) $(AGENT) $(OUT_ROOTFS) $(ROOTFS_SIZE)
+
+# Build a native language rootfs profile from profiles/profiles.env, e.g.
+#   make profile PROFILE=python-3.12
+# Needs docker; output lands in assets/profiles/<PROFILE>.ext4.
+profile: agent
+	@if [ -z "$(PROFILE)" ]; then \
+	    echo "error: PROFILE is required (e.g. make profile PROFILE=python-3.12)" >&2; \
+	    exit 2; \
+	fi
+	./scripts/build-profile.sh $(PROFILE)
 
 test:
 	go test $(PKG)

@@ -52,6 +52,12 @@ type createSandboxRequest struct {
 	// DELETE or daemon shutdown.
 	TimeoutSec int `json:"timeout_s,omitempty"`
 
+	// Profile names a pre-baked rootfs the daemon boots this sandbox
+	// from (e.g. "python-3.12", "node-22", "base"). Empty uses the
+	// daemon's default --rootfs. Resolved against the daemon's
+	// --rootfs-dir; an unknown profile is a 400.
+	Profile string `json:"profile,omitempty"`
+
 	// Image, when set, overrides the daemon's default rootfs for this
 	// sandbox. See ImageRef for the field shape.
 	//
@@ -155,6 +161,7 @@ type sandboxResponse struct {
 	VCPUs     int              `json:"vcpus"`
 	MemoryMiB int              `json:"memory_mib"`
 	Workdir   string           `json:"workdir"`
+	Profile   string           `json:"profile,omitempty"`
 	CreatedAt time.Time        `json:"created_at"`
 	Network   *networkResponse `json:"network,omitempty"`
 }
@@ -174,6 +181,7 @@ func sandboxResponseFrom(sb *sandbox.Sandbox) sandboxResponse {
 		VCPUs:     sb.VCPUs,
 		MemoryMiB: sb.MemoryMiB,
 		Workdir:   sb.Workdir,
+		Profile:   sb.Profile,
 		CreatedAt: sb.CreatedAt,
 	}
 	if sb.Network != nil {
@@ -283,6 +291,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		MemoryMiB:  req.MemoryMiB,
 		BootArgs:   req.BootArgs,
 		TimeoutSec: req.TimeoutSec,
+		Profile:    req.Profile,
 		Network:    netCfg,
 	})
 	if err != nil {

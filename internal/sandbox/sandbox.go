@@ -141,6 +141,7 @@ type Sandbox struct {
 	VCPUs     int
 	MemoryMiB int
 	Workdir   string
+	Profile   string // rootfs profile this sandbox booted from; empty = default rootfs
 	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
@@ -166,6 +167,11 @@ type CreateConfig struct {
 	VCPUs     int
 	MemoryMiB int
 	BootArgs  string // empty means use runner.DefaultBootArgs
+
+	// Profile names a pre-baked rootfs to boot from, resolved against
+	// ManagerConfig.Profiles. Empty uses the default ManagerConfig.Rootfs.
+	// An unknown profile is rejected with ErrInvalidConfig.
+	Profile string
 
 	// TimeoutSec, if > 0, is the sandbox's maximum lifetime in seconds.
 	// A background goroutine deletes the sandbox once the timeout fires.
@@ -222,6 +228,13 @@ type ManagerConfig struct {
 	// would corrupt the filesystem, so the clone step is not optional.
 	Kernel string
 	Rootfs string
+
+	// Profiles maps a profile name (e.g. "python-3.12", "node-22") to a
+	// pre-baked rootfs image path. A sandbox request naming a profile
+	// boots from its image instead of Rootfs; the default Rootfs is used
+	// when the request names no profile. Optional — nil disables named
+	// profiles (any Profile in a request is then rejected).
+	Profiles map[string]string
 
 	// WaitForAgent, when true, makes Create block until the guest agent
 	// inside the VM responds on GET /healthz (via the vsock UDS). This
@@ -501,6 +514,19 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	if memMiB > MaxMemoryMiB {
 		return nil, fmt.Errorf("%w: memory_mib %d exceeds max %d", ErrInvalidConfig, memMiB, MaxMemoryMiB)
 	}
+
+	// Resolve the rootfs template: a named profile picks a pre-baked
+	// image, otherwise the daemon's default rootfs. Validated up front so
+	// an unknown profile fails cleanly before any workdir is created.
+	rootfsTemplate := m.cfg.Rootfs
+	if req.Profile != "" {
+		p, ok := m.cfg.Profiles[req.Profile]
+		if !ok {
+			return nil, fmt.Errorf("%w: unknown profile %q", ErrInvalidConfig, req.Profile)
+		}
+		rootfsTemplate = p
+	}
+
 	workdir := filepath.Join(m.cfg.WorkBase, id)
 
 	// success is flipped at the end; if anything below returns early,
@@ -521,7 +547,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	// capable filesystems this is effectively instant; otherwise it's a
 	// full byte copy.
 	sbxRootfs := filepath.Join(workdir, perSandboxRootfsName)
-	if err := fsutil.Clone(m.cfg.Rootfs, sbxRootfs); err != nil {
+	if err := fsutil.Clone(rootfsTemplate, sbxRootfs); err != nil {
 		return nil, fmt.Errorf("sandbox: clone rootfs template: %w", err)
 	}
 
@@ -566,6 +592,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
 		Workdir:   workdir,
+		Profile:   req.Profile,
 		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
 		Network:   netHandle,

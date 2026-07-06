@@ -74,6 +74,7 @@ Create a sandbox. **All fields are optional** — an empty body `{}` boots a san
 | `memory_mib` | int | Guest memory in MiB. Defaulted and range-capped. |
 | `boot_args` | string | Extra kernel cmdline appended to the daemon's default. |
 | `timeout_s` | int | Max sandbox lifetime in seconds. `0` = no timeout (lives until `DELETE` or shutdown). |
+| `profile` | string | Pre-baked rootfs to boot from, e.g. `"python-3.12"`, `"node-22"`, `"base"`. Empty uses the daemon's default `--rootfs`. Resolved against the daemon's `--rootfs-dir`; an unknown profile is a `400`. See [profiles.md](profiles.md). |
 | `network` | object | Omit or `null` for **no network** (default-deny). See below. |
 | `image` | object | Reserved wire field. Any value returns `501` in `v0.1` — leave unset and use the daemon's `--rootfs`. |
 
@@ -97,7 +98,7 @@ Create a sandbox. **All fields are optional** — an empty body `{}` boots a san
 }
 ```
 
-`network` is omitted when the sandbox has no NIC. Errors: `400` (invalid JSON or config), `501` (`image` set), `500` (boot failure).
+`network` is omitted when the sandbox has no NIC; `profile` is echoed back when the sandbox booted from a named profile. Errors: `400` (invalid JSON or config, including an unknown `profile`), `501` (`image` set), `500` (boot failure).
 
 ---
 

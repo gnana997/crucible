@@ -44,7 +44,8 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		addr         = fs.String("listen", "127.0.0.1:7878", "HTTP listen address")
 		fcBin        = fs.String("firecracker-bin", "", "path to the firecracker binary (required)")
 		kernel       = fs.String("kernel", "", "path to the guest kernel image — uncompressed vmlinux (required)")
-		rootfs       = fs.String("rootfs", "", "path to the guest root filesystem image (required)")
+		rootfs       = fs.String("rootfs", "", "path to the guest root filesystem image (required; the default when a create request names no profile)")
+		rootfsDir    = fs.String("rootfs-dir", "", "directory of pre-baked <profile>.ext4 images; a create request's `profile` field selects one by basename (e.g. python-3.12.ext4 → profile \"python-3.12\")")
 		workBase     = fs.String("work-base", "/tmp/crucible/run", "directory where per-sandbox workdirs are created")
 		logFormat    = fs.String("log-format", "text", "log format: text|json")
 		logLevel     = fs.String("log-level", "info", "log level: debug|info|warn|error")
@@ -246,6 +247,16 @@ Required flags:
 		return 2
 	}
 
+	var profiles map[string]string
+	if *rootfsDir != "" {
+		profiles, err = discoverProfiles(*rootfsDir)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: --rootfs-dir: %v\n", err)
+			return 2
+		}
+		logger.Info("rootfs profiles discovered", "dir", *rootfsDir, "count", len(profiles))
+	}
+
 	mx := metrics.New()
 
 	mgrCfg := sandbox.ManagerConfig{
@@ -253,6 +264,7 @@ Required flags:
 		WorkBase:          *workBase,
 		Kernel:            *kernel,
 		Rootfs:            *rootfs,
+		Profiles:          profiles,
 		WaitForAgent:      !*noWaitAgent,
 		AgentReadyTimeout: agentReady,
 		Metrics:           mx,
@@ -334,6 +346,35 @@ Required flags:
 	logger.Info("crucible stopped")
 	_ = stdout // reserved for future non-log output
 	return 0
+}
+
+// discoverProfiles scans dir for `<name>.ext4` images and returns a
+// profile-name → absolute-path map. The basename (minus .ext4) is the
+// profile name, so `python-3.12.ext4` yields profile "python-3.12".
+// Symlinks are resolved, so a `node.ext4 -> node-22.ext4` alias produces
+// a "node" profile pointing at the real image; a broken symlink is an
+// error surfaced at startup rather than a confusing failure at create.
+func discoverProfiles(dir string) (map[string]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	profiles := make(map[string]string)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".ext4") {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("resolve %s: %w", name, err)
+		}
+		profiles[strings.TrimSuffix(name, ".ext4")] = resolved
+	}
+	return profiles, nil
 }
 
 func parseLogLevel(s string) (slog.Level, error) {
