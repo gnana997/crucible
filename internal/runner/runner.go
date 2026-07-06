@@ -218,6 +218,14 @@ type RestoreSpec struct {
 	// is the same across netns, so snapshot restore works
 	// without host_dev_name rewriting.
 	NetNS string
+
+	// Quotas are host-side cgroup v2 limits applied to the restored
+	// VMM, same semantics as Spec.Quotas. Forks need these as much as
+	// cold-booted sandboxes — with LazyMem the pages the guest touches
+	// are faulted into the VMM's cgroup, so an unbounded fork can grow
+	// the VMM's host footprint just like a fresh boot. Enforced only by
+	// the jailer runner; zero-valued fields mean "no limit".
+	Quotas Quotas
 }
 
 // Runner starts Firecracker VMs — either from a cold boot (Start) or

@@ -31,6 +31,7 @@ import (
 	"github.com/gnana997/crucible/internal/agentapi"
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/fsutil"
+	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/runner"
 )
 
@@ -266,6 +267,71 @@ type ManagerConfig struct {
 	// nil, re-adopted snapshots lose their network policy (networked
 	// forks from them would need it re-specified). Optional.
 	ReloadAllowlist func(patterns []string) (NetworkAllowlist, error)
+
+	// QuotaPolicy selects how host-side cgroup v2 limits are set on each
+	// sandbox's VMM. The zero value (QuotaPolicyOff) applies no limits,
+	// so tests and library callers get today's behavior by default; the
+	// daemon sets QuotaPolicyDerive. Enforced only under the jailer
+	// runner (the direct-exec runner ignores Quotas by design).
+	QuotaPolicy QuotaPolicy
+
+	// Metrics, when non-nil, receives operational counters/histograms
+	// (sandbox creates, fork and snapshot-restore latencies). Nil is a
+	// no-op, so tests and library callers need not wire it.
+	Metrics *metrics.Metrics
+}
+
+// QuotaPolicy selects the host-side cgroup quota strategy for a Manager.
+type QuotaPolicy string
+
+const (
+	// QuotaPolicyOff applies no cgroup limits (the zero value).
+	QuotaPolicyOff QuotaPolicy = ""
+	// QuotaPolicyDerive sizes each VMM's cgroup limits from the
+	// sandbox's own vCPU/memory request. See deriveQuotas.
+	QuotaPolicyDerive QuotaPolicy = "derive"
+)
+
+// cgroup quota derivation tunables.
+const (
+	// cgroupCPUPeriodUs is the cgroup v2 cpu.max period (microseconds);
+	// 100ms is the kernel default. Quota is period × vCPUs.
+	cgroupCPUPeriodUs = 100000
+	// defaultVMMPidsMax bounds processes in the VMM's HOST cgroup
+	// (firecracker/jailer threads) as a cheap fork-bomb guard. It does
+	// not bound guest processes, which live in a separate pid namespace.
+	defaultVMMPidsMax = 1024
+	// minMemHeadroomMiB is the floor for VMM memory overhead added on
+	// top of the guest RAM request when sizing memory.max.
+	minMemHeadroomMiB = 128
+)
+
+// deriveQuotas maps a sandbox's own vCPU/memory request to host-side
+// cgroup v2 limits on its Firecracker VMM: CPU capped at the vCPU count,
+// memory at guest RAM plus headroom for VMM overhead (and, for lazy-mem
+// forks, pages faulted into the VMM's cgroup) so a guest using all its
+// RAM under normal load doesn't trip the host OOM-killer, and a fixed
+// pids guard on the VMM's host cgroup.
+func deriveQuotas(vcpus, memMiB int) runner.Quotas {
+	headroom := memMiB / 4
+	if headroom < minMemHeadroomMiB {
+		headroom = minMemHeadroomMiB
+	}
+	return runner.Quotas{
+		CPUMax:         fmt.Sprintf("%d %d", vcpus*cgroupCPUPeriodUs, cgroupCPUPeriodUs),
+		MemoryMaxBytes: int64(memMiB+headroom) << 20,
+		PIDsMax:        defaultVMMPidsMax,
+	}
+}
+
+// quotasFor returns the cgroup limits for a sandbox under the Manager's
+// configured policy. QuotaPolicyOff (the default) yields zero Quotas, so
+// BuildArgs omits every --cgroup flag.
+func (m *Manager) quotasFor(vcpus, memMiB int) runner.Quotas {
+	if m.cfg.QuotaPolicy != QuotaPolicyDerive {
+		return runner.Quotas{}
+	}
+	return deriveQuotas(vcpus, memMiB)
 }
 
 // NetworkProvisioner is the narrow slice of internal/network.Manager
@@ -479,6 +545,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		BootArgs:  req.BootArgs,
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
+		Quotas:    m.quotasFor(vcpus, memMiB),
 	}
 	if netHandle != nil {
 		runnerSpec.NetNS = netHandle.NetnsPath
@@ -521,6 +588,8 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	if req.TimeoutSec > 0 {
 		m.startLifetimeTimer(s, req.TimeoutSec)
 	}
+
+	m.cfg.Metrics.IncSandboxCreated()
 
 	success = true
 	return s, nil
@@ -991,6 +1060,8 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(snap.MemoryMiB))
 	defer cancel()
 
+	forkStart := time.Now()
+
 	id, err := NewID()
 	if err != nil {
 		return nil, err
@@ -1040,15 +1111,18 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		MemPath:    snap.MemPath,
 		RootfsPath: forkRootfs,
 		LazyMem:    true,
+		Quotas:     m.quotasFor(snap.VCPUs, snap.MemoryMiB),
 	}
 	if netHandle != nil {
 		restoreSpec.NetNS = netHandle.NetnsPath
 	}
 
+	restoreStart := time.Now()
 	handle, err := m.cfg.Runner.Restore(ctx, restoreSpec)
 	if err != nil {
 		return nil, fmt.Errorf("runner restore: %w", err)
 	}
+	m.cfg.Metrics.ObserveSnapshotRestore(time.Since(restoreStart))
 
 	s := &Sandbox{
 		ID:        id,
@@ -1115,6 +1189,9 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	}
 
 	m.registerSandbox(s)
+
+	m.cfg.Metrics.IncSandboxCreated()
+	m.cfg.Metrics.ObserveForkDuration(time.Since(forkStart))
 
 	success = true
 	return s, nil

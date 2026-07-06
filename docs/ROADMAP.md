@@ -21,12 +21,12 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - [x] Structured execution record per exec (exit code, timing, signal, timeout/OOM flags, and CPU/memory/page-fault/context-switch/IO usage)
 - [x] Durable sandbox registry with reconcile-on-restart
 - [x] Structured JSON lifecycle logs
+- [x] Host-side cgroup quotas (cpu.max / memory.max / pids.max) sized per sandbox, on by default under jailer
+- [x] Prometheus `/metrics` endpoint — `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`
 
 **Still planned for v0.1:**
 
 - [ ] Pre-baked rootfs profiles: `base`, `python`, `node`, `go`
-- [ ] Host-side cgroup quotas wired to defaults (plumbing exists; not applied by default today)
-- [ ] Prometheus `/metrics` endpoint — core operational metrics (`sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`)
 - [ ] Python SDK
 - [ ] Install script + systemd unit
 

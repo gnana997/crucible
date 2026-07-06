@@ -37,9 +37,9 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Sandbox lifetime timeout + per-exec deadline | ✅ done |
 | Structured execution record | ✅ done — `exit_code`, `duration_ms`, `signal`, `timed_out`, `oom_killed` + nested `usage` (CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes) |
 | JSON lifecycle logs (`--log-format=json`) + graceful SIGTERM drain | ✅ done |
-| Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | 🔨 plumbing present in the jailer path; not yet wired to a CLI flag / applied by default |
+| Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | ✅ on by default — sized per sandbox from its vCPU/memory request (`--cgroup-quotas=off` to disable) |
 | Pre-baked rootfs profiles (base, python, node, go) | 🔨 planned for v0.1 |
-| Prometheus `/metrics` endpoint | ⏳ planned for v0.1 |
+| Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
 | Install script + systemd unit | ⏳ planned for v0.1 |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
 | Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
@@ -184,13 +184,13 @@ scripts/                    rootfs builder + smoke_fork / smoke_clone_safety / s
 docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, network.md
 ```
 
-Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
+Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), and `github.com/prometheus/client_golang` (the `/metrics` endpoint). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
 
 CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
 
 ## Roadmap (near-term)
 
-- **v0.1** (current): finish the core runtime — pre-baked rootfs profiles, a Prometheus `/metrics` endpoint, install script + systemd unit.
+- **v0.1** (current): finish the core runtime — pre-baked rootfs profiles, a Python SDK, install script + systemd unit.
 - **v0.2**: policy files, more language profiles, a custom rootfs builder, hostname-level DNS filtering, a thin Python SDK.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).

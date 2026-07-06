@@ -218,7 +218,7 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 		return nil, fmt.Errorf("runner: create workdir: %w", err)
 	}
 
-	jSpec, err := j.buildJailerSpec(spec.Workdir, Quotas{}, spec.NetNS)
+	jSpec, err := j.buildJailerSpec(spec.Workdir, spec.Quotas, spec.NetNS)
 	if err != nil {
 		return nil, err
 	}

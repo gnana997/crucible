@@ -23,6 +23,9 @@ import (
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	// Metrics endpoint. When Config.Metrics is nil the handler is a 404,
+	// so the route is safe to register unconditionally.
+	mux.Handle("GET /metrics", s.cfg.Metrics.Handler())
 	mux.HandleFunc("POST /sandboxes", s.handleCreateSandbox)
 	mux.HandleFunc("GET /sandboxes", s.handleListSandboxes)
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)

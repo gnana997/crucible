@@ -27,7 +27,7 @@ The interesting features are the ones you don't have to ask for:
 - **Clone-safety** — each fork wakes with fresh kernel RNG state and rotated machine identifiers, so forks don't silently share UUIDs, secrets, or entropy.
 - **Locked-down network by default** — no egress except an explicit hostname allowlist, with resolved addresses range-filtered so a guest can't reach cloud-metadata or private ranges.
 - **Per-request resource ceilings** — vCPU count, memory, and fork fan-out are bounded at the API boundary; every sandbox has a lifetime timeout and every exec a deadline.
-- **Structured execution records + JSON lifecycle logs** today; a Prometheus `/metrics` endpoint and OpenTelemetry are planned.
+- **Structured execution records, JSON lifecycle logs, and a Prometheus `/metrics` endpoint** today; OpenTelemetry is planned.
 
 ## How it compares
 
@@ -114,7 +114,7 @@ Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This 
 
 **Uniqueness is a correctness property.** Cloning a VM naïvely means every fork shares the source's RNG state, machine-id, and cached secrets — a real hazard for code that generates UUIDs, nonces, or tokens. crucible reseeds and rotates that state per fork, before the fork is reachable.
 
-**Observability is not optional.** Every execution produces a structured record with resource usage. JSON lifecycle logs ship today; a Prometheus `/metrics` endpoint and OpenTelemetry are on the near-term roadmap. A sandbox runtime without observability is a black box.
+**Observability is not optional.** Every execution produces a structured record with resource usage. JSON lifecycle logs and a Prometheus `/metrics` endpoint ship today; OpenTelemetry is on the near-term roadmap. A sandbox runtime without observability is a black box.
 
 **Fork/checkpoint is a primitive, not an afterthought.** Most runtimes treat snapshot/restore as a perf optimization. crucible treats it as an API surface your agent reasons about and structures its exploration around.
 

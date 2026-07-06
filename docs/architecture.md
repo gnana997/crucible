@@ -104,4 +104,4 @@ With `--jailer-bin` set, each Firecracker VMM runs under the [jailer](https://gi
 
 ## What isn't here yet
 
-crucible is `v0.1`. The daemon has no authentication and binds loopback by default; host-side cgroup quotas are plumbed but not applied by default; there is no `/metrics` endpoint yet; and the `crucible run` subcommand and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.
+crucible is `v0.1`. The daemon has no authentication and binds loopback by default; there is no audit trail beyond operational logs; and the `crucible run` subcommand and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.

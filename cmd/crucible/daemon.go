@@ -18,6 +18,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/jailer"
+	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
@@ -58,6 +59,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		chrootBase = fs.String("chroot-base", "/srv/jailer", "parent dir for per-VM jailer chroots (used only when --jailer-bin is set)")
 		jailUID    = fs.Uint("jail-uid", 10000, "unprivileged uid jailer drops to before exec'ing firecracker")
 		jailGID    = fs.Uint("jail-gid", 10000, "unprivileged gid jailer drops to before exec'ing firecracker")
+		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
+		// pids.max) for each sandbox's VMM from its vCPU/memory request.
+		// Only takes effect under jailer mode; the direct-exec runner has
+		// no cgroup to write. "off" disables the limits.
+		cgroupQuotas = fs.String("cgroup-quotas", "derive", "host cgroup v2 limits per sandbox VMM (jailer mode): derive|off")
 		// Network flags: when --network-egress-iface is set AND
 		// --jailer-bin is set, the daemon can provision per-sandbox
 		// netns + nft + DHCP + DNS proxy. Without both, sandbox
@@ -134,6 +140,17 @@ Required flags:
 	agentReady, err := time.ParseDuration(*agentTimeout)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "error: --agent-ready-timeout: %v\n", err)
+		return 2
+	}
+
+	var quotaPolicy sandbox.QuotaPolicy
+	switch *cgroupQuotas {
+	case "derive":
+		quotaPolicy = sandbox.QuotaPolicyDerive
+	case "off":
+		quotaPolicy = sandbox.QuotaPolicyOff
+	default:
+		_, _ = fmt.Fprintf(stderr, "error: --cgroup-quotas: unknown value %q (want derive|off)\n", *cgroupQuotas)
 		return 2
 	}
 
@@ -229,6 +246,8 @@ Required flags:
 		return 2
 	}
 
+	mx := metrics.New()
+
 	mgrCfg := sandbox.ManagerConfig{
 		Runner:            r,
 		WorkBase:          *workBase,
@@ -236,6 +255,7 @@ Required flags:
 		Rootfs:            *rootfs,
 		WaitForAgent:      !*noWaitAgent,
 		AgentReadyTimeout: agentReady,
+		Metrics:           mx,
 		// Durable local authority (gap 3): journal registry changes to a
 		// file under the work base so a restart can reconcile. Rebuild
 		// snapshot allowlists from persisted patterns via network.New.
@@ -243,6 +263,7 @@ Required flags:
 		ReloadAllowlist: func(patterns []string) (sandbox.NetworkAllowlist, error) {
 			return network.New(patterns)
 		},
+		QuotaPolicy: quotaPolicy,
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
@@ -262,10 +283,16 @@ Required flags:
 		return 1
 	}
 
+	// sandboxes_active is a pull-model gauge: read the live count at
+	// scrape time so it can't drift from reality across creates/deletes/
+	// reconcile.
+	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
+
 	srv, err := daemon.New(daemon.Config{
 		Manager: mgr,
 		Addr:    *addr,
 		Logger:  logger,
+		Metrics: mx,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)

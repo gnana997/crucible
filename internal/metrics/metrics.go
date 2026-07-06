@@ -1,0 +1,101 @@
+// Package metrics holds crucible's Prometheus instrumentation: a small
+// fixed set of operational metrics and the /metrics HTTP handler.
+//
+// The zero use is a nil *Metrics — every method is nil-safe, so callers
+// (the sandbox Manager, the daemon) can instrument unconditionally and
+// leave metrics unwired in tests and library use. Series are label-free
+// in v0.1: crucible is single-operator, so there's no tenant dimension
+// to key on and no cardinality to manage.
+package metrics
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+// Metrics owns crucible's collectors and their registry. Build with New;
+// expose with Handler; drive with the Inc/Observe methods.
+type Metrics struct {
+	reg *prometheus.Registry
+
+	sandboxesCreated        prometheus.Counter
+	forkDuration            prometheus.Histogram
+	snapshotRestoreDuration prometheus.Histogram
+}
+
+// New constructs a Metrics with its own registry (not the global default
+// one) so tests are isolated and there's no hidden global state.
+func New() *Metrics {
+	reg := prometheus.NewRegistry()
+	m := &Metrics{
+		reg: reg,
+		sandboxesCreated: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "sandboxes_created_total",
+			Help: "Total sandboxes created, including cold boots and forks.",
+		}),
+		forkDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "fork_duration_seconds",
+			Help:    "Wall-clock time to bring up one forked sandbox end to end.",
+			Buckets: prometheus.DefBuckets,
+		}),
+		snapshotRestoreDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "snapshot_restore_duration_seconds",
+			Help:    "Wall-clock time for the runner to restore a VM from a snapshot.",
+			Buckets: prometheus.DefBuckets,
+		}),
+	}
+	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration)
+	return m
+}
+
+// SetActiveSandboxSource registers the sandboxes_active gauge, read from
+// fn at scrape time. Using a pull-model gauge means there's no
+// create/delete bookkeeping that can drift out of sync with reality.
+// Call at most once, after the source is available.
+func (m *Metrics) SetActiveSandboxSource(fn func() int) {
+	if m == nil || fn == nil {
+		return
+	}
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "sandboxes_active",
+		Help: "Sandboxes currently live.",
+	}, func() float64 { return float64(fn()) }))
+}
+
+// IncSandboxCreated bumps sandboxes_created_total. Call once per sandbox
+// that successfully comes up (cold boot or fork).
+func (m *Metrics) IncSandboxCreated() {
+	if m == nil {
+		return
+	}
+	m.sandboxesCreated.Inc()
+}
+
+// ObserveForkDuration records the end-to-end time to bring up one fork.
+func (m *Metrics) ObserveForkDuration(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.forkDuration.Observe(d.Seconds())
+}
+
+// ObserveSnapshotRestore records the time spent in the runner's restore
+// step (the snapshot → running-VM latency, a subset of a fork).
+func (m *Metrics) ObserveSnapshotRestore(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.snapshotRestoreDuration.Observe(d.Seconds())
+}
+
+// Handler returns the /metrics HTTP handler. On a nil *Metrics it returns
+// a 404 handler so the route can be registered unconditionally.
+func (m *Metrics) Handler() http.Handler {
+	if m == nil {
+		return http.NotFoundHandler()
+	}
+	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
+}

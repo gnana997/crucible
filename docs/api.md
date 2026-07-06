@@ -14,6 +14,7 @@ IDs are validated on every path; a malformed sandbox or snapshot ID returns `400
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | Liveness check |
+| `GET` | `/metrics` | Prometheus metrics |
 | `POST` | `/sandboxes` | Create a sandbox |
 | `GET` | `/sandboxes` | List sandboxes |
 | `GET` | `/sandboxes/{id}` | Inspect a sandbox |
@@ -32,6 +33,21 @@ Calling a known path with an unsupported method returns `405`.
 ### `GET /healthz`
 
 Returns `200` with `{"status": "ok"}` once the daemon is serving. No side effects.
+
+---
+
+### `GET /metrics`
+
+Prometheus metrics in the standard text exposition format. Label-free in `v0.1`:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `sandboxes_created_total` | counter | Sandboxes created (cold boots + forks) |
+| `sandboxes_active` | gauge | Sandboxes currently live |
+| `fork_duration_seconds` | histogram | End-to-end time to bring up one fork |
+| `snapshot_restore_duration_seconds` | histogram | Time for the runner to restore a VM from a snapshot |
+
+Like the rest of the API this endpoint is unauthenticated and loopback-bound — scrape it from a colocated agent, not across a trust boundary.
 
 ---
 

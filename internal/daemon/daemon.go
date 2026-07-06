@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -57,6 +58,10 @@ type Config struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
+
+	// Metrics, when non-nil, is served at GET /metrics. Nil disables the
+	// endpoint (the route returns 404), which is the default in tests.
+	Metrics *metrics.Metrics
 }
 
 const (
