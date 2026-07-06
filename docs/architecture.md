@@ -102,6 +102,8 @@ A networked sandbox lives in its own network namespace with a `/30` carved from 
 
 With `--jailer-bin` set, each Firecracker VMM runs under the [jailer](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md): its own chroot, mount and PID namespaces, and a dropped uid. A compromised VMM is confined to its jail. Snapshot/fork is supported only in jailer mode, because the per-fork artifact staging that keeps forks from mutating a shared image is built around the jail layout.
 
+**Teardown kills the whole VM process set, not just the jailer.** With a fresh PID namespace (`--new-pid-ns`, the default) firecracker is a *child* of the jailer, so signalling the jailer alone leaves firecracker orphaned to init — a leaked microVM that also keeps its cgroup populated. On delete, crucible kills both the jailer and the firecracker child (matched by the `--id` token in their cmdlines) and waits for them to drain before removing the chroot and cgroup; the startup reconcile reaps any that a crash left behind. The jailer's drop-gid also defaults to the host's `kvm` group so the jailed firecracker can open `/dev/kvm` without a manual ACL.
+
 ## What isn't here yet
 
-crucible is `v0.1`. The daemon has no authentication and binds loopback by default; there is no audit trail beyond operational logs; and the `crucible run` subcommand and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.
+crucible is `v0.1`. The daemon supports optional bearer-key auth (off by default on loopback) but has no per-key scopes yet; there is no audit trail beyond operational logs; and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.

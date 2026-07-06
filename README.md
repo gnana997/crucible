@@ -254,7 +254,7 @@ Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Security
 
-crucible runs untrusted code, so isolation is a core property — but it is **`v0.1` and not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default and ships without authentication. See [SECURITY.md](SECURITY.md) for the isolation model, current caveats, and how to report a vulnerability.
+crucible runs untrusted code, so isolation is a core property — but it is **`v0.1` and not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default and ships with optional bearer-key auth (required, with TLS, to bind a non-loopback address). See [SECURITY.md](SECURITY.md) for the isolation model, current caveats, and how to report a vulnerability.
 
 ## Contributing
 

@@ -137,7 +137,7 @@ Firecracker's attack surface is intentionally minimal — no USB, no PCI, no leg
 No — Firecracker requires KVM, which requires Linux. On macOS, run crucible inside a Linux VM (Lima, UTM, Docker Desktop).
 
 **Is this production-ready? Can I run untrusted multi-tenant code?**
-Not yet. It's `v0.1`, single-operator, loopback-only, with no authentication — a pre-release, not a hardened multi-tenant platform. See [SECURITY.md](../SECURITY.md) for the current isolation model and its limits.
+Not yet. It's `v0.1`, single-operator, loopback by default (optional bearer-key auth for remote access), with no per-key authorization scopes — a pre-release, not a hardened multi-tenant platform. See [SECURITY.md](../SECURITY.md) for the current isolation model and its limits.
 
 **How does this compare to E2B?**
 E2B is a hosted service — great for "hand somebody a credit card and be done." crucible is self-hosted — better if you need data locality, cost control, or you don't want your agent traces leaving your infra. Similar runtime goals; opposite product shape.

@@ -57,7 +57,7 @@ Prometheus metrics in the standard text exposition format. Label-free in `v0.1`:
 | `fork_duration_seconds` | histogram | End-to-end time to bring up one fork |
 | `snapshot_restore_duration_seconds` | histogram | Time for the runner to restore a VM from a snapshot |
 
-Like the rest of the API this endpoint is unauthenticated and loopback-bound — scrape it from a colocated agent, not across a trust boundary.
+Like the rest of the API, `/metrics` is subject to auth when keys are configured (only `/healthz` is exempt) and is loopback-bound by default — scrape it from a colocated agent (with a token if auth is on), not across a trust boundary.
 
 ---
 
