@@ -220,7 +220,7 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 	// NOTE (v1.15): this direct-runner restore path is non-functional
 	// on Firecracker v1.15 and cannot fork — the post-load PUT /vsock
 	// below is rejected 400 "not supported after starting the microVM"
-	// (see docs/lessons.md, "Direct (non-jailer) restore cannot fork").
+	// (direct non-jailer restore cannot fork).
 	// Fork works only under JailerRunner, where each fork's chroot
 	// gives the recorded UDS path a unique host location so no rewire
 	// is needed. This path is kept — failing loudly, not silently — as

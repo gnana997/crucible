@@ -6,13 +6,13 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-> **Status.** `crucible daemon` boots Firecracker microVMs under jailer (chroot + cgroup v2 quotas), manages their lifecycle over HTTP, runs commands over vsock with stdout/stderr streaming and structured execution records (exit code, rusage, OOM kill), captures snapshots, forks end-to-end (each fork in its own netns with its own DHCP-assigned IP), and enforces per-sandbox default-deny egress with a hostname-based allowlist. Don't use this for anything real.
+> **Status.** `crucible daemon` boots Firecracker microVMs under jailer (chroot + mount/PID namespaces + privilege drop), manages their lifecycle over HTTP, runs commands over vsock with streamed stdout/stderr and structured execution records (exit code, rusage, OOM kill), captures snapshots, and forks end-to-end — each fork restored with **lazy `userfaultfd` memory** (no per-fork RAM copy), its own netns with a DHCP-assigned IP, per-sandbox default-deny egress behind a hostname allowlist, and a per-fork **identity refresh** so no two forks wake with the same kernel RNG state, machine-id, or hostname. Registries are persisted and reconciled on restart. It's `v0.1` — don't run this against anything you can't afford to lose, and don't expose it to untrusted callers yet (see [SECURITY.md](SECURITY.md)).
 
 ## Why this exists
 
-AI coding agents write code and they want to run that code — to check compile, run tests, try three approaches in parallel. The options today are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, cost scales with usage), or rolling your own Firecracker stack (months of operational work).
+AI coding agents write code and they want to run that code — to check it compiles, run the tests they just wrote, try three approaches in parallel. The options today are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, cost scales with usage), or rolling your own Firecracker stack (months of operational work).
 
-crucible is the fourth option: a single self-hosted Go binary on top of Firecracker, with snapshot/fork as first-class primitives, sane quotas and observability baked in, defaults tuned for AI-generated code.
+crucible is the fourth option: a single self-hosted Go binary on top of Firecracker, with snapshot/fork as first-class primitives, sane defaults, and observability baked in — tuned for AI-generated code.
 
 Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 
@@ -20,67 +20,63 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 
 | Capability | Status |
 |---|---|
-| Go module + CLI skeleton | ✅ done |
-| Firecracker runner (boot VM from config) | ✅ done |
-| Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
-| Pre-baked rootfs profiles (base, python, node, go) | 🔨 planned for v0.1 — CI-published as GitHub Release assets with SHA256 |
-| HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
-| HTTP API — exec inside sandbox via vsock (streaming stdout/stderr) | ✅ done |
-| Sandbox lifetime timeout + per-exec deadline | ✅ done |
-| JSON lifecycle logs (`--log-format=json`) | ✅ done |
-| Graceful SIGTERM drain of active sandboxes | ✅ done |
-| Snapshot — capture state + memory + rootfs | ✅ done |
-| HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET /snapshots`, `DELETE /snapshots/{id}`) | ✅ done |
-| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | ✅ done |
-| Lazy memory loading via `userfaultfd` | 🔨 planned for v0.1 — serve guest page faults from the snapshot's memory file instead of byte-copying on fork (same technique as AWS Lambda SnapStart) |
+| Go module + CLI (`crucible daemon`, `crucible version`) | ✅ done |
+| Firecracker runner (boot a microVM from config) | ✅ done |
 | Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
-| Resource quotas — CPU (cpu.max), memory (memory.max), PIDs (pids.max) via cgroup v2 | ✅ done under jailer |
-| Startup orphan-chroot reap after a crashed daemon | ✅ done |
-| Structured execution record | ✅ done — exit metadata (exit_code, duration_ms, signal, timed_out, oom_killed) + nested `usage` with CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes |
-| IO quotas (cgroup `io.max`) | ⏳ deferred — needs per-host block-device discovery |
-| OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now |
-| Default-deny network + allowlist | ✅ done — per-sandbox netns + nftables egress + hand-rolled DNS proxy; exact-match + `*.domain` wildcards; AAAA records stripped (sandboxes are IPv4-only) |
+| Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
+| HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
+| HTTP API — exec via vsock (streamed stdout/stderr, structured exit record) | ✅ done |
+| HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET`/`DELETE /snapshots/{id}`) | ✅ done |
+| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | ✅ done |
+| **Lazy memory via `userfaultfd`** — serve guest page faults from the snapshot's memory file instead of byte-copying RAM on fork (same technique as AWS Lambda SnapStart; filesystem-independent) | ✅ done (`internal/memfault`) |
+| **Clone-safety** — per-fork identity refresh: kernel CRNG reseed (host entropy) + `/etc/machine-id`/hostname rotation, ordered before the fork is execable so no two forks share RNG/UUIDs | ✅ done |
+| **Durable registry + reconcile-on-restart** — sandbox/snapshot records journaled; on startup snapshots are re-adopted and orphaned sandbox state (workdirs, netns, nft, processes) is reaped | ✅ done |
+| Default-deny per-sandbox network + hostname allowlist | ✅ done — per-sandbox netns + veth + tap + nftables; egress only to IPs resolved through the daemon's DNS proxy for allowlisted names |
+| Network egress hardening | ✅ done — resolved-IP range filter (blocks link-local / RFC1918 / CGNAT so guests can't SSRF cloud metadata), an nft `input` chain with per-sandbox source anti-spoofing, and DNS-layer concurrency + rate limiting |
+| Per-request resource ceilings (max vCPUs, memory, fork count) | ✅ done — enforced at the API boundary |
+| Sandbox lifetime timeout + per-exec deadline | ✅ done |
+| Structured execution record | ✅ done — `exit_code`, `duration_ms`, `signal`, `timed_out`, `oom_killed` + nested `usage` (CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes) |
+| JSON lifecycle logs (`--log-format=json`) + graceful SIGTERM drain | ✅ done |
+| Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | 🔨 plumbing present in the jailer path; not yet wired to a CLI flag / applied by default |
+| Pre-baked rootfs profiles (base, python, node, go) | 🔨 planned for v0.1 |
 | Prometheus `/metrics` endpoint | ⏳ planned for v0.1 |
 | Install script + systemd unit | ⏳ planned for v0.1 |
-| Python SDK | ⏳ deferred to v0.2 — the HTTP API is stable and directly usable from any language |
-
-Full trajectory through v1.0: [docs/ROADMAP.md](docs/ROADMAP.md).
+| OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
+| Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
 
 ## Try it locally
 
 Requirements:
 
 - Linux host with KVM (x86_64). `ls /dev/kvm` succeeds and is readable.
-- Go 1.25+ (to build), plus `fakeroot`, `squashfs-tools`, `e2fsprogs` on the host (to bake the rootfs).
-- Firecracker v1.15+ binary, a guest kernel (uncompressed `vmlinux`), and a base rootfs (`.squashfs`). Pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/) or see the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md).
-- `iproute2`, `nftables`, and `iptables` in `$PATH` when running the daemon with networking enabled — the daemon shells out to them to create netns / veth pairs, manage nft rules, and insert `FORWARD` ACCEPTs that coexist with Docker's default `FORWARD DROP`. All three are stock on Ubuntu/Debian.
+- Go 1.25+ (to build), plus `fakeroot`, `squashfs-tools`, `e2fsprogs` (to bake the rootfs).
+- Firecracker **v1.15+** binary, a guest kernel (uncompressed `vmlinux`), and a base rootfs (`.squashfs`). Pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/) or the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md).
+- `iproute2`, `nftables`, `iptables` in `$PATH` when running with networking — the daemon shells out to them to build netns / veth pairs, manage nft rules, and add `FORWARD` ACCEPTs that coexist with Docker's default `FORWARD DROP`. Stock on Ubuntu/Debian.
+- For lazy (`userfaultfd`) fork under jailer, set `vm.unprivileged_userfaultfd=1` (persist via `sysctl.d`) — jailed firecracker runs unprivileged and needs it to register the guest-memory uffd.
 
-### Build everything
+### Build
 
 ```bash
-# Daemon binary
-make build
-
-# Guest agent (static linux/amd64 ELF) + an ext4 rootfs with the agent
-# baked in and enabled as a systemd service.
+make build          # daemon binary
+make agent          # guest agent (static linux/amd64 ELF under bin/)
 make rootfs BASE_ROOTFS=/path/to/ubuntu-24.04.squashfs OUT_ROOTFS=assets/rootfs.ext4
 ```
 
-The rootfs build uses `fakeroot + mkfs.ext4 -d` under the hood — no sudo needed.
+`make rootfs` bakes the agent into an ext4 image and enables it as a systemd service, using `fakeroot + mkfs.ext4 -d` — no sudo needed.
 
-### Start the daemon
+### Run the daemon
 
-Development mode — direct firecracker launch, no sudo, no jailer, no cgroup quotas:
+Development mode — direct firecracker launch, no sudo, no jailer:
 
 ```bash
 ./crucible daemon \
   --firecracker-bin /path/to/firecracker \
-  --kernel           /path/to/vmlinux \
-  --rootfs           assets/rootfs.ext4
+  --kernel          /path/to/vmlinux \
+  --rootfs          assets/rootfs.ext4
 # listens on 127.0.0.1:7878 by default
 ```
 
-Production-style mode — jailer chroot + cgroup v2 quotas + privilege drop. Requires root because jailer needs `CAP_SYS_ADMIN` to unshare namespaces, mknod `/dev/kvm`, and chown files before it can drop to an unprivileged uid:
+Production-style mode — jailer chroot + privilege drop (needs root for `CAP_SYS_ADMIN`), plus per-sandbox networking:
 
 ```bash
 sudo ./crucible daemon \
@@ -90,40 +86,38 @@ sudo ./crucible daemon \
   --rootfs          assets/rootfs.ext4 \
   --chroot-base     /srv/jailer \
   --jail-uid 10000 --jail-gid 10000 \
-  --network-egress-iface eth0   # or wlp3s0 / ens1 — whichever reaches the internet
+  --network-egress-iface eth0   # whichever iface reaches the internet
 ```
 
-With `--jailer-bin` set, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, its own cgroup v2 slice (for resource quotas), and firecracker itself runs as the unprivileged `--jail-uid`. This is the pattern AWS Lambda and Fly.io use — see the [upstream jailer docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md) for the mechanics.
+With `--jailer-bin`, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, and firecracker runs as the unprivileged `--jail-uid`. **Fork is supported only in jailer mode** — on Firecracker v1.15 the direct (non-jailer) restore path cannot rewire vsock after load, so jailer's per-chroot paths are required for fork to work.
 
-With `--network-egress-iface` set, every sandbox created with a `network` block gets its own netns, a `/30` out of the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs resolved through the daemon's DNS proxy for allowlisted names. At startup the daemon also installs two `iptables FORWARD ACCEPT` rules scoped to our `vh-+` veth prefix so traffic survives the default `FORWARD DROP` that Docker sets on many hosts. For the data-plane details — why the bridge is L3-less, why AAAA is stripped, why the DHCP responder uses `SO_BINDTODEVICE` — see [docs/network-bringup-journal.md](docs/network-bringup-journal.md).
+With `--network-egress-iface`, every sandbox created with a `network` block gets its own netns, a `/30` from the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs the daemon's DNS proxy resolved for allowlisted names — with resolved addresses range-filtered so a guest can't reach link-local/RFC1918/metadata endpoints. See [docs/network.md](docs/network.md) for the networking design.
 
-At startup the daemon reaps any orphan chroots left by a previous run (crashed or killed without clean shutdown), so you don't have to babysit `/srv/jailer` between restarts.
+On startup the daemon reconciles: it re-adopts recorded snapshots and reaps orphaned sandbox state (chroots, netns, nft, processes) left by a previous run, so you don't have to babysit `/srv/jailer` between restarts.
 
 ### End-to-end smoke tests
 
-Two harnesses, both run as root (jailer + network need `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`):
+Run as root (jailer + network need `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`):
 
-- [scripts/smoke_fork.sh](scripts/smoke_fork.sh) — minimal fork correctness check: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker, tear everything down.
-- [scripts/smoke_e2e.sh](scripts/smoke_e2e.sh) — 15-test battery covering exec roundtrip, exit codes, exec timeouts, OOM kill, structured rusage, default-deny network, hostname allowlist (allowed / denied / IP-literal / `*.domain` wildcard), snapshot + 5-fork with per-fork networking, orphan reap.
+- [scripts/smoke_fork.sh](scripts/smoke_fork.sh) — fork correctness: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker.
+- [scripts/smoke_clone_safety.sh](scripts/smoke_clone_safety.sh) — clone-safety: two forks show distinct `/etc/machine-id`, distinct kernel UUIDs, divergent `/dev/urandom` in a process that straddled the snapshot, per-fork hostname and fork-id.
+- [scripts/smoke_e2e.sh](scripts/smoke_e2e.sh) — battery covering exec roundtrip, exit codes, timeouts, OOM kill, structured rusage, default-deny network, allowlist (allowed / denied / IP-literal / `*.domain`), snapshot + multi-fork with per-fork networking, reconcile.
+- [scripts/smoke_restart.sh](scripts/smoke_restart.sh) — daemon restart reconciles cleanly (no orphaned VMs/netns/nft).
+- [scripts/debug_dns.sh](scripts/debug_dns.sh) — one sandbox, dumps guest- and host-side network state in one shot.
 
-Per-test artifacts land under `/tmp/crucible-smoke-YYYYMMDD-HHMMSS/test-NN-*/` — stdout, stderr, and the parsed exit frame for every step — so you can inspect any failing assertion without rerunning.
+Per-test artifacts land under `/tmp/crucible-smoke-*/` so you can inspect any failing assertion.
 
-For single-issue diagnostics there's also [scripts/debug_dns.sh](scripts/debug_dns.sh), which spins up one sandbox and dumps both guest-side (`ip addr`, `resolv.conf`, `ip neigh`, `getent`) and host-side (`nft list`, `bridge fdb`, netns routing) state in one shot.
+### A note on fork cost and your filesystem
 
-### Performance (and why your filesystem matters)
+Fork restores memory lazily via `userfaultfd`, so guest RAM is **not** copied per fork. The per-fork **rootfs**, however, is cloned: [fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1)) and falls back to a full `io.Copy` when the filesystem lacks reflink support.
 
-Fork cost is dominated by per-fork copies: the snapshot's memory file and rootfs are cloned into per-fork files. [fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1) in file size) but falls back to `io.Copy` when the filesystem doesn't support reflinks.
+**ext4 has no reflink.** Only XFS (`reflink=1`, default since kernel 5.10) and btrfs/f2fs do. If `stat -fc %T <work-base>` returns `ext2/ext3`, each rootfs clone is a full byte-copy. Put `--work-base` on a reflink-capable filesystem for cheap fork.
 
-**ext4 doesn't support reflinks.** Only XFS with `reflink=1` (default since kernel 5.10's `mkfs.xfs`), btrfs, and f2fs do. If `stat -fc %T <crucible-dir>` returns `ext2/ext3`, every `Clone` is a full byte-copy and `Fork` is bottlenecked on disk write bandwidth.
-
-Two orthogonal paths to cheap fork, both in the v0.1 scope:
-
-1. **Run crucible with `--work-base` on a reflink-capable filesystem** (btrfs, XFS-with-reflink). No code changes; `FICLONE` makes per-fork rootfs copies effectively instantaneous.
-2. **`userfaultfd` memory backend.** Firecracker supports `mem_backend: Uffd`: guest page faults are delivered to a userspace handler that serves pages directly from the snapshot's memory file — no memory copy at fork time. Same technique AWS Lambda uses for SnapStart.
-
-Actual latency numbers land here once the sandbox-bench harness is producing reproducible measurements — we'd rather publish no numbers than misleading ones.
+Latency numbers land here once the bench harness produces reproducible measurements — we'd rather publish none than misleading ones.
 
 ### Exercise the API
+
+Full endpoint reference — request/response shapes, the exec frame protocol, and error codes — is in [docs/api.md](docs/api.md).
 
 ```bash
 # Create a sandbox (body optional; defaults: 1 vCPU, 512 MiB, no timeout).
@@ -132,22 +126,17 @@ curl -sS -X POST http://127.0.0.1:7878/sandboxes \
   -d '{"vcpus": 2, "memory_mib": 512, "timeout_s": 60}'
 # → {"id":"sbx_...","vcpus":2,"memory_mib":512,"workdir":"...","created_at":"..."}
 
-# List all
-curl -sS http://127.0.0.1:7878/sandboxes
-
-# Run a command inside the sandbox — response body is a stream of framed
-# stdout / stderr / exit records; the last frame carries an ExecResult
-# JSON payload with exit_code, duration_ms, signal, timed_out,
-# oom_killed, and a nested `usage` object (CPU user/sys ms, peak RSS,
-# major page faults, involuntary context switches, I/O bytes
-# read/written). Usage is populated from wait4's Rusage plus a
-# /proc/<pid>/io poller running alongside the child.
+# Run a command — response body is a stream of framed stdout/stderr/exit
+# records; the last frame carries an ExecResult JSON (exit_code, duration_ms,
+# signal, timed_out, oom_killed, and a nested `usage` object).
 curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../exec \
   -H 'Content-Type: application/json' \
-  -d '{"cmd":["/bin/uname","-a"]}' \
-  --output /tmp/exec.bin
+  -d '{"cmd":["/bin/uname","-a"]}' --output /tmp/exec.bin
 
-# Tear down
+# Snapshot, then fork 5 children from it.
+curl -sS -X POST http://127.0.0.1:7878/sandboxes/sbx_.../snapshot   # → {"id":"snp_..."}
+curl -sS -X POST 'http://127.0.0.1:7878/snapshots/snp_.../fork?count=5'
+
 curl -sS -X DELETE http://127.0.0.1:7878/sandboxes/sbx_...
 ```
 
@@ -163,85 +152,56 @@ with open('/tmp/exec.bin', 'rb') as f:
         print(name, json.loads(body) if typ == 3 else body.decode())
 ```
 
-Each sandbox gets its own workdir under `--work-base` (default `/tmp/crucible/run/`) containing the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` — the guest kernel + userspace serial console streams into that log file, so you can tail it while developing. `Ctrl-C` / `SIGTERM` on the daemon gracefully drains active sandboxes before exiting.
+Each sandbox gets a workdir under `--work-base` (default `/tmp/crucible/run/`) holding the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` (guest serial console). `Ctrl-C` / `SIGTERM` gracefully drains active sandboxes.
 
 ## Development
 
-Build and smoke-test:
-
 ```bash
-git clone https://github.com/gnana997/crucible
-cd crucible
-make build
-./crucible version
+git clone https://github.com/gnana997/crucible && cd crucible
+make build && ./crucible version
 ```
 
-Make targets:
-
-```bash
-make build    # daemon binary
-make agent    # guest agent (static linux/amd64 ELF under bin/)
-make rootfs   # bake agent into an ext4 rootfs (needs BASE_ROOTFS=...)
-make test     # go test ./...
-make race     # with -race
-make vet      # go vet
-make fmt      # gofmt -s -w .
-make lint     # golangci-lint run  (requires golangci-lint installed)
-make tidy     # go mod tidy
-make clean    # rm built binaries
-```
+Make targets: `build`, `agent`, `rootfs` (needs `BASE_ROOTFS=`), `test`, `race`, `vet`, `fmt`, `lint`, `tidy`, `clean`.
 
 Repository layout:
 
 ```
-cmd/crucible/               CLI entry + subcommand wiring (daemon)
-cmd/crucible-agent/         guest-side binary (vsock listener, /exec, /network/refresh)
+cmd/crucible/               CLI entry + daemon wiring
+cmd/crucible-agent/         guest-side binary (vsock listener: /exec, /network/refresh, /identity/refresh)
 internal/fcapi/             hand-written Firecracker HTTP-over-UDS client
-internal/fsutil/            Clone (FICLONE reflink / copy), Move (rename + xdev fallback)
+internal/fsutil/            Clone (FICLONE reflink / copy), Move
 internal/jailer/            argv builder, chroot staging, cleanup, orphan reap
-internal/runner/            firecracker + jailer process lifecycle
-internal/sandbox/           ID generation + Manager (lifecycle, exec, snapshot, fork, timers)
+internal/runner/            firecracker + jailer process lifecycle (Start / Restore)
+internal/memfault/          userfaultfd page-fault handler — lazy snapshot memory for fork
+internal/sandbox/           ID gen + Manager (lifecycle, exec, snapshot, fork, clone-safety) + durable registry/reconcile
 internal/daemon/            HTTP server, routes, middleware, network adapter
-internal/agentwire/         shared protocol (frame format, ExecRequest/Result)
-internal/agentapi/          host-side HTTP client over hybrid-vsock UDS
-internal/network/           Manager + subnet pool, per-sandbox netns + veth + L3-less bridge + tap, nft base/per-sandbox rules, iptables FORWARD ACCEPT for vh-+
-internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned to the bridge, no MAC filter so forks work)
-internal/network/dnsproxy/  shared DNS proxy (allowlist enforcement, AAAA stripping, nft set updates on each A record)
-internal/version/           ldflags-settable build version
-scripts/                    rootfs builder, smoke_fork.sh, smoke_e2e.sh, debug_dns.sh
-docs/                       VISION.md, ROADMAP.md, network-bringup-journal.md
+internal/agentwire/         shared protocol (frame format, ExecRequest/Result, identity refresh)
+internal/agentapi/          host-side client over hybrid-vsock UDS
+internal/network/           Manager + subnet pool, per-sandbox netns/veth/tap/bridge, nft base + per-sandbox rules
+internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no MAC filter so forks work)
+internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
+scripts/                    rootfs builder + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / debug_dns
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, network.md
 ```
 
-Direct dependencies (kept small on purpose):
-
-- `golang.org/x/sys` — raw Linux syscalls for runner + agent (rusage, setns, SO_BINDTODEVICE)
-- `github.com/mdlayher/vsock` — AF_VSOCK listener in the guest agent; we tried rolling our own via `net.FileConn` first, but Go's stdlib doesn't recognize AF_VSOCK sockaddrs
-- `github.com/miekg/dns` — DNS message parsing + upstream exchange in the proxy; hand-rolling the wire format would have been a weekend of yak-shaving, and miekg/dns is the stable, widely audited choice
-
-Everything else (HTTP, JSON, concurrency, Firecracker API, host-side hybrid-vsock handshake, frame protocol) is stdlib + hand-written. See [docs/VISION.md](docs/VISION.md) for the rationale.
+Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
 
 CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
 
-## Roadmap at a glance
+## Roadmap (near-term)
 
-- **v0.1** core runtime: Firecracker orchestration, HTTP API, snapshot/fork, quotas, observability primitives, Python SDK
-- **v0.2** policy files, language profiles, custom rootfs builder, DNS filtering
-- **v0.3** full OpenTelemetry, syscall tracing, record + replay
-- **v0.4** fork trees with pruning and scoring
-- **v0.5** multi-tenant mode, API keys, audit log
-- **v0.6** Kubernetes operator
-- **v0.7** distributed scheduler across a fleet of hosts
-- **v0.8** GPU passthrough (likely via Cloud Hypervisor)
-- **v0.9** streaming exec + interactive stdin
-- **v1.0** stability commitment, security audit, first-party integrations (Claude Code, Cursor, LangChain, MCP)
+- **v0.1** (current): finish the core runtime — pre-baked rootfs profiles, a Prometheus `/metrics` endpoint, install script + systemd unit.
+- **v0.2**: policy files, more language profiles, a custom rootfs builder, hostname-level DNS filtering, a thin Python SDK.
 
-Details in [docs/ROADMAP.md](docs/ROADMAP.md).
+Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Security
+
+crucible runs untrusted code, so isolation is a core property — but it is **`v0.1` and not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default and ships without authentication. See [SECURITY.md](SECURITY.md) for the isolation model, current caveats, and how to report a vulnerability.
 
 ## Contributing
 
-Too early. Nothing functional to contribute to yet. Once v0.1 lands, the "please PR" list will include additional language profiles, per-language seccomp tuning, and integrations with specific agent frameworks.
-
-If you're building a coding agent and want crucible to fit your use case, open an issue with your workflow. Concrete use cases shape the roadmap more than abstract wishlist items.
+Early days — the API is stabilizing. If you're building a coding agent and want crucible to fit your workflow, open an issue describing it; concrete use cases shape priorities more than wishlists. Build/test setup, style, and PR guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md); the codebase walk-through is in [docs/architecture.md](docs/architecture.md).
 
 ## License
 
@@ -249,4 +209,4 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 ---
 
-*crucible is a working name. If a better one emerges during v0.1, it'll change before v1.0.*
+*crucible is a working name.*

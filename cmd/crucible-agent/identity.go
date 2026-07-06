@@ -133,7 +133,7 @@ func newMachineID() (string, error) {
 
 // handleIdentityRefresh gives a freshly-forked guest unique state.
 // Called by sandbox.Manager.Fork right after the fork VM resumes and
-// before the sandbox becomes execable (see docs/clone-safety.md).
+// before the sandbox becomes execable.
 // Steps, in order:
 //
 //  1. Credit the host-supplied 32-byte seed to the kernel entropy

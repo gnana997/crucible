@@ -134,7 +134,6 @@ var ErrIdentityRefreshUnsupported = errors.New(
 // the hostname to sandboxID, and write the /run/crucible/fork-id
 // marker. Called by sandbox.Manager.Fork after resume, before the
 // fork is registered — and thus before anything can exec into it.
-// See docs/clone-safety.md.
 //
 // Unlike RefreshNetwork, failures ARE fatal to Fork: duplicated
 // entropy doesn't self-heal on a renewal cycle the way a stale DHCP

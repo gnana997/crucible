@@ -1,0 +1,37 @@
+# Security
+
+crucible exists to run **untrusted code** — so isolation is a core design property, not an afterthought. This document describes the isolation model, the honest limitations of the current release, and how to report a vulnerability.
+
+## Isolation model
+
+Each sandbox is a **Firecracker microVM with its own guest kernel** — escape requires breaking out of a virtual machine, not merely a shared-kernel namespace. This is the same isolation primitive AWS Lambda and Fargate use. On top of that boundary, crucible adds:
+
+- **Jailer confinement.** Each microVM's VMM runs inside its own chroot, with its own mount and PID namespaces, and drops to an unprivileged uid before executing. A compromised VMM is contained to its jail.
+- **Private base images.** The guest kernel and per-fork snapshot artifacts are staged so that a compromised VMM cannot mutate an image shared with other sandboxes or future forks.
+- **Per-sandbox networking, default-deny.** Each networked sandbox lives in its own network namespace with its own address. Egress is denied by default; a sandbox may only reach IP addresses the daemon's DNS proxy resolved for explicitly allowlisted hostnames. Resolved addresses are range-filtered, so a guest cannot reach link-local, RFC1918, or carrier-grade-NAT ranges — closing SSRF paths to cloud metadata endpoints. An ingress filter with per-sandbox source anti-spoofing prevents one sandbox from impersonating another to the daemon.
+- **Clone-safety.** When a sandbox is forked from a snapshot, the fork's kernel RNG is reseeded with fresh host entropy and its machine identifiers are rotated **before** the fork can be exec'd — so no two forks wake sharing RNG state, UUIDs, or machine-id. (The kernel's VMGenID mechanism further narrows the reseed window on guest kernels that support it.)
+- **Resource ceilings.** Per-request limits on vCPU count, memory, and fork fan-out are enforced at the API boundary to bound the blast radius of a single request.
+
+## Current status and limitations
+
+crucible is **`v0.1` and is not yet hardened for production or for untrusted multi-tenant use.** Please treat the following as known, deliberate limitations of a pre-release:
+
+- **No authentication or authorization.** The HTTP API has no access control. The daemon **binds `127.0.0.1` by default** — do not bind it to a non-loopback address or expose it to callers you don't trust, as that grants unauthenticated code execution on the host's behalf.
+- **Single-host, single-operator.** crucible assumes a trusted operator running it on their own host. It has not been validated for hosting mutually-distrusting tenants.
+- **Host-side cgroup quotas** (CPU/PID throttling of the VMM process) are not applied by default in this release.
+- **No audit trail** beyond operational logs.
+
+We aim to be production-honest: `v0.1` means `v0.1`. Do not rely on crucible as a security boundary for untrusted, adversarial, multi-tenant workloads until a release explicitly commits to that, backed by an external review.
+
+## Supported versions
+
+crucible is pre-release software under active development. Only the latest `main` receives fixes; there is no long-term-support commitment yet. Security guarantees will be stated explicitly at the `v1.0` milestone.
+
+## Reporting a vulnerability
+
+**Please report security issues privately — do not open a public GitHub issue.**
+
+- Preferred: open a private report via GitHub's **"Report a vulnerability"** (Security → Advisories) on this repository.
+- Alternatively, contact the maintainer privately (see [gnana.dev](https://gnana.dev)).
+
+Please include a description of the issue, the affected version/commit, and — if possible — reproduction steps or a proof of concept. We'll acknowledge receipt and work with you on a fix and coordinated disclosure. Given the pre-release status, there is no formal SLA yet, but security reports are taken seriously and prioritized.

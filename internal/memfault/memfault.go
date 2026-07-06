@@ -17,7 +17,7 @@
 // memory, so any number of forks can share one snapshot memory file
 // read-only and still diverge on write. Pages the guest never touches
 // are never read — fork cost is O(guest working set) regardless of
-// filesystem reflink support (docs/GAPS.md gap 1).
+// filesystem reflink support.
 package memfault
 
 import (

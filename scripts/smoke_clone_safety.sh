@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-to-end clone-safety check (docs/clone-safety.md, GAPS.md gap 5).
+# End-to-end clone-safety check.
 #
 # What this proves, using one snapshot forked into two children:
 #   1. machine-id: each fork's /etc/machine-id differs from the
@@ -234,7 +234,7 @@ echo "== [4] VMGenID reseed notice (REQUIRED)"
 VMGENID_A=$(exec_in "$FORK_A" 'dmesg 2>/dev/null | grep -c "virtual machine fork" || true' | tr -d '[:space:]')
 echo "   fork A dmesg matches: ${VMGENID_A:-0}"
 if [[ -z "$VMGENID_A" || "$VMGENID_A" == "0" ]]; then
-  fail "VMGenID did NOT fire: no 'crng reseeded due to virtual machine fork' in dmesg. The guest kernel likely lacks CONFIG_VMGENID — this is a gap to fix (see docs/clone-safety.md); the agent reseed still ran, but the resume-instant window is unprotected."
+  fail "VMGenID did NOT fire: no 'crng reseeded due to virtual machine fork' in dmesg. The guest kernel likely lacks CONFIG_VMGENID — this is a gap to fix; the agent reseed still ran, but the resume-instant window is unprotected."
 else
   ok "kernel logged the vmfork reseed"
 fi

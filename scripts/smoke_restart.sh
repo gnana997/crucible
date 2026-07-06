@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # End-to-end smoke test for crash-safe registries + startup reconcile
-# (docs/GAPS.md gap 3).
+#.
 #
 # What this proves:
 #   1. A sandbox boots under jailer and a snapshot is taken.

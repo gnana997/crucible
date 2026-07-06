@@ -202,7 +202,7 @@ type RestoreSpec struct {
 	// installs pages into the restoring VM's private memory, so forks
 	// diverge on write with no per-fork copy of MemPath — fork cost
 	// stays O(guest working set) even on filesystems without reflink
-	// (ext4). See internal/memfault and docs/GAPS.md gap 1.
+	// (ext4). See internal/memfault.
 	LazyMem bool
 
 	// RootfsPath is the per-fork writable rootfs file. Firecracker

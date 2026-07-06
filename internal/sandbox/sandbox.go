@@ -254,7 +254,7 @@ type ManagerConfig struct {
 	MaxForkCount int
 
 	// StatePath is the file backing the durable sandbox/snapshot
-	// registry journal (docs/GAPS.md gap 3). When non-empty, the
+	// registry journal. When non-empty, the
 	// Manager records every create/delete/snapshot there so a restart
 	// can reconcile (see Manager.Reconcile). Empty disables persistence
 	// — the registries live only in memory, as in unit tests.
@@ -1019,7 +1019,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 	// every fork, and UFFDIO_COPY installs them into this fork's
 	// private memory — so writes diverge per fork with no up-front
 	// copy. This keeps fork cost O(guest working set) on any
-	// filesystem, reflink or not (docs/GAPS.md gap 1).
+	// filesystem, reflink or not.
 
 	// Network for the fork, if the source had one. The
 	// provisioner gives us a fresh netns + subnet + MAC even
@@ -1076,7 +1076,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		}
 	}
 
-	// Clone-safety (docs/clone-safety.md): before the fork is
+	// Clone-safety: before the fork is
 	// registered — and therefore before anything can exec into it —
 	// hand the guest a fresh 32-byte seed and have the agent reseed
 	// the kernel CRNG and rotate machine-id + hostname. Fatal on

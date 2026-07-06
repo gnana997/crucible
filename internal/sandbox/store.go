@@ -1,6 +1,6 @@
 package sandbox
 
-// Durable local authority (docs/GAPS.md gap 3).
+// Durable local authority.
 //
 // The Manager's registries live in memory; a daemon restart loses them
 // while the on-disk workdirs, snapshot files, Firecracker processes,

@@ -26,8 +26,7 @@ type ExecRequest struct {
 
 // IdentityRefreshRequest is the JSON body of POST /identity/refresh.
 // Sent by the host to a freshly-forked VM so it wakes with unique
-// state instead of a byte-for-byte copy of the snapshot's (see
-// docs/clone-safety.md).
+// state instead of a byte-for-byte copy of the snapshot's.
 type IdentityRefreshRequest struct {
 	// Seed is 32 bytes of host-CSPRNG entropy, unique per fork
 	// (encoding/json carries []byte as base64 on the wire). The agent
