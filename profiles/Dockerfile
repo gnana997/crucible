@@ -20,9 +20,13 @@ RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
-        systemd systemd-sysv iproute2 ca-certificates; \
+        systemd systemd-sysv udev dbus iproute2 iputils-ping ca-certificates; \
     rm -rf /var/lib/apt/lists/*; \
     chmod 0755 /usr/local/bin/crucible-agent
+# udev is REQUIRED: slim base images omit it, and without systemd-udevd
+# networkd never gets the hotplug event for the virtio-net eth0 (it appears
+# after networkd's startup enumeration) — so eth0 stays down and never DHCPs.
+# dbus keeps systemd/networkctl healthy; iputils-ping is a guest convenience.
 
 # systemd-networkd DHCPs eth0 at boot and re-runs on link bounce (the
 # agent's POST /network/refresh does `ip link set eth0 down/up` so a fork
@@ -40,13 +44,11 @@ IPv6AcceptRA=no
 UseDNS=no
 EOF
 
-# Static resolver → the daemon's DNS anycast address; the daemon's DNS
-# proxy enforces the sandbox's allowlist before forwarding upstream.
-COPY <<'EOF' /etc/resolv.conf
-# Managed by crucible's profile build.
-nameserver 10.20.255.254
-options edns0
-EOF
+# NOTE: /etc/resolv.conf is intentionally NOT written here — Docker
+# bind-mounts it during `build`, so a COPY/RUN into it never lands in the
+# image layer. scripts/build-profile.sh writes it into the exported tree
+# instead (points at the daemon's DNS anycast; the DNS proxy enforces the
+# per-sandbox allowlist before forwarding upstream).
 
 # The agent runs as a systemd service so its exec'd children (python,
 # node, go, curl) inherit a real PID-1 supervisor and the CA env.

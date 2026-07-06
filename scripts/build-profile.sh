@@ -75,6 +75,14 @@ set -e
 rm -rf "$ctx/root"
 mkdir "$ctx/root"
 tar -C "$ctx/root" -xf "$ctx/rootfs.tar"
+# /etc/resolv.conf can't be baked from the Dockerfile — Docker bind-mounts it
+# during build, so writes there never land in the image layer. Write it into
+# the exported tree instead, pointing at the daemon's DNS anycast address.
+cat > "$ctx/root/etc/resolv.conf" <<'RESOLV'
+# Managed by crucible's profile build.
+nameserver 10.20.255.254
+options edns0
+RESOLV
 # Size from the extracted tree + 40% headroom, floor 1 GiB.
 bytes=\$(du -sb "$ctx/root" | cut -f1)
 mib=\$(( bytes / 1024 / 1024 * 14 / 10 + 128 ))
