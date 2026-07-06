@@ -595,6 +595,13 @@ func (h *jailerHandle) Snapshot(ctx context.Context, statePath, memPath string) 
 
 func (h *jailerHandle) cleanupJailer() {
 	h.cleanupOnce.Do(func() {
+		// fcHandle.Shutdown only signals the jailer process (all an exec.Cmd
+		// handle can reach). With --new-pid-ns the firecracker child lives in
+		// its own PID namespace and survives the jailer's death, reparented to
+		// init — a leaked VM that also keeps its cgroup populated (so the rmdir
+		// below would fail EBUSY). Kill the whole VM process set by its --id
+		// token, and wait for it to drain, before removing the chroot + cgroup.
+		jailer.KillByID(h.jailerSpec.ID)
 		if err := jailer.Cleanup(h.jailerSpec); err != nil {
 			h.log.Warn("jailer cleanup failed", "err", err)
 		}

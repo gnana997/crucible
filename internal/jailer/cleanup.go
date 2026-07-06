@@ -161,6 +161,18 @@ func cmdlineMatchesID(raw []byte, id string) bool {
 	return false
 }
 
+// KillByID SIGKILLs the jailer + firecracker processes for the VM with the
+// given jailer ID and waits, bounded, for them to exit. Returns true once the
+// process set has drained (false if something is still alive after the
+// timeout).
+//
+// The normal teardown path needs this, not just the restart reaper: with
+// --new-pid-ns the firecracker child lives in its own PID namespace, so
+// signalling the jailer alone (which is all an exec.Cmd handle can reach)
+// leaves firecracker orphaned to init — a leaked VM that also keeps its cgroup
+// populated. Killing by the "--id <id>" cmdline token reaches both.
+func KillByID(id string) bool { return killJailed(id) }
+
 // killJailed SIGKILLs the jailer + firecracker processes for the VM with
 // the given jailer ID and waits, bounded, for them to exit so the
 // chroot's bind mounts are released before the caller removes the tree.

@@ -237,4 +237,19 @@ echo "== auth: expecting success WITH the token"
 driver "$KEY"
 stop_daemon
 
+# ---- regression guard: no VM/cgroup leak after teardown -------------
+# Every sandbox above was deleted, and both daemons are stopped. A delete that
+# failed to kill its firecracker child (the --new-pid-ns leak) would leave a
+# populated cgroup and an orphaned VM behind. Assumes this smoke is the only
+# thing running jailer VMs on the host.
+echo "== checking for leaked VMs / cgroups"
+leaked_cg=$(find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+leaked_fc=$(pgrep -c -x firecracker 2>/dev/null || echo 0)
+if [ "$leaked_cg" -ne 0 ] || [ "$leaked_fc" -ne 0 ]; then
+  echo "FAIL: leaked $leaked_fc firecracker proc(s) and $leaked_cg cgroup(s) after teardown" >&2
+  find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d >&2 2>/dev/null || true
+  exit 6
+fi
+echo "   no leaked VMs or cgroups"
+
 echo "ALL MCP SMOKE CHECKS PASSED"
