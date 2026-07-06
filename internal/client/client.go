@@ -51,7 +51,7 @@ func (c *Client) Health(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return errorFrom(resp)
 	}
@@ -167,7 +167,7 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecR
 	if err != nil {
 		return result, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return result, errorFrom(resp)
 	}
@@ -234,7 +234,7 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 
 func decodeInto[T any](resp *http.Response) (T, error) {
 	var out T
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return out, errorFrom(resp)
 	}
@@ -245,7 +245,7 @@ func decodeInto[T any](resp *http.Response) (T, error) {
 }
 
 func expectNoContent(resp *http.Response) error {
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		return errorFrom(resp)
 	}

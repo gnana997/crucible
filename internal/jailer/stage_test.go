@@ -113,7 +113,7 @@ func TestStageOverwritesExisting(t *testing.T) {
 
 // TestStageSnapshotArtifactsPrivatePerFork is the N1 regression
 // (H1's second half). It replaces a test that asserted restore
-// artifacts were hardlinked — one inode shared by every fork — on
+// artifacts were hard-linked — one inode shared by every fork — on
 // the theory that "COW at the firecracker layer" protected them.
 // That reasoning was wrong: COW protects a fork's memory *mapping*,
 // not the file. Staging hardlink-then-chowns, so a compromised fork
@@ -199,7 +199,7 @@ func TestStageSharedFileIsolatesInode(t *testing.T) {
 	}
 	// Separate inode — not a hardlink to the shared source.
 	if os.SameFile(srcStatBefore, dstStat) {
-		t.Fatal("shared file was hardlinked (shares inode with source) — chown would poison the shared kernel")
+		t.Fatal("shared file was hard-linked (shares inode with source) — chown would poison the shared kernel")
 	}
 	// Staged copy is read-only.
 	if perm := dstStat.Mode().Perm(); perm != 0o444 {

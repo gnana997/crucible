@@ -34,7 +34,7 @@ func newSnapshotCreateCmd(o *globalOpts) *cobra.Command {
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), snap)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), snap.ID)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), snap.ID)
 			return nil
 		},
 	}
@@ -55,9 +55,9 @@ func newSnapshotLsCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), snaps)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			fmt.Fprintln(tw, "ID\tSOURCE\tVCPUS\tMEM(MiB)\tAGE")
+			_, _ = fmt.Fprintln(tw, "ID\tSOURCE\tVCPUS\tMEM(MiB)\tAGE")
 			for _, s := range snaps {
-				fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", s.ID, s.SourceID, s.VCPUs, s.MemoryMiB, age(s.CreatedAt))
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n", s.ID, s.SourceID, s.VCPUs, s.MemoryMiB, age(s.CreatedAt))
 			}
 			return tw.Flush()
 		},
@@ -91,7 +91,7 @@ func newSnapshotRmCmd(o *globalOpts) *cobra.Command {
 				if err := cl.DeleteSnapshot(cmd.Context(), id); err != nil {
 					return fmt.Errorf("delete %s: %w", id, err)
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), id)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), id)
 			}
 			return nil
 		},

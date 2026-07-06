@@ -1,0 +1,40 @@
+# lefthook.yml — local git hooks that mirror CI, so failures surface before
+# they reach GitHub. Install once:
+#
+#   make hooks        # (runs `lefthook install`)
+#
+# Requires on PATH: go (with gofmt) and golangci-lint. Install the linter with:
+#   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+# and make sure `$(go env GOPATH)/bin` is on your PATH.
+#
+# pre-commit runs the fast CI gates (fmt / vet / lint / build); pre-push runs
+# the slower race test suite. Together they match the two CI jobs.
+
+pre-commit:
+  parallel: true
+  commands:
+    # All gated on *.go so a docs-only commit skips them. Each runs a
+    # whole-repo check (not just staged files) to match CI exactly.
+    gofmt:
+      glob: '*.go'
+      run: |
+        out=$(gofmt -s -l .)
+        if [ -n "$out" ]; then
+          echo "gofmt -s needed on:"; echo "$out"
+          echo "fix with: gofmt -s -w ."
+          exit 1
+        fi
+    vet:
+      glob: '*.go'
+      run: go vet ./...
+    golangci-lint:
+      glob: '*.go'
+      run: golangci-lint run --timeout=5m
+    build:
+      glob: '*.go'
+      run: go build ./...
+
+pre-push:
+  commands:
+    test:
+      run: go test -race -count=1 ./...

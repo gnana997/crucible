@@ -30,7 +30,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if errors.As(err, &ec) {
 			return ec.code
 		}
-		fmt.Fprintln(stderr, "error:", err)
+		_, _ = fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	return 0

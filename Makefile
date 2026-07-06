@@ -10,7 +10,7 @@ BASE_ROOTFS ?=
 OUT_ROOTFS  ?= assets/rootfs.ext4
 ROOTFS_SIZE ?= 1G
 
-.PHONY: all build agent rootfs profile test race vet fmt lint tidy clean help
+.PHONY: all build agent rootfs profile test race vet fmt lint tidy clean hooks help
 
 all: fmt vet test build
 
@@ -25,6 +25,7 @@ help:
 	@echo "  vet      - go vet ./..."
 	@echo "  fmt      - gofmt -s -w ."
 	@echo "  lint     - golangci-lint run (requires golangci-lint)"
+	@echo "  hooks    - install git pre-commit/pre-push hooks (requires lefthook)"
 	@echo "  tidy     - go mod tidy"
 	@echo "  clean    - remove built binaries"
 
@@ -72,6 +73,11 @@ fmt:
 
 lint:
 	golangci-lint run
+
+# Install the git hooks defined in lefthook.yml (fmt / vet / lint / build on
+# commit, race tests on push). One-time; requires lefthook on PATH.
+hooks:
+	lefthook install
 
 tidy:
 	go mod tidy

@@ -40,7 +40,7 @@ func newVersionCmd() *cobra.Command {
 		Short: "Print version info",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "crucible %s\n", version.String())
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "crucible %s\n", version.String())
 			return nil
 		},
 	}
@@ -77,7 +77,7 @@ func newForkCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), forks)
 			}
 			for _, f := range forks {
-				fmt.Fprintln(cmd.OutOrStdout(), f.ID)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), f.ID)
 			}
 			return nil
 		},
@@ -102,11 +102,11 @@ func newProfileCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), profs)
 			}
 			if len(profs) == 0 {
-				fmt.Fprintln(cmd.ErrOrStderr(), "no profiles configured (daemon started without --rootfs-dir)")
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "no profiles configured (daemon started without --rootfs-dir)")
 				return nil
 			}
 			for _, p := range profs {
-				fmt.Fprintln(cmd.OutOrStdout(), p)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), p)
 			}
 			return nil
 		},

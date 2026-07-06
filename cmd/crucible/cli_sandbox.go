@@ -48,7 +48,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), sb)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), sb.ID)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), sb.ID)
 			return nil
 		},
 	}
@@ -75,7 +75,7 @@ func newSandboxLsCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), sbs)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			fmt.Fprintln(tw, "ID\tPROFILE\tVCPUS\tMEM(MiB)\tNET\tAGE")
+			_, _ = fmt.Fprintln(tw, "ID\tPROFILE\tVCPUS\tMEM(MiB)\tNET\tAGE")
 			for _, s := range sbs {
 				prof := s.Profile
 				if prof == "" {
@@ -85,7 +85,7 @@ func newSandboxLsCmd(o *globalOpts) *cobra.Command {
 				if s.Network != nil && s.Network.GuestIP != "" {
 					net = s.Network.GuestIP
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n", s.ID, prof, s.VCPUs, s.MemoryMiB, net, age(s.CreatedAt))
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\t%s\n", s.ID, prof, s.VCPUs, s.MemoryMiB, net, age(s.CreatedAt))
 			}
 			return tw.Flush()
 		},
@@ -119,7 +119,7 @@ func newSandboxRmCmd(o *globalOpts) *cobra.Command {
 				if err := cl.DeleteSandbox(cmd.Context(), id); err != nil {
 					return fmt.Errorf("delete %s: %w", id, err)
 				}
-				fmt.Fprintln(cmd.OutOrStdout(), id)
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), id)
 			}
 			return nil
 		},

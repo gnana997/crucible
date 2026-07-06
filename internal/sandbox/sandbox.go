@@ -492,10 +492,6 @@ func (m *Manager) registerSandbox(s *Sandbox) {
 	}
 }
 
-// Create allocates a new sandbox, boots its VM, and stores the record.
-// If anything fails before the sandbox is registered, Create rolls back
-// — the firecracker process (if spawned) is shut down, and the workdir
-// and its per-sandbox rootfs clone are removed. Callers can safely retry.
 // Profiles returns the configured rootfs profile names, sorted. Empty
 // when the Manager was built without any profiles (no --rootfs-dir).
 func (m *Manager) Profiles() []string {
@@ -507,6 +503,10 @@ func (m *Manager) Profiles() []string {
 	return names
 }
 
+// Create allocates a new sandbox, boots its VM, and stores the record.
+// If anything fails before the sandbox is registered, Create rolls back
+// — the firecracker process (if spawned) is shut down, and the workdir
+// and its per-sandbox rootfs clone are removed. Callers can safely retry.
 func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error) {
 	id, err := NewID()
 	if err != nil {
