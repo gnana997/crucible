@@ -47,20 +47,48 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 
 ## Install
 
-Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). Install the daemon as a systemd service in one line:
+Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). On a Linux host with KVM (`ls /dev/kvm` succeeds):
+
+**1. Firecracker + jailer** — crucible drives them but doesn't bundle them:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh | sudo sh
+curl -fsSL https://github.com/firecracker-microvm/firecracker/releases/download/v1.16.1/firecracker-v1.16.1-x86_64.tgz | tar xz
+sudo install -m0755 release-v1.16.1-x86_64/firecracker-v1.16.1-x86_64 /usr/local/bin/firecracker
+sudo install -m0755 release-v1.16.1-x86_64/jailer-v1.16.1-x86_64      /usr/local/bin/jailer
 ```
 
-That drops the `crucible` binary, a `crucible.service` unit, and a config template. You still supply the pieces crucible doesn't redistribute — a **Firecracker binary** and a **guest kernel** (both from [Firecracker's upstream CI bucket](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md)) — plus at least one rootfs. Grab a profile image from the release instead of building it:
+**2. Install the crucible daemon** — downloads the release binary (checksum-verified) and installs the systemd service + config template:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh | sudo bash
+```
+
+**3. A guest kernel + a rootfs image** at the paths the config expects:
+
+```bash
+sudo curl -fL -o /var/lib/crucible/vmlinux \
+  https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102
 sudo curl -fL -o /var/lib/crucible/profiles/python-3.12.ext4 \
   https://github.com/gnana997/crucible/releases/latest/download/python-3.12.ext4
+sudo ln -sf profiles/python-3.12.ext4 /var/lib/crucible/rootfs.ext4   # the default rootfs
 ```
 
-Then point `/etc/crucible/crucible.env` at those paths and `sudo systemctl enable --now crucible`. (Prefer to build from source? See [Try it locally](#try-it-locally).)
+**4. Enable lazy fork** (`userfaultfd` for jailed Firecracker) and start the service:
+
+```bash
+echo 'vm.unprivileged_userfaultfd=1' | sudo tee /etc/sysctl.d/99-crucible.conf && sudo sysctl --system
+sudo systemctl enable --now crucible
+journalctl -u crucible -f      # watch it come up (Ctrl-C to stop watching)
+```
+
+The default `/etc/crucible/crucible.env` already points at all of the paths above, so no edits are needed. Then use it:
+
+```bash
+crucible run --profile python-3.12 -- python3 -c 'print("hello from crucible")'
+crucible sandbox ls
+```
+
+Full command reference: [docs/cli.md](docs/cli.md). Prefer to build from source? See [Try it locally](#try-it-locally).
 
 ## Try it locally
 

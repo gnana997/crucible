@@ -55,9 +55,13 @@ maybe_download() {
 
     local tag="$VERSION"
     if [[ -z "$tag" ]]; then
-        tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-              | grep -m1 '"tag_name"' | cut -d'"' -f4) || true
-        [[ -n "$tag" ]] || die "could not resolve the latest release for $REPO (pass --version)"
+        # Fetch fully into a var first: piping curl into `grep -m1` makes grep
+        # close the pipe early, which prints a spurious "curl: (23)" error.
+        local api
+        api=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest") \
+            || die "could not query the latest release for $REPO (pass --version)"
+        tag=$(printf '%s\n' "$api" | grep -m1 '"tag_name"' | cut -d'"' -f4)
+        [[ -n "$tag" ]] || die "no published release found for $REPO (pass --version)"
     fi
 
     local pkg="crucible_${tag}_linux_amd64"
@@ -115,11 +119,19 @@ else
     cat <<EOF
 ==> installed (not started)
 
-Next steps:
-  1. Get a Firecracker binary + guest kernel (see the README) and a rootfs
-     (a release profile image, or 'make rootfs' / 'make profile').
-  2. Edit $CONFDIR/crucible.env with those paths.
-  3. sudo systemctl enable --now crucible
-  4. journalctl -u crucible -f          # watch it boot
+crucible needs a Firecracker binary, a guest kernel, and a rootfs — it does not
+bundle those. Put them at the paths $CONFDIR/crucible.env already expects:
+
+  firecracker : /usr/local/bin/firecracker   (and /usr/local/bin/jailer)
+  kernel      : $STATEDIR/vmlinux
+  rootfs      : $STATEDIR/rootfs.ext4
+  profiles    : $STATEDIR/profiles/<name>.ext4
+
+  Firecracker + jailer          : https://github.com/firecracker-microvm/firecracker/releases
+  kernel + profile images + docs: https://github.com/$REPO
+
+Then start it:
+  sudo systemctl enable --now crucible
+  journalctl -u crucible -f
 EOF
 fi
