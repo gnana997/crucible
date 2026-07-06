@@ -104,6 +104,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newForkCmd(opts),
 		newProfileCmd(opts),
 		newRunCmd(opts),
+		newMcpCmd(opts),
 	)
 	return root
 }
