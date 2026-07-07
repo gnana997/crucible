@@ -1056,3 +1056,30 @@ func TestCountByToken(t *testing.T) {
 		t.Errorf("CountByToken(unknown) = %d, want 0", got)
 	}
 }
+
+func TestForkStampsSourceSnapshot(t *testing.T) {
+	m, _ := newTestManager(t)
+	source, err := m.Create(context.Background(), CreateConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourceSnapshotID != "" {
+		t.Errorf("a created (non-forked) sandbox should have empty SourceSnapshotID, got %q", source.SourceSnapshotID)
+	}
+	snap, err := m.Snapshot(context.Background(), source.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forks, err := m.Fork(context.Background(), snap.ID, 3, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forks) != 3 {
+		t.Fatalf("got %d forks, want 3", len(forks))
+	}
+	for i, f := range forks {
+		if f.SourceSnapshotID != snap.ID {
+			t.Errorf("fork[%d].SourceSnapshotID = %q, want %q (the snapshot it forked from)", i, f.SourceSnapshotID, snap.ID)
+		}
+	}
+}

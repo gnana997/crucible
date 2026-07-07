@@ -147,6 +147,12 @@ type Sandbox struct {
 	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
+	// SourceSnapshotID is the snapshot this sandbox was forked from; empty for
+	// a directly-created (non-forked) sandbox. It carries the fork lineage so a
+	// client can reconstruct the fork tree (snapshot.SourceID → sandbox →
+	// snapshot → forked sandbox).
+	SourceSnapshotID string
+
 	// Network is nil when the sandbox has no NIC attached (default).
 	// Non-nil carries everything the daemon needs to teardown and
 	// to echo back in sandboxResponse.
@@ -1190,16 +1196,17 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (
 	m.cfg.Metrics.ObserveSnapshotRestore(time.Since(restoreStart))
 
 	s := &Sandbox{
-		ID:        id,
-		VCPUs:     snap.VCPUs,
-		MemoryMiB: snap.MemoryMiB,
-		Workdir:   workdir,
-		TokenID:   tokenID,
-		VSockPath: handle.VSockPath(),
-		CreatedAt: time.Now().UTC(),
-		Network:   netHandle,
-		handle:    handle,
-		done:      make(chan struct{}),
+		ID:               id,
+		VCPUs:            snap.VCPUs,
+		MemoryMiB:        snap.MemoryMiB,
+		Workdir:          workdir,
+		TokenID:          tokenID,
+		SourceSnapshotID: snap.ID,
+		VSockPath:        handle.VSockPath(),
+		CreatedAt:        time.Now().UTC(),
+		Network:          netHandle,
+		handle:           handle,
+		done:             make(chan struct{}),
 	}
 	if s.VSockPath != "" {
 		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)

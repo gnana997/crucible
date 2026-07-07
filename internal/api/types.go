@@ -64,13 +64,19 @@ type ImageRef struct {
 
 // SandboxResponse is the JSON shape returned for a single sandbox.
 type SandboxResponse struct {
-	ID        string           `json:"id"`
-	VCPUs     int              `json:"vcpus"`
-	MemoryMiB int              `json:"memory_mib"`
-	Workdir   string           `json:"workdir"`
-	Profile   string           `json:"profile,omitempty"`
-	CreatedAt time.Time        `json:"created_at"`
-	Network   *NetworkResponse `json:"network,omitempty"`
+	ID        string    `json:"id"`
+	VCPUs     int       `json:"vcpus"`
+	MemoryMiB int       `json:"memory_mib"`
+	Workdir   string    `json:"workdir"`
+	Profile   string    `json:"profile,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+
+	// SourceSnapshotID is the snapshot this sandbox was forked from; absent for
+	// a directly-created sandbox. Together with SnapshotResponse.SourceID it
+	// carries the fork lineage a client needs to render a fork tree.
+	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
+
+	Network *NetworkResponse `json:"network,omitempty"`
 }
 
 // NetworkResponse is the applied network policy echoed back after Create.

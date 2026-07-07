@@ -92,12 +92,13 @@ func validateImage(r *api.ImageRef) (status int, err error) {
 
 func sandboxResponseFrom(sb *sandbox.Sandbox) api.SandboxResponse {
 	resp := api.SandboxResponse{
-		ID:        sb.ID,
-		VCPUs:     sb.VCPUs,
-		MemoryMiB: sb.MemoryMiB,
-		Workdir:   sb.Workdir,
-		Profile:   sb.Profile,
-		CreatedAt: sb.CreatedAt,
+		ID:               sb.ID,
+		VCPUs:            sb.VCPUs,
+		MemoryMiB:        sb.MemoryMiB,
+		Workdir:          sb.Workdir,
+		Profile:          sb.Profile,
+		CreatedAt:        sb.CreatedAt,
+		SourceSnapshotID: sb.SourceSnapshotID,
 	}
 	if sb.Network != nil {
 		resp.Network = &api.NetworkResponse{
