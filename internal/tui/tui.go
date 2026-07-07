@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -49,9 +50,20 @@ type tickMsg time.Time
 
 // --- model ------------------------------------------------------------------
 
+type viewMode int
+
+const (
+	modeDashboard viewMode = iota
+	modeTree
+)
+
 type model struct {
 	cfg           Config
 	table         table.Model
+	vp            viewport.Model
+	mode          viewMode
+	sandboxes     []api.SandboxResponse
+	snapshots     []api.SnapshotResponse
 	count         int // live sandbox count (for the footer)
 	snaps         int
 	scope         string
@@ -71,7 +83,7 @@ func newModel(cfg Config) model {
 	st.Header = st.Header.Bold(true).Foreground(accent).BorderBottom(true)
 	st.Selected = st.Selected.Bold(true).Foreground(lipgloss.Color("0")).Background(accent)
 	t.SetStyles(st)
-	return model{cfg: cfg, table: t, scope: "…"}
+	return model{cfg: cfg, table: t, vp: viewport.New(0, 0)}
 }
 
 func (m model) Init() tea.Cmd {
@@ -120,20 +132,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, m.fetch()
+		case "t":
+			if m.mode == modeTree {
+				m.mode = modeDashboard
+			} else {
+				m.mode = modeTree
+				m.vp.SetContent(renderTree(m.sandboxes, m.snapshots))
+				m.vp.GotoTop()
+			}
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.table.SetWidth(msg.Width)
 		m.table.SetHeight(max(3, msg.Height-6))
+		m.vp.Width = msg.Width
+		m.vp.Height = max(3, msg.Height-6)
 		m.ready = true
 	case tickMsg:
 		return m, tea.Batch(m.fetch(), tickCmd())
 	case dataMsg:
 		m.err = msg.err
 		if msg.err == nil {
+			m.sandboxes, m.snapshots = msg.sandboxes, msg.snapshots
 			m.count = len(msg.sandboxes)
 			m.snaps = len(msg.snapshots)
 			m.table.SetRows(sandboxRows(msg.sandboxes))
+			if m.mode == modeTree {
+				m.vp.SetContent(renderTree(m.sandboxes, m.snapshots))
+			}
 			m.lastRefresh = time.Now()
 		}
 		return m, nil
@@ -144,7 +171,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(msg)
+	if m.mode == modeTree {
+		m.vp, cmd = m.vp.Update(msg)
+	} else {
+		m.table, cmd = m.table.Update(msg)
+	}
 	return m, cmd
 }
 
@@ -152,12 +183,20 @@ func (m model) View() string {
 	if !m.ready {
 		return "starting crucible dashboard…"
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), m.table.View(), m.footerView())
+	body := m.table.View()
+	if m.mode == modeTree {
+		body = m.vp.View()
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.footerView())
 }
 
 func (m model) headerView() string {
 	title := titleStyle.Render("crucible dashboard")
-	meta := metaStyle.Render(fmt.Sprintf("%s · %s", m.cfg.Addr, m.scope))
+	metaText := m.cfg.Addr
+	if m.scope != "" {
+		metaText += " · " + m.scope
+	}
+	meta := metaStyle.Render(metaText)
 	gap := m.width - lipgloss.Width(title) - lipgloss.Width(meta)
 	if gap < 1 {
 		gap = 1
@@ -178,7 +217,11 @@ func (m model) footerView() string {
 			plural(m.snaps, "snapshot", "snapshots"),
 			shortDur(time.Since(m.lastRefresh)))
 	}
-	help := helpStyle.Render("↑/↓ move · [r]efresh · [q]uit")
+	helpText := "↑/↓ move · [t]ree · [r]efresh · [q]uit"
+	if m.mode == modeTree {
+		helpText = "↑/↓ scroll · [t] dashboard · [r]efresh · [q]uit"
+	}
+	help := helpStyle.Render(helpText)
 	gap := m.width - lipgloss.Width(status) - lipgloss.Width(help)
 	if gap < 1 {
 		gap = 1
