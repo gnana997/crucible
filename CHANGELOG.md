@@ -6,7 +6,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [0.1.3] — unreleased
+## [0.1.3] — 2026-07-07
 
 Scoped / policy tokens: bind an API key to a policy the **daemon** enforces, so a
 leaked or handed-out key is worthless beyond its policy — the fix that makes the
@@ -150,7 +150,7 @@ Initial release — the core single-host Firecracker microVM sandbox runtime.
   `-o json`), native language rootfs profiles (base/python/node/go), a
   Prometheus `/metrics` endpoint, and an install script + systemd unit.
 
-[0.1.3]: https://github.com/gnana997/crucible/compare/v0.1.2...HEAD
+[0.1.3]: https://github.com/gnana997/crucible/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/gnana997/crucible/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/gnana997/crucible/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gnana997/crucible/releases/tag/v0.1.0

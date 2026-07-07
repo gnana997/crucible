@@ -291,8 +291,10 @@ stop_daemon
 # populated cgroup and an orphaned VM behind. Assumes this smoke is the only
 # thing running jailer VMs on the host.
 echo "== checking for leaked VMs / cgroups"
-leaked_cg=$(find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-leaked_fc=$(pgrep -x firecracker 2>/dev/null | wc -l)
+# `|| true` inside the group so a non-zero find/pgrep (e.g. pgrep's "no match"
+# exit — which is the *success* case here) doesn't trip set -e before we check.
+leaked_cg=$( { find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true; } | wc -l)
+leaked_fc=$( { pgrep -x firecracker 2>/dev/null || true; } | wc -l)
 if [ "$leaked_cg" -ne 0 ] || [ "$leaked_fc" -ne 0 ]; then
   echo "FAIL: leaked $leaked_fc firecracker proc(s) and $leaked_cg cgroup(s) after teardown" >&2
   find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d >&2 2>/dev/null || true
