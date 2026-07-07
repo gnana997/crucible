@@ -9,7 +9,7 @@ DNS-proxy) + clone-safety + a durable, reconciled registry. Go 1.25, Apache-2.0.
 Start with `README.md`. Deeper docs live in `docs/`: [VISION](docs/VISION.md)
 (why it's shaped this way), [architecture](docs/architecture.md) (how the code
 fits together), [api](docs/api.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
-[policy](docs/policy.md),
+[tui](docs/tui.md), [policy](docs/policy.md),
 [profiles](docs/profiles.md), [network](docs/network.md), and
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).

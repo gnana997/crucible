@@ -2,6 +2,10 @@
 
 > Design doc for the v0.1 network feature. The doc is deliberately concrete — it describes the implementation we intend to build, not every possible alternative. Supersedes the brief mention in [VISION.md](VISION.md). For the higher-level "why network isolation?" see the FAQ in [CRUCIBLE_README.md](../../CRUCIBLE_README.md).
 
+![crucible default-deny egress](../demo/network.gif)
+
+*In action: a sandbox created with `--net-allow pypi.org` resolves and reaches pypi.org over HTTPS, while every other host — e.g. `example.com` — is refused at the DNS proxy. The allowlist is the whole reachable surface. (Regenerate with `vhs demo/network.tape`.)*
+
 ## Goals (v0.1)
 
 1. **Default-deny.** A sandbox with no network config gets no NIC attached and zero egress reachability. This is the out-of-the-box experience.

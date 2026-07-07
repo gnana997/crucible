@@ -6,6 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.2.0] — 2026-07-08
+
+The TUI release: a live terminal control center for a crucible daemon — see
+running sandboxes, the fork tree, and interactive streaming `exec` at a glance,
+and drive create / snapshot / fork / delete without leaving the dashboard. Like
+the CLI and MCP server it's a thin consumer of the same typed client
+(`internal/client`), so a dashboard action and a CLI command hit the exact same
+API path and can't drift.
+
+### Added
+
+- **`crucible tui`** — a [Bubble Tea](https://github.com/charmbracelet/bubbletea)
+  dashboard that polls the daemon and renders live: a sandbox table (id, profile,
+  age, CPU/memory, network, fork mark), a **fork-tree view** (`t`) built from the
+  sandbox + snapshot genealogy, and a **detail + exec view** (`enter`) with a
+  scrolling viewport where a command's stdout/stderr stream live and finish with
+  an exit chip. Connects with the usual `--addr`/`--token`/`--tls-skip-verify`;
+  the header shows the token's scope when the daemon reports one. See
+  [docs/tui.md](docs/tui.md).
+- **Actions with scope-gating.** Create (`c`), snapshot (`s`), fork (`f`, from
+  the selected sandbox's latest snapshot), and delete (`d`, with a `y`/`n`
+  confirm) run as async calls with status-line feedback. Each is gated on the
+  token's policy — forbidden operations are struck through in the hint and
+  rejected on keypress, mirroring what the daemon enforces authoritatively. The
+  layout is responsive: hints compact on a narrow terminal and nothing overflows.
+- **Fork lineage on the API.** `SandboxResponse` gains `source_snapshot_id` (the
+  snapshot a sandbox was forked from, stamped in `forkOne`), so the fork
+  genealogy is reconstructable by any client — this is what the tree view draws.
+- `docs/tui.md` and a `demo/tui.tape` [vhs](https://github.com/charmbracelet/vhs)
+  script for regenerating the demo GIF.
+
+### Changed
+
+- `VISION.md` observability wording is now precise: per-exec results (with
+  CPU/memory/I/O usage) are **returned to the caller, not yet persisted** —
+  durable per-sandbox activity logs are called out as the next step rather than
+  implied to ship today.
+
 ## [0.1.3] — 2026-07-07
 
 Scoped / policy tokens: bind an API key to a policy the **daemon** enforces, so a

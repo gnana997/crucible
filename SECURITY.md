@@ -39,6 +39,6 @@ crucible is pre-release software under active development. Only the latest `main
 **Please report security issues privately — do not open a public GitHub issue.**
 
 - Preferred: open a private report via GitHub's **"Report a vulnerability"** (Security → Advisories) on this repository.
-- Alternatively, contact the maintainer privately (see [gnana.dev](https://gnana.dev)).
+- Alternatively, contact the maintainer privately (see [gnanasivasai.dev](https://gnanasivasai.dev)).
 
 Please include a description of the issue, the affected version/commit, and — if possible — reproduction steps or a proof of concept. We'll acknowledge receipt and work with you on a fix and coordinated disclosure. Given the pre-release status, there is no formal SLA yet, but security reports are taken seriously and prioritized.

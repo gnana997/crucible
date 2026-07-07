@@ -6,6 +6,10 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
+![crucible TUI](demo/tui.gif)
+
+<p align="center"><em>The <code>crucible tui</code> control center — live sandboxes, the fork tree, and streaming <code>exec</code> against a running daemon (<a href="docs/tui.md">docs</a>).</em></p>
+
 > **Status.** `crucible daemon` boots Firecracker microVMs under jailer (chroot + mount/PID namespaces + privilege drop), manages their lifecycle over HTTP, runs commands over vsock with streamed stdout/stderr and structured execution records (exit code, rusage, OOM kill), captures snapshots, and forks end-to-end — each fork restored with **lazy `userfaultfd` memory** (no per-fork RAM copy), its own netns with a DHCP-assigned IP, per-sandbox default-deny egress behind a hostname allowlist, and a per-fork **identity refresh** so no two forks wake with the same kernel RNG state, machine-id, or hostname. Registries are persisted and reconciled on restart. It's `v0.1` — don't run this against anything you can't afford to lose, and don't expose it to untrusted callers yet (see [SECURITY.md](SECURITY.md)).
 
 ## Why this exists
@@ -43,6 +47,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
 | Install script + systemd unit (run the daemon as a managed service) | ✅ `./install.sh` + `packaging/crucible.service` |
 | **MCP server** (`crucible mcp serve`) — full tool catalog over stdio, operator guardrails | ✅ done — drive crucible from any MCP agent; see [docs/mcp.md](docs/mcp.md) |
+| **TUI** (`crucible tui`) — live dashboard, fork tree, streaming exec, create/snapshot/fork/delete with scope-gating | ✅ done — a terminal control center; see [docs/tui.md](docs/tui.md) |
 | **Daemon API-key auth** — bearer keys, hashed at rest, TLS-required for non-loopback | ✅ done — `crucible daemon token add/list/revoke`; see [SECURITY.md](SECURITY.md) |
 | **Scoped / policy tokens** — bind a key to a daemon-enforced policy (operations, egress ceiling, profiles, resource caps, expiry) | ✅ done — `--policy`/`--ttl`, `crucible policy validate/show`; see [docs/policy.md](docs/policy.md) |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
@@ -204,6 +209,16 @@ Add `-o json` to any command for machine-readable output (scripts and agents). F
 
 **Prefer raw HTTP?** Everything above is the daemon's REST API — see [docs/api.md](docs/api.md) for the endpoints, the exec frame protocol, and error codes.
 
+### Drive it with the TUI
+
+`crucible tui` is a live terminal dashboard — a control center for the same daemon. It lists running sandboxes, renders the fork tree, and lets you create / snapshot / fork / delete and run streaming `exec` interactively, all as calls through the same typed client the CLI uses (so they can't drift). Point it at a daemon with `--addr`/`--token` like any other command:
+
+```bash
+crucible tui
+```
+
+`enter` opens a sandbox's detail + exec; `c`/`s`/`f`/`d` are create/snapshot/fork/delete; `t` toggles the fork tree. Against a scoped token, forbidden actions are gated (and struck through in the hint). Full reference: [docs/tui.md](docs/tui.md).
+
 Each sandbox gets a workdir under `--work-base` (default `/tmp/crucible/run/`) holding the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` (guest serial console). `Ctrl-C` / `SIGTERM` gracefully drains active sandboxes.
 
 ## Development
@@ -230,6 +245,7 @@ internal/daemon/            HTTP server, routes, middleware, network adapter
 internal/api/               REST wire types (shared by daemon + client; the SDK will mirror these)
 internal/client/            typed Go client for the daemon API (shared by the CLI and MCP server)
 internal/mcpserver/         MCP server (crucible mcp serve) — thin wrapper over internal/client + operator guardrails
+internal/tui/               live terminal dashboard (crucible tui) — Bubble Tea; thin consumer of internal/client
 internal/tokenstore/        daemon API-key store (hashed bearer keys) + runtime verifier
 internal/agentwire/         shared protocol (frame format, ExecRequest/Result, identity refresh)
 internal/agentapi/          host-side client over hybrid-vsock UDS
@@ -239,10 +255,10 @@ internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AA
 scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / smoke_mcp / debug_dns
 profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
 packaging/                  systemd unit (crucible.service) + config template; installed by ./install.sh
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, policy.md, profiles.md, network.md
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, tui.md, policy.md, profiles.md, network.md
 ```
 
-Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), and `github.com/spf13/cobra` (the CLI). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
+Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), `github.com/spf13/cobra` (the CLI), and the Charm stack (`bubbletea`/`bubbles`/`lipgloss`) for the TUI. Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
 
 CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
 
@@ -250,7 +266,8 @@ CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` 
 
 - **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd), plus an **MCP server** (`crucible mcp serve`) and **daemon API-key auth** for remote/hosted access.
 - **v0.1.3**: daemon-enforced **scoped / policy tokens** — bind an API key to a policy (operations, egress ceiling, profiles, resource caps, expiry) so a handed-out key is worthless beyond its bounds.
-- **v0.2**: a TUI (live dashboard + fork trees) and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
+- **v0.2.0**: a **TUI** (`crucible tui`) — live dashboard, fork trees, streaming exec, and create/snapshot/fork/delete with scope-gating; plus fork lineage on the API (`source_snapshot_id`).
+- **v0.2.x** (planned): durable per-sandbox activity logs (view/stream/search exec + lifecycle history), CLI-driven image pull, a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 

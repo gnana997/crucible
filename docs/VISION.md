@@ -27,7 +27,7 @@ The interesting features are the ones you don't have to ask for:
 - **Clone-safety** — each fork wakes with fresh kernel RNG state and rotated machine identifiers, so forks don't silently share UUIDs, secrets, or entropy.
 - **Locked-down network by default** — no egress except an explicit hostname allowlist, with resolved addresses range-filtered so a guest can't reach cloud-metadata or private ranges.
 - **Per-request resource ceilings** — vCPU count, memory, and fork fan-out are bounded at the API boundary; every sandbox has a lifetime timeout and every exec a deadline.
-- **Structured execution records, JSON lifecycle logs, and a Prometheus `/metrics` endpoint** today; OpenTelemetry is planned.
+- **Structured per-exec results (exit, timing, signal, OOM, and CPU/memory/I/O usage), JSON-formatted daemon logs, and a Prometheus `/metrics` endpoint** today; durable per-sandbox activity logs and OpenTelemetry are on the roadmap.
 
 ## How it compares
 
@@ -114,7 +114,7 @@ Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This 
 
 **Uniqueness is a correctness property.** Cloning a VM naïvely means every fork shares the source's RNG state, machine-id, and cached secrets — a real hazard for code that generates UUIDs, nonces, or tokens. crucible reseeds and rotates that state per fork, before the fork is reachable.
 
-**Observability is not optional.** Every execution produces a structured record with resource usage. JSON lifecycle logs and a Prometheus `/metrics` endpoint ship today; OpenTelemetry is on the near-term roadmap. A sandbox runtime without observability is a black box.
+**Observability is not optional.** Every exec returns a structured result with resource usage — exit code, wall-clock duration, OOM/timeout flags, and CPU/memory/I/O counters — and a Prometheus `/metrics` endpoint plus JSON-formatted logs ship today. What's still missing is durable history: those records go back to the caller but aren't persisted, so a detached run or an MCP agent's actions leave no trail. A queryable per-sandbox activity log and OpenTelemetry export are the near-term roadmap. A sandbox runtime without observability is a black box.
 
 **Fork/checkpoint is a primitive, not an afterthought.** Most runtimes treat snapshot/restore as a perf optimization. crucible treats it as an API surface your agent reasons about and structures its exploration around.
 
@@ -146,4 +146,4 @@ E2B is a hosted service — great for "hand somebody a credit card and be done."
 
 I'm Gnana — a platform engineer working on systems, isolation, and AI-agent infrastructure. crucible started as frustration with the options for running agent-generated code safely: the choices were all wrong in different ways, and the gap between "raw Firecracker" and "pay somebody" was too big to leave alone.
 
-Writing about platform engineering and systems: [gnana.dev](https://gnana.dev)
+Writing about platform engineering and systems: [gnanasivasai.dev](https://gnanasivasai.dev)
