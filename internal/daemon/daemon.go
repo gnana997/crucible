@@ -108,7 +108,7 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg}
 	s.http = &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      s.logRequests(s.auth(s.routes())),
+		Handler:      s.logRequests(s.auth(s.enforcePolicy(s.routes()))),
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
@@ -134,7 +134,9 @@ func (s *Server) ListenAndServe() error {
 }
 
 // auth enforces bearer-token auth whenever the token store holds any keys.
-// /healthz is always exempt so liveness probes work without a credential.
+// /healthz is always exempt so liveness probes work without a credential. On a
+// valid key it attaches the key's policy (nil for an unscoped key) to the
+// request context, and rejects an expired key — both via VerifyPolicy.
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		store := s.cfg.TokenStore
@@ -142,12 +144,13 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !store.Verify(bearerToken(r.Header.Get("Authorization"))) {
+		pol, ok := store.VerifyPolicy(bearerToken(r.Header.Get("Authorization")))
+		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="crucible"`)
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid API key"))
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(withPolicy(r.Context(), pol)))
 	})
 }
 

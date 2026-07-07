@@ -24,6 +24,7 @@ import (
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /whoami", s.handleWhoami)
 	// Metrics endpoint. When Config.Metrics is nil the handler is a 404,
 	// so the route is safe to register unconditionally.
 	mux.Handle("GET /metrics", s.cfg.Metrics.Handler())
@@ -174,6 +175,26 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Scoped-token ceilings. max_sandboxes is counted host-total here (simple,
+	// correct under the single-operator model); per-token counting is a later
+	// refinement. Every violation is reported at once.
+	if pol := policyFor(r); pol != nil {
+		var reqNet []string
+		if req.Network != nil && req.Network.Enabled {
+			reqNet = req.Network.Allowlist
+		}
+		if err := errors.Join(
+			pol.CheckProfile(req.Profile),
+			pol.CheckNetAllow(reqNet),
+			pol.CheckVCPUs(req.VCPUs),
+			pol.CheckMemory(req.MemoryMiB),
+			pol.CheckCapacity(len(s.cfg.Manager.List()), 1),
+		); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+	}
+
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
 		VCPUs:      req.VCPUs,
 		MemoryMiB:  req.MemoryMiB,
@@ -265,6 +286,11 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	if len(req.Cmd) == 0 {
 		writeError(w, http.StatusBadRequest, errors.New("cmd is required"))
 		return
+	}
+
+	// Scoped-token timeout ceiling: clamp (don't reject) the command deadline.
+	if pol := policyFor(r); pol != nil {
+		req.TimeoutSec = pol.ClampTimeout(req.TimeoutSec)
 	}
 
 	// Validate the sandbox exists before committing to a streamed
@@ -415,6 +441,17 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 	if max := s.cfg.Manager.MaxForkCount(); count > max {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("count %d exceeds max %d", count, max))
 		return
+	}
+
+	// Scoped-token ceilings: the fork count and the resulting live-sandbox total.
+	if pol := policyFor(r); pol != nil {
+		if err := errors.Join(
+			pol.CheckFork(count),
+			pol.CheckCapacity(len(s.cfg.Manager.List()), count),
+		); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
 	}
 
 	// Forking N large guests can outlast the server's WriteTimeout (armed
