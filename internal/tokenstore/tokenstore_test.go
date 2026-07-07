@@ -5,12 +5,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gnana997/crucible/internal/policy"
 )
 
 func TestAddListVerifyRevoke(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
 
-	raw, e, err := Add(path, "laptop")
+	raw, e, err := Add(path, AddOptions{Name: "laptop"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +70,7 @@ func TestAddListVerifyRevoke(t *testing.T) {
 
 func TestRevokeUnknownID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
-	if _, _, err := Add(path, "x"); err != nil {
+	if _, _, err := Add(path, AddOptions{Name: "x"}); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := Revoke(path, "deadbeef")
@@ -95,11 +98,97 @@ func TestStoreReloadsOnChange(t *testing.T) {
 	if st.Enabled() {
 		t.Fatal("Enabled() before any key = true")
 	}
-	raw, _, err := Add(path, "k")
+	raw, _, err := Add(path, AddOptions{Name: "k"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !st.Verify(raw) {
 		t.Error("store did not pick up the newly added key (reload failed)")
+	}
+}
+
+func TestAddScopedTokenRoundTrips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	pol := &policy.Policy{
+		Operations:   []policy.Operation{policy.OpRead, policy.OpExec},
+		MaxSandboxes: 4,
+	}
+	raw, e, err := Add(path, AddOptions{Name: "agent", Policy: pol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !e.Scoped() {
+		t.Error("entry with a policy should be Scoped()")
+	}
+
+	// A fresh store reads the policy back from disk.
+	got, ok := Open(path).VerifyPolicy(raw)
+	if !ok {
+		t.Fatal("VerifyPolicy should accept the scoped key")
+	}
+	if got == nil {
+		t.Fatal("expected a policy, got nil")
+	}
+	if got.MaxSandboxes != 4 || !got.Allows(policy.OpRead) || got.Allows(policy.OpCreate) {
+		t.Errorf("policy round-trip wrong: %+v", got)
+	}
+
+	// The file actually persists the policy.
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `"max_sandboxes": 4`) {
+		t.Errorf("token file missing the policy: %s", b)
+	}
+}
+
+func TestVerifyPolicyUnscoped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	raw, _, err := Add(path, AddOptions{Name: "admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := Open(path).VerifyPolicy(raw)
+	if !ok {
+		t.Fatal("unscoped key should verify")
+	}
+	if got != nil {
+		t.Errorf("unscoped key should carry a nil policy, got %+v", got)
+	}
+}
+
+func TestExpired(t *testing.T) {
+	now := time.Now()
+	past, future := now.Add(-time.Minute), now.Add(time.Minute)
+	if !(Entry{ExpiresAt: &past}).Expired(now) {
+		t.Error("a past expiry should be Expired")
+	}
+	if (Entry{ExpiresAt: &future}).Expired(now) {
+		t.Error("a future expiry should not be Expired")
+	}
+	if (Entry{}).Expired(now) {
+		t.Error("no expiry should never be Expired")
+	}
+}
+
+func TestVerifyPolicyRejectsExpired(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	// Negative TTL mints an already-expired key (the CLI rejects negative TTLs;
+	// this exercises the store's expiry check directly).
+	rawExpired, _, err := Add(path, AddOptions{Name: "short", TTL: -time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := Open(path).VerifyPolicy(rawExpired); ok {
+		t.Error("expired key must not verify")
+	}
+	if Open(path).Verify(rawExpired) {
+		t.Error("expired key must not pass Verify either")
+	}
+
+	rawLive, _, err := Add(path, AddOptions{Name: "live", TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := Open(path).VerifyPolicy(rawLive); !ok {
+		t.Error("unexpired key should verify")
 	}
 }

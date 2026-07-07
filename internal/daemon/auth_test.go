@@ -58,7 +58,7 @@ func TestAuthDisabledWhenNoTokens(t *testing.T) {
 
 func TestAuthEnforcedWhenTokensExist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tokens.json")
-	raw, _, err := tokenstore.Add(path, "k")
+	raw, _, err := tokenstore.Add(path, tokenstore.AddOptions{Name: "k"})
 	if err != nil {
 		t.Fatal(err)
 	}

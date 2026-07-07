@@ -23,6 +23,7 @@ import (
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/network"
+	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
@@ -448,28 +449,43 @@ func defaultJailGID() uint {
 	return 10000
 }
 
-// parseTokenArgs pulls the `--token-file`/`--name` flags out of args from
-// any position (Go's flag package stops at the first positional, which
-// makes `token revoke <id> --token-file X` silently ignore the flag), and
-// returns the remaining positionals.
-func parseTokenArgs(args []string) (tokenFile, name string, positionals []string) {
-	tokenFile = defaultTokenFile
+// tokenArgs holds the flags/positionals pulled from a `daemon token` invocation.
+type tokenArgs struct {
+	tokenFile   string
+	name        string
+	policyFile  string
+	ttl         string
+	positionals []string
+}
+
+// parseTokenArgs pulls the `--token-file`/`--name`/`--policy`/`--ttl` flags out
+// of args from any position (Go's flag package stops at the first positional,
+// which makes `token revoke <id> --token-file X` silently ignore the flag).
+func parseTokenArgs(args []string) tokenArgs {
+	ta := tokenArgs{tokenFile: defaultTokenFile}
+	take := func(cur *string, i *int, a, flag string) bool {
+		if a == flag && *i+1 < len(args) {
+			*cur, *i = args[*i+1], *i+1
+			return true
+		}
+		if strings.HasPrefix(a, flag+"=") {
+			*cur = strings.TrimPrefix(a, flag+"=")
+			return true
+		}
+		return false
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--token-file" && i+1 < len(args):
-			tokenFile, i = args[i+1], i+1
-		case strings.HasPrefix(a, "--token-file="):
-			tokenFile = strings.TrimPrefix(a, "--token-file=")
-		case a == "--name" && i+1 < len(args):
-			name, i = args[i+1], i+1
-		case strings.HasPrefix(a, "--name="):
-			name = strings.TrimPrefix(a, "--name=")
+		case take(&ta.tokenFile, &i, a, "--token-file"):
+		case take(&ta.name, &i, a, "--name"):
+		case take(&ta.policyFile, &i, a, "--policy"):
+		case take(&ta.ttl, &i, a, "--ttl"):
 		default:
-			positionals = append(positionals, a)
+			ta.positionals = append(ta.positionals, a)
 		}
 	}
-	return tokenFile, name, positionals
+	return ta
 }
 
 // runDaemonToken handles `crucible daemon token <add|list|revoke>` — the
@@ -477,28 +493,33 @@ func parseTokenArgs(args []string) (tokenFile, name string, positionals []string
 // file directly; a running daemon picks up changes without a restart.
 func runDaemonToken(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(stderr, "usage: crucible daemon token <add|list|revoke> [--token-file PATH] [--name NAME] [id...]")
+		_, _ = fmt.Fprintln(stderr, "usage: crucible daemon token <add|list|revoke> [--token-file PATH] [--name NAME] [--policy FILE] [--ttl DUR] [id...]")
 		return 2
 	}
 	sub := args[0]
-	tokenFile, name, positionals := parseTokenArgs(args[1:])
+	ta := parseTokenArgs(args[1:])
 
 	switch sub {
 	case "add":
-		if err := os.MkdirAll(filepath.Dir(tokenFile), 0o750); err != nil {
+		if err := os.MkdirAll(filepath.Dir(ta.tokenFile), 0o750); err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: create token dir: %v\n", err)
 			return 2
 		}
-		raw, e, err := tokenstore.Add(tokenFile, name)
+		opts, err := buildAddOptions(ta)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 2
 		}
-		_, _ = fmt.Fprintf(stdout, "key created (id %s). Copy it now — it is not shown again:\n\n  %s\n\n", e.ID, raw)
+		raw, e, err := tokenstore.Add(ta.tokenFile, opts)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
+		_, _ = fmt.Fprintf(stdout, "key created (id %s, %s). Copy it now — it is not shown again:\n\n  %s\n\n", e.ID, describeScope(e), raw)
 		return 0
 
 	case "list":
-		entries, err := tokenstore.List(tokenFile)
+		entries, err := tokenstore.List(ta.tokenFile)
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 2
@@ -512,17 +533,26 @@ func runDaemonToken(args []string, stdout, stderr io.Writer) int {
 			if label == "" {
 				label = "-"
 			}
-			_, _ = fmt.Fprintf(stdout, "%s  %-20s  %s\n", e.ID, label, e.CreatedAt.Format(time.RFC3339))
+			scope := "full"
+			if e.Scoped() {
+				scope = "scoped"
+			}
+			expiry := "never"
+			if e.ExpiresAt != nil {
+				expiry = e.ExpiresAt.Format(time.RFC3339)
+			}
+			_, _ = fmt.Fprintf(stdout, "%s  %-20s  %-6s  expires:%s  %s\n",
+				e.ID, label, scope, expiry, e.CreatedAt.Format(time.RFC3339))
 		}
 		return 0
 
 	case "revoke":
-		if len(positionals) == 0 {
+		if len(ta.positionals) == 0 {
 			_, _ = fmt.Fprintln(stderr, "usage: crucible daemon token revoke <id>...")
 			return 2
 		}
-		for _, id := range positionals {
-			ok, err := tokenstore.Revoke(tokenFile, id)
+		for _, id := range ta.positionals {
+			ok, err := tokenstore.Revoke(ta.tokenFile, id)
 			if err != nil {
 				_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 				return 2
@@ -539,6 +569,47 @@ func runDaemonToken(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "unknown token subcommand %q (want add|list|revoke)\n", sub)
 		return 2
 	}
+}
+
+// buildAddOptions turns the parsed token flags into AddOptions, reading and
+// validating the policy file (fail-closed: an invalid policy is an error, so no
+// token is minted) and parsing the TTL.
+func buildAddOptions(ta tokenArgs) (tokenstore.AddOptions, error) {
+	opts := tokenstore.AddOptions{Name: ta.name}
+	if ta.policyFile != "" {
+		data, err := os.ReadFile(ta.policyFile)
+		if err != nil {
+			return opts, fmt.Errorf("read policy file: %w", err)
+		}
+		p, err := policy.ParseAndValidate(data)
+		if err != nil {
+			return opts, fmt.Errorf("invalid policy %s: %w", ta.policyFile, err)
+		}
+		opts.Policy = &p
+	}
+	if ta.ttl != "" {
+		d, err := time.ParseDuration(ta.ttl)
+		if err != nil {
+			return opts, fmt.Errorf("invalid --ttl %q: %w", ta.ttl, err)
+		}
+		if d <= 0 {
+			return opts, fmt.Errorf("--ttl must be positive, got %s", ta.ttl)
+		}
+		opts.TTL = d
+	}
+	return opts, nil
+}
+
+// describeScope is the one-line scope summary printed after minting a key.
+func describeScope(e tokenstore.Entry) string {
+	scope := "full access"
+	if e.Scoped() {
+		scope = "scoped"
+	}
+	if e.ExpiresAt != nil {
+		return fmt.Sprintf("%s, expires %s", scope, e.ExpiresAt.Format(time.RFC3339))
+	}
+	return scope
 }
 
 func parseLogLevel(s string) (slog.Level, error) {

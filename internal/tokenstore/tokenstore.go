@@ -18,6 +18,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/gnana997/crucible/internal/policy"
 )
 
 // keyPrefix makes a crucible key recognizable (e.g. in logs/leaks it's
@@ -30,7 +32,23 @@ type Entry struct {
 	Name      string    `json:"name"`
 	Hash      string    `json:"hash"` // hex SHA-256 of the raw key
 	CreatedAt time.Time `json:"created_at"`
+
+	// ExpiresAt, when set, is the absolute instant after which the key is
+	// rejected. Nil = never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Policy, when set, bounds what the key may do (the daemon enforces it).
+	// Nil = unscoped: full access, the v0.1.2 behavior.
+	Policy *policy.Policy `json:"policy,omitempty"`
 }
+
+// Expired reports whether the key has passed its expiry as of now.
+func (e Entry) Expired(now time.Time) bool {
+	return e.ExpiresAt != nil && now.After(*e.ExpiresAt)
+}
+
+// Scoped reports whether the key carries a policy (vs full-access unscoped).
+func (e Entry) Scoped() bool { return e.Policy != nil }
 
 type fileFormat struct {
 	Tokens []Entry `json:"tokens"`
@@ -70,9 +88,17 @@ func writeEntries(path string, entries []Entry) error {
 	return os.Rename(tmp, path)
 }
 
-// Add generates a new key, appends its hash under name, and returns the raw
-// key — which the caller must show to the operator once and never persist.
-func Add(path, name string) (rawKey string, e Entry, err error) {
+// AddOptions configures a new key. The zero value mints an unscoped,
+// non-expiring key (the v0.1.2 behavior).
+type AddOptions struct {
+	Name   string
+	Policy *policy.Policy // nil = unscoped (full access)
+	TTL    time.Duration  // 0 = never expires
+}
+
+// Add generates a new key, appends its hashed record per opts, and returns the
+// raw key — which the caller must show to the operator once and never persist.
+func Add(path string, opts AddOptions) (rawKey string, e Entry, err error) {
 	entries, err := readEntries(path)
 	if err != nil {
 		return "", Entry{}, err
@@ -85,7 +111,11 @@ func Add(path, name string) (rawKey string, e Entry, err error) {
 	if err != nil {
 		return "", Entry{}, err
 	}
-	e = Entry{ID: id, Name: name, Hash: hashKey(raw), CreatedAt: time.Now().UTC()}
+	e = Entry{ID: id, Name: opts.Name, Hash: hashKey(raw), CreatedAt: time.Now().UTC(), Policy: opts.Policy}
+	if opts.TTL != 0 {
+		exp := e.CreatedAt.Add(opts.TTL)
+		e.ExpiresAt = &exp
+	}
 	if err := writeEntries(path, append(entries, e)); err != nil {
 		return "", Entry{}, err
 	}
@@ -140,11 +170,11 @@ func randHex(nbytes int) (string, error) {
 type Store struct {
 	path string
 
-	mu     sync.Mutex
-	loaded bool
-	mtime  time.Time
-	size   int64
-	hashes map[string]struct{}
+	mu      sync.Mutex
+	loaded  bool
+	mtime   time.Time
+	size    int64
+	entries map[string]Entry // hash → entry (carries policy + expiry)
 }
 
 // Open returns a Store backed by path. The file is read lazily on first use.
@@ -157,7 +187,7 @@ func (s *Store) reload() {
 	fi, err := os.Stat(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.loaded = true
-		s.hashes = map[string]struct{}{}
+		s.entries = map[string]Entry{}
 		return
 	}
 	if err != nil {
@@ -172,11 +202,11 @@ func (s *Store) reload() {
 	if err != nil {
 		return
 	}
-	h := make(map[string]struct{}, len(entries))
+	m := make(map[string]Entry, len(entries))
 	for _, e := range entries {
-		h[e.Hash] = struct{}{}
+		m[e.Hash] = e
 	}
-	s.loaded, s.mtime, s.size, s.hashes = true, fi.ModTime(), fi.Size(), h
+	s.loaded, s.mtime, s.size, s.entries = true, fi.ModTime(), fi.Size(), m
 }
 
 // Enabled reports whether any keys exist — i.e. whether auth is required.
@@ -184,17 +214,28 @@ func (s *Store) Enabled() bool {
 	s.reload()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.hashes) > 0
+	return len(s.entries) > 0
 }
 
-// Verify reports whether key matches a stored token.
-func (s *Store) Verify(key string) bool {
+// VerifyPolicy verifies key and returns its policy (nil for an unscoped key).
+// ok is false when the key is unknown or expired. The returned *Policy is for
+// the caller to read only — do not mutate it.
+func (s *Store) VerifyPolicy(key string) (p *policy.Policy, ok bool) {
 	if key == "" {
-		return false
+		return nil, false
 	}
 	s.reload()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.hashes[hashKey(key)]
+	e, found := s.entries[hashKey(key)]
+	s.mu.Unlock()
+	if !found || e.Expired(time.Now()) {
+		return nil, false
+	}
+	return e.Policy, true
+}
+
+// Verify reports whether key matches a stored, unexpired token.
+func (s *Store) Verify(key string) bool {
+	_, ok := s.VerifyPolicy(key)
 	return ok
 }
