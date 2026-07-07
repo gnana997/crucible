@@ -11,13 +11,46 @@ import (
 	"github.com/gnana997/crucible/internal/policy"
 )
 
-var columns = []table.Column{
-	{Title: "SANDBOX", Width: 20},
-	{Title: "PROFILE", Width: 14},
-	{Title: "AGE", Width: 6},
-	{Title: "CPU/MEM", Width: 11},
-	{Title: "NETWORK", Width: 26},
-	{Title: "FORK", Width: 5},
+// columns is the initial layout; columnsFor recomputes it for the real terminal
+// width on the first WindowSizeMsg.
+var columns = columnsFor(100)
+
+// columnsFor sizes the table to the terminal: the minor columns are fixed and
+// SANDBOX/NETWORK absorb the slack, so the FORK column never spills off-screen
+// on a narrow terminal. bubbles' table adds 1 space of padding on each side of
+// every column, so the usable content budget is width - 2*ncols.
+func columnsFor(width int) []table.Column {
+	const ncols = 6
+	inner := width - 2*ncols
+	if inner < 34 { // floor so titles stay legible on a very small terminal
+		inner = 34
+	}
+	age, cpu, fork := 4, 9, 4
+	profile := 12
+	flex := inner - age - cpu - fork - profile
+	if flex < 22 { // reclaim space from PROFILE before starving the flex columns
+		profile = 8
+		flex = inner - age - cpu - fork - profile
+	}
+	sandbox := 20
+	if sandbox > flex-7 {
+		sandbox = flex - 7
+	}
+	if sandbox < 12 {
+		sandbox = 12
+	}
+	network := flex - sandbox
+	if network < 7 { // keep the "NETWORK" header from truncating
+		network = 7
+	}
+	return []table.Column{
+		{Title: "SANDBOX", Width: sandbox},
+		{Title: "PROFILE", Width: profile},
+		{Title: "AGE", Width: age},
+		{Title: "CPU/MEM", Width: cpu},
+		{Title: "NETWORK", Width: network},
+		{Title: "FORK", Width: fork},
+	}
 }
 
 // sandboxRows maps the API list into table rows (newest data each refresh).

@@ -51,7 +51,7 @@ func TestRenderTreeOrphanSnapshot(t *testing.T) {
 }
 
 func TestToggleTreeMode(t *testing.T) {
-	m := step(newModel(Config{}), tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := step(newModel(Config{}), tea.WindowSizeMsg{Width: 120, Height: 24})
 	m = step(m, dataMsg{sandboxes: []api.SandboxResponse{{ID: "sbx_root"}}})
 
 	m = step(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})

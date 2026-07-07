@@ -19,6 +19,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/internal/policy"
 )
 
 // Config wires the dashboard to a daemon.
@@ -46,7 +47,10 @@ type dataMsg struct {
 	snapshots []api.SnapshotResponse
 	err       error
 }
-type whoamiMsg struct{ scope string }
+type whoamiMsg struct {
+	wa policy.Whoami
+	ok bool // false when the whoami call failed; the header keeps its prior scope
+}
 type tickMsg time.Time
 
 // --- model ------------------------------------------------------------------
@@ -70,7 +74,15 @@ type model struct {
 	count     int
 	snaps     int
 	scope     string
+	whoami    policy.Whoami
 	err       error
+
+	// actions
+	notice     string // transient status-line feedback from the last action
+	noticeErr  bool
+	busy       bool   // a mutating action is in flight
+	confirming bool   // awaiting y/n for a destructive action
+	confirmID  string // the sandbox a pending delete targets
 
 	// detail + streaming exec
 	selected api.SandboxResponse
@@ -125,9 +137,9 @@ func (m model) fetchWhoami() tea.Cmd {
 		defer cancel()
 		wa, err := cl.Whoami(ctx)
 		if err != nil {
-			return whoamiMsg{scope: ""} // ignore; the header just omits the scope
+			return whoamiMsg{ok: false} // ignore; the header just omits the scope
 		}
-		return whoamiMsg{scope: scopeLabel(wa)}
+		return whoamiMsg{wa: wa, ok: true}
 	}
 }
 
@@ -141,6 +153,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
 		}
+		if m.confirming {
+			return m.updateConfirmKey(msg)
+		}
 		if m.mode == modeDetail {
 			return m.updateDetailKey(msg)
 		}
@@ -148,10 +163,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.table.SetColumns(columnsFor(msg.Width))
 		m.table.SetWidth(msg.Width)
-		m.table.SetHeight(max(3, msg.Height-6))
-		m.vp.Width, m.vp.Height = msg.Width, max(3, msg.Height-6)
-		m.execVP.Width, m.execVP.Height = msg.Width, max(3, msg.Height-9)
+		m.table.SetHeight(max(3, msg.Height-4))
+		m.vp.Width, m.vp.Height = msg.Width, max(3, msg.Height-4)
+		m.execVP.Width, m.execVP.Height = msg.Width, max(3, msg.Height-7)
 		m.input.Width = max(10, msg.Width-6)
 		m.ready = true
 
@@ -164,6 +180,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sandboxes, m.snapshots = msg.sandboxes, msg.snapshots
 			m.count, m.snaps = len(msg.sandboxes), len(msg.snapshots)
 			m.table.SetRows(sandboxRows(msg.sandboxes))
+			// SetRows doesn't restore the cursor, so a table that was empty (or
+			// shrank below the cursor) is left with nothing selected — which would
+			// silently disable every selection-based action. Re-anchor it.
+			if len(msg.sandboxes) > 0 && len(m.table.SelectedRow()) == 0 {
+				m.table.SetCursor(0)
+			}
 			if m.mode == modeTree {
 				m.vp.SetContent(renderTree(m.sandboxes, m.snapshots))
 			}
@@ -172,10 +194,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case whoamiMsg:
-		if msg.scope != "" {
-			m.scope = msg.scope
+		if msg.ok {
+			m.whoami = msg.wa
+			m.scope = scopeLabel(msg.wa)
 		}
 		return m, nil
+
+	case actionMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.notice, m.noticeErr = msg.verb+" failed: "+msg.err.Error(), true
+			return m, nil
+		}
+		m.notice, m.noticeErr = actionOK(msg), false
+		return m, m.fetch() // reflect the change without waiting for the next tick
 
 	case execEvent:
 		return m.handleExecEvent(msg)
@@ -221,6 +253,35 @@ func (m model) updateMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "c":
+		return m.startAction(policy.OpCreate, "create", m.createCmd())
+	case "s":
+		if sb, ok := m.selectedSandbox(); ok {
+			return m.startAction(policy.OpSnapshot, "snapshot", m.snapshotCmd(sb.ID))
+		}
+		return m, nil
+	case "f":
+		sb, ok := m.selectedSandbox()
+		if !ok {
+			return m, nil
+		}
+		snap, has := latestSnapshotOf(m.snapshots, sb.ID)
+		if !has {
+			m.notice, m.noticeErr = "fork needs a snapshot — press [s] first", true
+			return m, nil
+		}
+		return m.startAction(policy.OpFork, "fork", m.forkCmd(snap.ID))
+	case "d":
+		sb, ok := m.selectedSandbox()
+		if !ok {
+			return m, nil
+		}
+		if !m.can(policy.OpDelete) {
+			m.notice, m.noticeErr = "delete not permitted by policy scope", true
+			return m, nil
+		}
+		m.confirming, m.confirmID, m.notice = true, sb.ID, ""
+		return m, nil
 	}
 	var cmd tea.Cmd
 	if m.mode == modeTree {
@@ -229,6 +290,37 @@ func (m model) updateMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.table, cmd = m.table.Update(msg)
 	}
 	return m, cmd
+}
+
+// startAction gates a mutating action on the token's scope and prevents a second
+// action while one is in flight, then dispatches its command.
+func (m model) startAction(op policy.Operation, verb string, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if !m.can(op) {
+		m.notice, m.noticeErr = verb+" not permitted by policy scope", true
+		return m, nil
+	}
+	if m.busy {
+		return m, nil
+	}
+	m.busy = true
+	m.notice, m.noticeErr = verb+"…", false
+	return m, cmd
+}
+
+// updateConfirmKey handles the y/n prompt for a pending destructive action.
+func (m model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		id := m.confirmID
+		m.confirming, m.confirmID = false, ""
+		m.busy = true
+		m.notice, m.noticeErr = "delete…", false
+		return m, m.deleteCmd(id)
+	default:
+		m.confirming, m.confirmID = false, ""
+		m.notice, m.noticeErr = "delete cancelled", false
+		return m, nil
+	}
 }
 
 func (m model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -240,6 +332,13 @@ func (m model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		cmdline := strings.TrimSpace(m.input.Value())
 		if cmdline == "" || m.execing {
+			return m, nil
+		}
+		if !m.can(policy.OpExec) {
+			m.execOut += errStyle.Render("exec not permitted by policy scope") + "\n"
+			m.execVP.SetContent(m.execOut)
+			m.execVP.GotoBottom()
+			m.input.Reset()
 			return m, nil
 		}
 		ch := make(chan execEvent, 64)
@@ -301,11 +400,26 @@ func (m model) View() string {
 	default:
 		body = m.table.View()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.footerView())
+	full := lipgloss.JoinVertical(lipgloss.Left, m.headerView(), body, m.footerView())
+	// JoinVertical pads every block to the widest line, so a single long line
+	// (e.g. exec output or a long id in the un-wrapping viewport) would push the
+	// whole frame past the terminal edge. Clamp every line as a final guarantee.
+	return clampBlock(full, m.width)
+}
+
+func clampBlock(s string, width int) string {
+	if width < 1 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = clampLine(l, width)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m model) detailBody() string {
-	div := dividerStyle.Render(strings.Repeat("─", max(20, m.width)))
+	div := dividerStyle.Render(strings.Repeat("─", max(1, m.width)))
 	return lipgloss.JoinVertical(lipgloss.Left, sandboxDetail(m.selected), div, m.execVP.View(), m.input.View())
 }
 
@@ -315,43 +429,106 @@ func (m model) headerView() string {
 	if m.scope != "" {
 		meta += metaStyle.Render(" · ") + scopeStyled(m.scope)
 	}
-	gap := m.width - lipgloss.Width(title) - lipgloss.Width(meta)
-	if gap < 1 {
-		gap = 1
-	}
-	return title + strings.Repeat(" ", gap) + meta
+	return clampLine(spread(title, meta, m.width), m.width)
 }
 
 func (m model) footerView() string {
-	var status string
+	status, help := m.statusLine(), m.helpLine(false)
+	// If the roomy help won't fit alongside the status, drop to the compact
+	// variant before letting the clamp truncate anything.
+	if lipgloss.Width(status)+lipgloss.Width(help)+1 > m.width {
+		help = m.helpLine(true)
+	}
+	return clampLine(spread(status, help, m.width), m.width)
+}
+
+func (m model) statusLine() string {
 	switch {
+	case m.confirming:
+		return warnStyle.Render("delete "+m.confirmID+"?") + " " + helpStyle.Render("[y]es  [n]o")
+	case m.notice != "":
+		if m.noticeErr {
+			return errStyle.Render(m.notice)
+		}
+		return okStyle.Render(m.notice)
 	case m.err != nil:
-		status = errStyle.Render("error: " + m.err.Error())
+		return errStyle.Render("error: " + m.err.Error())
 	case m.lastRefresh.IsZero():
-		status = metaStyle.Render("loading…")
+		return metaStyle.Render("loading…")
 	default:
-		status = metaStyle.Render(fmt.Sprintf("%s · %s · updated %s ago",
+		return metaStyle.Render(fmt.Sprintf("%s · %s · updated %s ago",
 			plural(m.count, "sandbox", "sandboxes"),
 			plural(m.snaps, "snapshot", "snapshots"),
 			shortDur(time.Since(m.lastRefresh))))
 	}
-	help := helpStyle.Render(m.helpText())
-	gap := m.width - lipgloss.Width(status) - lipgloss.Width(help)
+}
+
+// helpLine returns the key hints for the current mode; compact drops the
+// lower-priority hints so the essentials survive on a narrow terminal.
+func (m model) helpLine(compact bool) string {
+	var s string
+	switch m.mode {
+	case modeTree:
+		if compact {
+			s = "[t] back · [q]uit"
+		} else {
+			s = "↑/↓ scroll · [t] dashboard · [r]efresh · [q]uit"
+		}
+	case modeDetail:
+		if compact {
+			s = "enter run · esc back"
+		} else {
+			s = "type a command · enter run · esc back · ctrl+c quit"
+		}
+	default:
+		if compact {
+			s = m.actionsHelp() + " · [q]uit"
+		} else {
+			s = "↑/↓ move · enter detail · " + m.actionsHelp() + " · [t]ree · [r] · [q]uit"
+		}
+	}
+	return helpStyle.Render(s)
+}
+
+// spread places left and right on one line filled to width; clampLine caps a
+// (possibly styled) line to width with ANSI-aware truncation so nothing spills
+// past the terminal edge.
+func spread(left, right string, width int) string {
+	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	return status + strings.Repeat(" ", gap) + help
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func (m model) helpText() string {
-	switch m.mode {
-	case modeTree:
-		return "↑/↓ scroll · [t] dashboard · [r]efresh · [q]uit"
-	case modeDetail:
-		return "type a command · enter run · esc back · ctrl+c quit"
-	default:
-		return "↑/↓ move · enter detail · [t]ree · [r]efresh · [q]uit"
+func clampLine(s string, width int) string {
+	if width < 1 {
+		return s
 	}
+	return lipgloss.NewStyle().MaxWidth(width).Render(s)
+}
+
+// actionsHelp renders the mutating actions, striking through any the token's
+// scope forbids so the gating is visible before a key is pressed.
+func (m model) actionsHelp() string {
+	items := []struct {
+		label string
+		op    policy.Operation
+	}{
+		{"[c]reate", policy.OpCreate},
+		{"[s]nap", policy.OpSnapshot},
+		{"[f]ork", policy.OpFork},
+		{"[d]el", policy.OpDelete},
+	}
+	parts := make([]string, len(items))
+	for i, it := range items {
+		if m.can(it.op) {
+			parts[i] = it.label
+		} else {
+			parts[i] = disabledStyle.Render(it.label)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // scopeStyled colors the header access-state: full access is a heads-up (warn

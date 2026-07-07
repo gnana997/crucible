@@ -38,7 +38,9 @@ var (
 	metaStyle     = lipgloss.NewStyle().Foreground(colMeta)
 	helpStyle     = lipgloss.NewStyle().Foreground(colFaint)
 	errStyle      = lipgloss.NewStyle().Foreground(colError).Bold(true)
-	warnStyle     = lipgloss.NewStyle().Foreground(colWarn)
+	okStyle       = lipgloss.NewStyle().Foreground(colSuccess).Bold(true)
+	warnStyle     = lipgloss.NewStyle().Foreground(colWarn).Bold(true)
+	disabledStyle = lipgloss.NewStyle().Foreground(colFaint).Strikethrough(true) // an action the scope forbids
 	altStyle      = lipgloss.NewStyle().Foreground(colAccentAlt)
 	promptStyle   = lipgloss.NewStyle().Foreground(colAccent).Bold(true)
 	stderrStyle   = lipgloss.NewStyle().Foreground(colStderr)

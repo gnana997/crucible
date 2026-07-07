@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
@@ -67,14 +68,15 @@ func TestUpdateQuitKeys(t *testing.T) {
 }
 
 func TestUpdateWhoamiSetsScope(t *testing.T) {
-	m := step(newModel(Config{}), whoamiMsg{scope: "scoped (read)"})
+	wa := policy.Whoami{Scoped: true, Policy: &policy.Policy{Operations: []policy.Operation{policy.OpRead}}}
+	m := step(newModel(Config{}), whoamiMsg{wa: wa, ok: true})
 	if m.scope != "scoped (read)" {
 		t.Errorf("scope = %q, want 'scoped (read)'", m.scope)
 	}
-	// an empty scope (whoami failed) must not clobber a known scope.
-	m = step(m, whoamiMsg{scope: ""})
+	// a failed whoami (ok=false) must not clobber a known scope.
+	m = step(m, whoamiMsg{ok: false})
 	if m.scope != "scoped (read)" {
-		t.Errorf("empty whoami should not overwrite scope; got %q", m.scope)
+		t.Errorf("failed whoami should not overwrite scope; got %q", m.scope)
 	}
 }
 
@@ -124,9 +126,36 @@ func TestNetAndForkLabels(t *testing.T) {
 
 var errTest = tea.ErrProgramKilled
 
+// TestViewFitsWidth guards responsiveness: at any terminal width, no rendered
+// line may spill past the right edge (which is what cut the FORK column and the
+// footer help before). Checks dashboard, tree, and detail modes.
+func TestViewFitsWidth(t *testing.T) {
+	longIDs := []api.SandboxResponse{{
+		ID: "sbx_verylongidentifier0", Profile: "python-3.12", VCPUs: 2, MemoryMiB: 1024,
+		CreatedAt: time.Now(), Network: &api.NetworkResponse{Enabled: true, GuestIP: "10.0.0.2"},
+	}}
+	for _, w := range []int{40, 60, 80, 100, 140} {
+		base := step(newModel(Config{Addr: "http://127.0.0.1:7878"}), tea.WindowSizeMsg{Width: w, Height: 20})
+		base = step(base, whoamiMsg{ok: true, wa: policy.Whoami{Scoped: false}})
+		base = step(base, dataMsg{sandboxes: longIDs})
+
+		views := map[string]model{"dashboard": base}
+		views["tree"] = step(base, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("t")})
+		views["detail"] = step(base, tea.KeyMsg{Type: tea.KeyEnter})
+
+		for mode, m := range views {
+			for _, line := range strings.Split(m.View(), "\n") {
+				if lw := lipgloss.Width(line); lw > w {
+					t.Errorf("width=%d %s: line width %d exceeds terminal:\n%q", w, mode, lw, line)
+				}
+			}
+		}
+	}
+}
+
 func TestViewRendersDashboard(t *testing.T) {
 	m := step(newModel(Config{Addr: "http://127.0.0.1:7878"}), tea.WindowSizeMsg{Width: 100, Height: 20})
-	m = step(m, whoamiMsg{scope: "full access"})
+	m = step(m, whoamiMsg{wa: policy.Whoami{Scoped: false}, ok: true})
 	m = step(m, dataMsg{
 		sandboxes: []api.SandboxResponse{{ID: "sbx_abc", Profile: "base", VCPUs: 1, MemoryMiB: 256, CreatedAt: time.Now()}},
 	})
