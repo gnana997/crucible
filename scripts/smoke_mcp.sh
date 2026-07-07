@@ -244,7 +244,7 @@ stop_daemon
 # thing running jailer VMs on the host.
 echo "== checking for leaked VMs / cgroups"
 leaked_cg=$(find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-leaked_fc=$(pgrep -c -x firecracker 2>/dev/null || echo 0)
+leaked_fc=$(pgrep -x firecracker 2>/dev/null | wc -l)
 if [ "$leaked_cg" -ne 0 ] || [ "$leaked_fc" -ne 0 ]; then
   echo "FAIL: leaked $leaked_fc firecracker proc(s) and $leaked_cg cgroup(s) after teardown" >&2
   find /sys/fs/cgroup/firecracker -mindepth 1 -maxdepth 1 -type d >&2 2>/dev/null || true

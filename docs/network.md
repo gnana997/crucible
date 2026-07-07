@@ -204,6 +204,7 @@ Where the new work plugs into existing flows:
 | Guest tries to reach non-allowed IP | Expected | Drop silently. nft counter increments — visible in future `/metrics`. |
 | Allowlist syntax invalid | One sandbox | Reject with 400 at create time, never reach setup. |
 | DHCP server in netns dies | One sandbox | Guest loses lease → loses network when lease expires. For v0.1 we give huge lease (24h); revisit if an issue. |
+| A second networked daemon starts on the host | Daemon fails to start | The DNS proxy binds the shared anycast IP `10.20.255.254:53`, so two networked daemons on one host collide: `network init failed: dnsproxy: bind 10.20.255.254:53: address already in use`. **One networked crucible daemon per host** (the `10.20.0.0/16` pool and the DNS anycast IP are host-global). Stop the other daemon — e.g. `sudo systemctl stop crucible` before running a second instance or a smoke test — or run the second daemon without `--network-egress-iface`. |
 
 ## Testing strategy
 

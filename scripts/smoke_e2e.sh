@@ -29,7 +29,10 @@
 # Requires:
 #   - Linux host with KVM + root (jailer needs CAP_SYS_ADMIN)
 #   - Real internet (tests 5-8, 10 hit example.com / github.com)
-#   - Guest rootfs with crucible-agent + python3 + iproute2
+#   - Guest rootfs with crucible-agent + python3 + iproute2. python3 is
+#     invoked PATH-resolved (not a hardcoded path), so this works both with a
+#     python-equipped Ubuntu/Debian rootfs (python at /usr/bin) and with the
+#     shipped python-3.12 / python-3.13 profiles (python at /usr/local/bin).
 #   - cruc binaries built (make build && make agent && make rootfs)
 #
 # Usage:
@@ -577,7 +580,7 @@ assert_eq "getent_ok" "$(exec_exit_code "$TEST_DIR/getent")" "0"
 assert_contains "has_ip" "$TEST_DIR/getent/stdout" "[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+"
 
 exec_in "https_fetch" "$SBX_05" \
-  '{"cmd":["/usr/bin/python3","-c","import urllib.request;r=urllib.request.urlopen(\"https://example.com\",timeout=10);print(r.status);print(r.read()[:200].decode(\"utf-8\",\"replace\"))"]}'
+  '{"cmd":["python3","-c","import urllib.request;r=urllib.request.urlopen(\"https://example.com\",timeout=10);print(r.status);print(r.read()[:200].decode(\"utf-8\",\"replace\"))"]}'
 assert_eq "fetch_exit_zero" "$(exec_exit_code "$TEST_DIR/https_fetch")" "0"
 assert_contains "http_200" "$TEST_DIR/https_fetch/stdout" "^200$"
 
@@ -598,7 +601,7 @@ exec_in "getent_google" "$SBX_06" '{"cmd":["/usr/bin/getent","hosts","google.com
 assert_ne "getent_nxdomain" "$(exec_exit_code "$TEST_DIR/getent_google")" "0"
 
 exec_in "fetch_google" "$SBX_06" \
-  '{"cmd":["/usr/bin/python3","-c","import urllib.request,sys;\ntry:\n r=urllib.request.urlopen(\"https://google.com\",timeout=3);print(\"UNEXPECTED_OK\")\nexcept Exception as e:\n print(\"denied:\",type(e).__name__)","/dev/null"]}'
+  '{"cmd":["python3","-c","import urllib.request,sys;\ntry:\n r=urllib.request.urlopen(\"https://google.com\",timeout=3);print(\"UNEXPECTED_OK\")\nexcept Exception as e:\n print(\"denied:\",type(e).__name__)","/dev/null"]}'
 # We want the script to succeed (exit 0) and have printed "denied:" —
 # the Python didn't reach google.com.
 assert_eq "python_completed" "$(exec_exit_code "$TEST_DIR/fetch_google")" "0"
@@ -618,7 +621,7 @@ assert_ne "create_ok" "$SBX_07" ""
 sleep 2
 
 exec_in "dns_tcp53" "$SBX_07" \
-  '{"cmd":["/usr/bin/python3","-c","import socket,sys;\ntry:\n s=socket.create_connection((\"8.8.8.8\",53),timeout=3);print(\"UNEXPECTED_OK\")\nexcept Exception as e:\n print(\"denied:\",type(e).__name__)"]}'
+  '{"cmd":["python3","-c","import socket,sys;\ntry:\n s=socket.create_connection((\"8.8.8.8\",53),timeout=3);print(\"UNEXPECTED_OK\")\nexcept Exception as e:\n print(\"denied:\",type(e).__name__)"]}'
 assert_eq "python_completed" "$(exec_exit_code "$TEST_DIR/dns_tcp53")" "0"
 assert_contains "ip_literal_blocked" "$TEST_DIR/dns_tcp53/stdout" "^denied:"
 assert_not_contains "no_unexpected_ok" "$TEST_DIR/dns_tcp53/stdout" "UNEXPECTED_OK"
@@ -792,7 +795,7 @@ assert_ne "create_ok" "$SBX_13" ""
 # the RSS pressure. Deliberately a bit larger than half the VM's
 # RAM to guarantee OOM.
 exec_in "alloc256" "$SBX_13" \
-  '{"cmd":["/usr/bin/python3","-c","a=bytearray(256*1024*1024);import sys;sys.stdout.write(\"alloc_done\\n\")"]}'
+  '{"cmd":["python3","-c","a=bytearray(256*1024*1024);import sys;sys.stdout.write(\"alloc_done\\n\")"]}'
 EC_13=$(exec_exit_code "$TEST_DIR/alloc256")
 SIG_13=$(exec_field "$TEST_DIR/alloc256" signal)
 echo "  exit_code=$EC_13 signal=$SIG_13"
@@ -824,7 +827,7 @@ SBX_14=$(api_create "create" '{"vcpus":1,"memory_mib":256}')
 assert_ne "create_ok" "$SBX_14" ""
 
 exec_in "workload" "$SBX_14" \
-  '{"cmd":["/usr/bin/python3","-c","import os;a=bytearray(16*1024*1024);\nfor i in range(800000):\n  i*i\nwith open(\"/tmp/w\",\"wb\") as f:\n  f.write(b\"x\"*1024*1024)\n  f.flush();os.fsync(f.fileno())"]}'
+  '{"cmd":["python3","-c","import os;a=bytearray(16*1024*1024);\nfor i in range(800000):\n  i*i\nwith open(\"/tmp/w\",\"wb\") as f:\n  f.write(b\"x\"*1024*1024)\n  f.flush();os.fsync(f.fileno())"]}'
 
 assert_eq "exit_zero" "$(exec_exit_code "$TEST_DIR/workload")" "0"
 
