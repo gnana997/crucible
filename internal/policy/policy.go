@@ -75,6 +75,15 @@ type Policy struct {
 	MaxMemoryMiB int `json:"max_memory_mib,omitempty"`
 }
 
+// Whoami is the GET /whoami response: the effective policy for the presenting
+// token. Scoped is false for an unscoped (full-access) key or an
+// unauthenticated request; Policy is the enforced policy when scoped. Shared by
+// the daemon (writes it) and the client (reads it) so the shape can't drift.
+type Whoami struct {
+	Scoped bool    `json:"scoped"`
+	Policy *Policy `json:"policy,omitempty"`
+}
+
 // Parse decodes a policy from JSON, rejecting unknown fields (so a typo'd key is
 // an error, not a silently-ignored restriction) and trailing content.
 func Parse(data []byte) (Policy, error) {

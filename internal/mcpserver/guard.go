@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/gnana997/crucible/internal/policy"
 )
 
 // This file holds the operator-policy enforcement — the guardrails from the
@@ -91,4 +93,42 @@ func (c Config) checkCapacity(ctx context.Context, want int) error {
 		return fmt.Errorf("would exceed this server's --max-sandboxes limit of %d (%d already live)", c.MaxSandboxes, len(sbs))
 	}
 	return nil
+}
+
+// toolOps is the set of daemon operations a tool performs. The MCP server uses
+// it to mirror the token policy — a tool is advertised only when the policy
+// permits every operation it would need. (run cleans up after itself, so it
+// needs delete too.)
+func toolOps(name string) []policy.Operation {
+	switch name {
+	case "run":
+		return []policy.Operation{policy.OpCreate, policy.OpExec, policy.OpDelete}
+	case "create_sandbox":
+		return []policy.Operation{policy.OpCreate}
+	case "exec":
+		return []policy.Operation{policy.OpExec}
+	case "snapshot":
+		return []policy.Operation{policy.OpSnapshot}
+	case "fork":
+		return []policy.Operation{policy.OpFork}
+	case "delete_sandbox", "delete_snapshot":
+		return []policy.Operation{policy.OpDelete}
+	case "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles":
+		return []policy.Operation{policy.OpRead}
+	}
+	return nil
+}
+
+// policyPermitsTool reports whether pol allows every operation the named tool
+// performs. A nil policy (unscoped token, or a whoami that failed) permits all.
+func policyPermitsTool(pol *policy.Policy, name string) bool {
+	if pol == nil {
+		return true
+	}
+	for _, op := range toolOps(name) {
+		if !pol.Allows(op) {
+			return false
+		}
+	}
+	return true
 }

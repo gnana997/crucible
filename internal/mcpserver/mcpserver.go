@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/version"
 )
 
@@ -53,6 +54,12 @@ type Config struct {
 	// so it does not appear in tools/list.
 	Tools     []string
 	DenyTools []string
+
+	// Policy, when set, is the effective policy for this server's token, fetched
+	// from the daemon via /whoami at Serve time. Tools whose operations it
+	// forbids are not advertised (the daemon still enforces regardless). Nil
+	// advertises the full catalog — an unscoped token, or a whoami that failed.
+	Policy *policy.Policy
 }
 
 // New builds the MCP server and registers the crucible tool catalog. It is the
@@ -69,6 +76,17 @@ func New(cfg Config) *mcp.Server {
 
 // Serve runs the server over stdio until the agent closes stdin or ctx is
 // cancelled.
+//
+// Before serving it mirrors the daemon's authority: it asks /whoami what this
+// token may do and advertises only the tools the policy permits. Enforcement
+// still lives at the daemon, so a whoami failure (an older daemon, an unscoped
+// token, or an unreachable daemon) just falls back to the full catalog — the
+// daemon rejects anything out of policy either way.
 func Serve(ctx context.Context, cfg Config) error {
+	if cfg.Client != nil {
+		if wa, err := cfg.Client.Whoami(ctx); err == nil && wa.Scoped {
+			cfg.Policy = wa.Policy
+		}
+	}
 	return New(cfg).Run(ctx, &mcp.StdioTransport{})
 }

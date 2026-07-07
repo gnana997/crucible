@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,7 +52,7 @@ func TestPolicyValidateInvalid(t *testing.T) {
 }
 
 func TestPolicyValidateStdin(t *testing.T) {
-	cmd := newPolicyCmd()
+	cmd := newPolicyCmd(&globalOpts{})
 	var out, errb bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
@@ -108,5 +111,35 @@ func TestTokenAddBadTTL(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "ttl") {
 		t.Errorf("stderr = %q, want it to mention ttl", errb.String())
+	}
+}
+
+func TestPolicyShowScoped(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/whoami" {
+			_, _ = io.WriteString(w, `{"scoped":true,"policy":{"operations":["read","exec"],"max_sandboxes":4}}`)
+		}
+	}))
+	defer ts.Close()
+	var out, errb bytes.Buffer
+	if code := run([]string{"policy", "show", "--addr", ts.URL}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "scoped token") || !strings.Contains(out.String(), "max_sandboxes") {
+		t.Errorf("stdout = %q, want scoped policy view", out.String())
+	}
+}
+
+func TestPolicyShowUnscoped(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"scoped":false}`)
+	}))
+	defer ts.Close()
+	var out, errb bytes.Buffer
+	if code := run([]string{"policy", "show", "--addr", ts.URL}, &out, &errb); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "full access") {
+		t.Errorf("stdout = %q, want 'full access'", out.String())
 	}
 }

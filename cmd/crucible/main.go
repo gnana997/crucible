@@ -105,7 +105,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newProfileCmd(opts),
 		newRunCmd(opts),
 		newMcpCmd(opts),
-		newPolicyCmd(),
+		newPolicyCmd(opts),
 	)
 	return root
 }

@@ -170,7 +170,7 @@ func envMap(kv []string) (map[string]string, error) {
 func registerTools(srv *mcp.Server, cfg Config) {
 	h := &handlers{cfg: cfg}
 	add := func(name, desc string, register func(name, desc string)) {
-		if cfg.toolEnabled(name) {
+		if cfg.toolEnabled(name) && policyPermitsTool(cfg.Policy, name) {
 			register(name, desc)
 		}
 	}

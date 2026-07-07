@@ -10,7 +10,50 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/internal/policy"
 )
+
+func TestToolMirrorByPolicy(t *testing.T) {
+	// A token permitted only to read + exec: exec and the list/inspect tools
+	// show; run (needs create+exec+delete), create_sandbox, snapshot, fork, and
+	// the delete tools are hidden.
+	pol := &policy.Policy{Operations: []policy.Operation{policy.OpRead, policy.OpExec}}
+	cs := connect(t, Config{Policy: pol})
+	res, err := cs.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tl := range res.Tools {
+		got[tl.Name] = true
+	}
+	shown := []string{"exec", "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles"}
+	hidden := []string{"run", "create_sandbox", "snapshot", "fork", "delete_sandbox", "delete_snapshot"}
+	for _, n := range shown {
+		if !got[n] {
+			t.Errorf("tool %q should be advertised under a read+exec policy", n)
+		}
+	}
+	for _, n := range hidden {
+		if got[n] {
+			t.Errorf("tool %q should be hidden under a read+exec policy", n)
+		}
+	}
+	if len(got) != len(shown) {
+		t.Errorf("advertised %d tools, want %d: %v", len(got), len(shown), got)
+	}
+}
+
+func TestToolMirrorFullPolicyAdvertisesAll(t *testing.T) {
+	cs := connect(t, Config{Policy: &policy.Policy{Operations: policy.KnownOperations()}})
+	res, err := cs.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Tools) != 11 {
+		t.Errorf("all-ops policy advertised %d tools, want 11", len(res.Tools))
+	}
+}
 
 // --- pure guard-helper unit tests -------------------------------------------
 

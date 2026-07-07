@@ -68,18 +68,10 @@ func operationFor(method, path string) (policy.Operation, bool) {
 	return "", false
 }
 
-// whoamiResponse is the GET /whoami body: the effective policy for the
-// presenting token. Scoped is false for an unscoped (full-access) key or an
-// unauthenticated loopback request.
-type whoamiResponse struct {
-	Scoped bool           `json:"scoped"`
-	Policy *policy.Policy `json:"policy,omitempty"`
-}
-
 // handleWhoami lets a client (CLI `policy show`, the MCP server's tool mirror,
 // a future UI) discover exactly what its token may do. It carries no operation
 // gate, so even a token with an empty operation set can introspect itself.
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	pol := policyFor(r)
-	writeJSON(w, http.StatusOK, whoamiResponse{Scoped: pol != nil, Policy: pol})
+	writeJSON(w, http.StatusOK, policy.Whoami{Scoped: pol != nil, Policy: pol})
 }

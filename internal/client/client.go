@@ -20,6 +20,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/internal/policy"
 )
 
 // DefaultAddr is the daemon's default listen address.
@@ -177,6 +178,17 @@ func (c *Client) ListProfiles(ctx context.Context) ([]string, error) {
 	}
 	out, err := decodeInto[api.ProfilesResponse](resp)
 	return out.Profiles, err
+}
+
+// Whoami returns the effective policy for the client's token (GET /whoami):
+// what this credential is actually permitted to do, as the daemon sees it.
+// Scoped is false for an unscoped key or an unauthenticated loopback daemon.
+func (c *Client) Whoami(ctx context.Context) (policy.Whoami, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/whoami", nil)
+	if err != nil {
+		return policy.Whoami{}, err
+	}
+	return decodeInto[policy.Whoami](resp)
 }
 
 // Exec runs a command in a sandbox and streams its output. stdout/stderr
