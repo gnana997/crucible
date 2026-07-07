@@ -6,7 +6,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [0.1.2] — unreleased
+## [0.1.2] — 2026-07-07
 
 The MCP release: drive crucible from any MCP agent as native tools, and reach a
 remote/hosted daemon safely with API-key auth.
