@@ -22,13 +22,13 @@ The operator sets policy at launch (`--net-allow-max`, `--max-sandboxes`, `--max
 
 ## Current status and limitations
 
-crucible is **`v0.1` and is not yet hardened for production or for untrusted multi-tenant use.** Please treat the following as known, deliberate limitations of a pre-release:
+crucible is **pre-1.0 and is not yet hardened for production or for untrusted multi-tenant use.** Please treat the following as known, deliberate limitations of a pre-release:
 
-- **Authentication is coarse-grained.** The daemon supports bearer-token API keys (`crucible daemon token add`), stored as SHA-256 hashes; once any key exists every request must present it, and binding a non-loopback address is refused unless keys **and** TLS are configured. But a key is all-or-nothing — there are no per-key scopes or authorization yet, so any valid key can drive the full API. The daemon still **binds `127.0.0.1` by default**; treat any exposed instance as granting full code execution on the host's behalf to any key-holder.
+- **Authentication.** The daemon supports bearer-token API keys (`crucible daemon token add`), stored as SHA-256 hashes; once any key exists every request must present it, and binding a non-loopback address is refused unless keys **and** TLS are configured. Keys can be **scoped** to a daemon-enforced policy (allowed operations, egress ceiling, profile allowlist, resource caps, expiry — see [docs/policy.md](docs/policy.md)), or left unscoped for full access. The daemon still **binds `127.0.0.1` by default**; treat any exposed instance with an unscoped key as granting full code execution on the host's behalf.
 - **Single-host, single-operator.** crucible assumes a trusted operator running it on their own host. It has not been validated for hosting mutually-distrusting tenants.
-- **No audit trail** beyond operational logs.
+- **No audit trail** beyond operational logs (per-sandbox activity logs are planned).
 
-We aim to be production-honest: `v0.1` means `v0.1`. Do not rely on crucible as a security boundary for untrusted, adversarial, multi-tenant workloads until a release explicitly commits to that, backed by an external review.
+We aim to be production-honest: pre-1.0 means pre-1.0. Do not rely on crucible as a security boundary for untrusted, adversarial, multi-tenant workloads until a release explicitly commits to that, backed by an external review.
 
 ## Supported versions
 
@@ -38,7 +38,6 @@ crucible is pre-release software under active development. Only the latest `main
 
 **Please report security issues privately — do not open a public GitHub issue.**
 
-- Preferred: open a private report via GitHub's **"Report a vulnerability"** (Security → Advisories) on this repository.
-- Alternatively, contact the maintainer privately (see [gnanasivasai.dev](https://gnanasivasai.dev)).
+- Open a private report via GitHub's **"Report a vulnerability"** (Security → Advisories) on this repository. This is the preferred and supported channel.
 
 Please include a description of the issue, the affected version/commit, and — if possible — reproduction steps or a proof of concept. We'll acknowledge receipt and work with you on a fix and coordinated disclosure. Given the pre-release status, there is no formal SLA yet, but security reports are taken seriously and prioritized.

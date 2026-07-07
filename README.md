@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.1-dev](https://img.shields.io/badge/status-v0.1--dev-orange)
+![Status: v0.2.0](https://img.shields.io/badge/status-v0.2.0-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -10,50 +10,24 @@
 
 <p align="center"><em>The <code>crucible tui</code> control center — live sandboxes, the fork tree, and streaming <code>exec</code> against a running daemon (<a href="docs/tui.md">docs</a>).</em></p>
 
-> **Status.** `crucible daemon` boots Firecracker microVMs under jailer (chroot + mount/PID namespaces + privilege drop), manages their lifecycle over HTTP, runs commands over vsock with streamed stdout/stderr and structured execution records (exit code, rusage, OOM kill), captures snapshots, and forks end-to-end — each fork restored with **lazy `userfaultfd` memory** (no per-fork RAM copy), its own netns with a DHCP-assigned IP, per-sandbox default-deny egress behind a hostname allowlist, and a per-fork **identity refresh** so no two forks wake with the same kernel RNG state, machine-id, or hostname. Registries are persisted and reconciled on restart. It's `v0.1` — don't run this against anything you can't afford to lose, and don't expose it to untrusted callers yet (see [SECURITY.md](SECURITY.md)).
+AI coding agents write code and want to run it — check it compiles, run the tests they just wrote, try three approaches in parallel. Today's options are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, usage-priced), or rolling your own Firecracker stack (months of operational work).
 
-## Why this exists
+**crucible is the fourth option:** a single self-hosted Go binary on top of Firecracker, with snapshot/fork as first-class primitives, sane defaults, and observability baked in — tuned for running AI-generated code. Full motivation and design: [docs/VISION.md](docs/VISION.md).
 
-AI coding agents write code and they want to run that code — to check it compiles, run the tests they just wrote, try three approaches in parallel. The options today are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, cost scales with usage), or rolling your own Firecracker stack (months of operational work).
+## Highlights
 
-crucible is the fourth option: a single self-hosted Go binary on top of Firecracker, with snapshot/fork as first-class primitives, sane defaults, and observability baked in — tuned for AI-generated code.
+- **Real isolation, not containers.** Every sandbox is a Firecracker microVM under [jailer](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md) — its own chroot, mount/PID namespaces, and a dropped uid. Not a shared kernel.
+- **Snapshot & fork as primitives.** Run setup once, snapshot the warm state, fork *N* parallel children from it. Forks restore with **lazy `userfaultfd` memory** — guest RAM is served from the snapshot on demand, never byte-copied per fork (the AWS Lambda SnapStart technique).
+- **Clone-safety.** Each fork wakes with a fresh kernel RNG seed, a rotated `machine-id`, and its own hostname — ordered *before* the fork is reachable — so no two forks silently share UUIDs, secrets, or entropy.
+- **Default-deny networking.** No egress unless you allowlist hostnames, and only those — resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. Enforced in host nftables + a DNS proxy the guest is forced through.
+- **Three ways to drive it.** A [CLI](docs/cli.md), a live [TUI dashboard](docs/tui.md), and an [MCP server](docs/mcp.md) — all thin clients over one REST API, so they can't drift.
+- **Scoped tokens.** Bind an API key to a policy the daemon enforces (allowed operations, egress ceiling, profile allowlist, resource caps, expiry). See [docs/policy.md](docs/policy.md).
+- **Observability.** Per-exec structured results — exit code, wall-clock, and CPU/memory/I/O usage — plus a Prometheus `/metrics` endpoint.
+- **Self-hosted, single binary.** Daemon and CLI are one Go binary. No cloud, no account, no telemetry.
 
-Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
+> **Maturity.** crucible is pre-1.0 and **not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default, with optional bearer-key auth (required, plus TLS, to bind a non-loopback address). Don't point it at anything you can't afford to lose yet — see [SECURITY.md](SECURITY.md) for the exact isolation model and its limits.
 
-## What works today
-
-| Capability | Status |
-|---|---|
-| Go module + daemon (`crucible daemon`) | ✅ done |
-| CLI over the REST API — `sandbox` (create/ls/inspect/rm/exec), `snapshot`, `fork`, `profile ls`, `run` one-shot; `-o json` | ✅ done |
-| Firecracker runner (boot a microVM from config) | ✅ done |
-| Jailer integration (chroot + mount/PID namespaces + privilege drop) | ✅ done (requires `sudo`) |
-| Per-sandbox rootfs copy (no shared-writable-rootfs corruption) | ✅ done |
-| HTTP API — sandbox lifecycle (create / list / get / delete) | ✅ done |
-| HTTP API — exec via vsock (streamed stdout/stderr, structured exit record) | ✅ done |
-| HTTP API — snapshot (`POST /sandboxes/{id}/snapshot`, `GET`/`DELETE /snapshots/{id}`) | ✅ done |
-| HTTP API — fork (`POST /snapshots/{id}/fork?count=N`) | ✅ done |
-| **Lazy memory via `userfaultfd`** — serve guest page faults from the snapshot's memory file instead of byte-copying RAM on fork (same technique as AWS Lambda SnapStart; filesystem-independent) | ✅ done (`internal/memfault`) |
-| **Clone-safety** — per-fork identity refresh: kernel CRNG reseed (host entropy) + `/etc/machine-id`/hostname rotation, ordered before the fork is execable so no two forks share RNG/UUIDs | ✅ done |
-| **Durable registry + reconcile-on-restart** — sandbox/snapshot records journaled; on startup snapshots are re-adopted and orphaned sandbox state (workdirs, netns, nft, processes) is reaped | ✅ done |
-| Default-deny per-sandbox network + hostname allowlist | ✅ done — per-sandbox netns + veth + tap + nftables; egress only to IPs resolved through the daemon's DNS proxy for allowlisted names |
-| Network egress hardening | ✅ done — resolved-IP range filter (blocks link-local / RFC1918 / CGNAT so guests can't SSRF cloud metadata), an nft `input` chain with per-sandbox source anti-spoofing, and DNS-layer concurrency + rate limiting |
-| Per-request resource ceilings (max vCPUs, memory, fork count) | ✅ done — enforced at the API boundary |
-| Sandbox lifetime timeout + per-exec deadline | ✅ done |
-| Structured execution record | ✅ done — `exit_code`, `duration_ms`, `signal`, `timed_out`, `oom_killed` + nested `usage` (CPU user/sys ms, peak RSS, major faults, involuntary ctx-switches, I/O bytes) |
-| JSON lifecycle logs (`--log-format=json`) + graceful SIGTERM drain | ✅ done |
-| Host-side cgroup v2 quotas (cpu.max / memory.max / pids.max) under jailer | ✅ on by default — sized per sandbox from its vCPU/memory request (`--cgroup-quotas=off` to disable) |
-| Native language rootfs profiles (base, python, node, go — versioned) | ✅ built from official language images via `make profile PROFILE=…`; selected with the create `profile` field |
-| Prometheus `/metrics` endpoint | ✅ `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds` |
-| Install script + systemd unit (run the daemon as a managed service) | ✅ `./install.sh` + `packaging/crucible.service` |
-| **MCP server** (`crucible mcp serve`) — full tool catalog over stdio, operator guardrails | ✅ done — drive crucible from any MCP agent; see [docs/mcp.md](docs/mcp.md) |
-| **TUI** (`crucible tui`) — live dashboard, fork tree, streaming exec, create/snapshot/fork/delete with scope-gating | ✅ done — a terminal control center; see [docs/tui.md](docs/tui.md) |
-| **Daemon API-key auth** — bearer keys, hashed at rest, TLS-required for non-loopback | ✅ done — `crucible daemon token add/list/revoke`; see [SECURITY.md](SECURITY.md) |
-| **Scoped / policy tokens** — bind a key to a daemon-enforced policy (operations, egress ceiling, profiles, resource caps, expiry) | ✅ done — `--policy`/`--ttl`, `crucible policy validate/show`; see [docs/policy.md](docs/policy.md) |
-| OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
-| Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
-
-## Install
+## Quick start
 
 Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). On a Linux host with KVM (`ls /dev/kvm` succeeds):
 
@@ -89,110 +63,24 @@ sudo systemctl enable --now crucible
 journalctl -u crucible -f      # watch it come up (Ctrl-C to stop watching)
 ```
 
-The default `/etc/crucible/crucible.env` already points at all of the paths above, so no edits are needed. Then use it:
+The default `/etc/crucible/crucible.env` already points at those paths, so no edits are needed. Then:
 
 ```bash
 crucible run --profile python-3.12 -- python3 -c 'print("hello from crucible")'
-crucible sandbox ls
+crucible tui        # or open the live dashboard
 ```
 
-Full command reference: [docs/cli.md](docs/cli.md). Prefer to build from source? See [Try it locally](#try-it-locally).
+Prefer to build from source? See [Build from source](#build-from-source).
 
-## Try it locally
+## Usage
 
-Requirements:
+crucible is daemon-authoritative: the daemon owns all sandbox logic, and every interface is a thin client over its REST API. Point any of them at a daemon with `--addr` (or `CRUCIBLE_ADDR`; default `127.0.0.1:7878`) and `--token` for an authenticated one.
 
-- Linux host with KVM (x86_64). `ls /dev/kvm` succeeds and is readable.
-- Go 1.25+ (to build), plus `fakeroot`, `squashfs-tools`, `e2fsprogs` (to bake the rootfs).
-- Firecracker **v1.15+** binary, a guest kernel (uncompressed `vmlinux`), and a base rootfs (`.squashfs`). Pull them from [Firecracker's CI bucket](https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/) or the [Firecracker getting-started guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md).
-- `iproute2`, `nftables`, `iptables` in `$PATH` when running with networking — the daemon shells out to them to build netns / veth pairs, manage nft rules, and add `FORWARD` ACCEPTs that coexist with Docker's default `FORWARD DROP`. Stock on Ubuntu/Debian.
-- For lazy (`userfaultfd`) fork under jailer, set `vm.unprivileged_userfaultfd=1` (persist via `sysctl.d`) — jailed firecracker runs unprivileged and needs it to register the guest-memory uffd.
-
-### Build
+**CLI** — [full reference](docs/cli.md):
 
 ```bash
-make build          # daemon binary
-make agent          # guest agent (static linux/amd64 ELF under bin/)
-make rootfs BASE_ROOTFS=/path/to/ubuntu-24.04.squashfs OUT_ROOTFS=assets/rootfs.ext4
-```
-
-`make rootfs` bakes the agent into an ext4 image and enables it as a systemd service, using `fakeroot + mkfs.ext4 -d` — no sudo needed.
-
-### Run the daemon
-
-Development mode — direct firecracker launch, no sudo, no jailer:
-
-```bash
-./crucible daemon \
-  --firecracker-bin /path/to/firecracker \
-  --kernel          /path/to/vmlinux \
-  --rootfs          assets/rootfs.ext4
-# listens on 127.0.0.1:7878 by default
-```
-
-Production-style mode — jailer chroot + privilege drop (needs root for `CAP_SYS_ADMIN`), plus per-sandbox networking:
-
-```bash
-sudo ./crucible daemon \
-  --firecracker-bin /path/to/firecracker \
-  --jailer-bin      /path/to/jailer \
-  --kernel          /path/to/vmlinux \
-  --rootfs          assets/rootfs.ext4 \
-  --chroot-base     /srv/jailer \
-  --network-egress-iface eth0   # whichever iface reaches the internet
-```
-
-With `--jailer-bin`, every microVM gets its own chroot under `<chroot-base>/firecracker/<id>/root/`, its own mount + PID namespaces, and firecracker runs as the unprivileged `--jail-uid`. **Fork is supported only in jailer mode** — on Firecracker v1.15 the direct (non-jailer) restore path cannot rewire vsock after load, so jailer's per-chroot paths are required for fork to work.
-
-> **Jailer + KVM (two host requirements):** the jailed firecracker opens `/dev/kvm` (which is `root:kvm`, mode `660`) from *inside* its chroot, so:
-> 1. **drop-gid** — it reaches KVM through the group bit, so the daemon defaults `--jail-gid` to the **kvm** group (no `/dev/kvm` ACL needed). If you override it, that gid must still have KVM access.
-> 2. **chroot filesystem** — the jailer `mknod`s `/dev/kvm` under `--chroot-base`, so that path must be on a filesystem that **allows device nodes**. A `nodev` mount (many `/tmp` setups are `tmpfs,nodev`) makes the node inert — you'll get a cryptic `creating KVM object: Permission denied`. `/srv/jailer` on the root fs is a safe default.
-
-With `--network-egress-iface`, every sandbox created with a `network` block gets its own netns, a `/30` from the per-daemon pool (`--network-subnet-pool`, default `10.20.0.0/16`), a veth pair bridged to a tap, a per-netns DHCP server, and a per-sandbox nft chain that only permits egress to IPs the daemon's DNS proxy resolved for allowlisted names — with resolved addresses range-filtered so a guest can't reach link-local/RFC1918/metadata endpoints. See [docs/network.md](docs/network.md) for the networking design.
-
-On startup the daemon reconciles: it re-adopts recorded snapshots and reaps orphaned sandbox state (chroots, netns, nft, processes) left by a previous run, so you don't have to babysit `/srv/jailer` between restarts.
-
-### Install as a systemd service
-
-For a real host you'll want the daemon running as a managed service — start on boot, auto-restart on crash, logs to journald — rather than a program in a terminal. `install.sh` sets that up:
-
-```bash
-make build                 # produces ./crucible
-sudo ./install.sh          # installs the binary, a crucible.service unit, and a config template
-# edit /etc/crucible/crucible.env for your firecracker / kernel / rootfs paths
-sudo systemctl enable --now crucible
-journalctl -u crucible -f  # watch it boot
-```
-
-The unit ([`packaging/crucible.service`](packaging/crucible.service)) reads its flags from `/etc/crucible/crucible.env`, so you configure paths without editing the unit. `sudo ./install.sh --enable` installs and starts in one step.
-
-### End-to-end smoke tests
-
-Run as root (jailer + network need `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`):
-
-- [scripts/smoke_fork.sh](scripts/smoke_fork.sh) — fork correctness: boot a source VM, write a marker inside the guest, snapshot, fork ×3, verify each fork sees the marker.
-- [scripts/smoke_clone_safety.sh](scripts/smoke_clone_safety.sh) — clone-safety: two forks show distinct `/etc/machine-id`, distinct kernel UUIDs, divergent `/dev/urandom` in a process that straddled the snapshot, per-fork hostname and fork-id.
-- [scripts/smoke_e2e.sh](scripts/smoke_e2e.sh) — battery covering exec roundtrip, exit codes, timeouts, OOM kill, structured rusage, default-deny network, allowlist (allowed / denied / IP-literal / `*.domain`), snapshot + multi-fork with per-fork networking, reconcile.
-- [scripts/smoke_restart.sh](scripts/smoke_restart.sh) — daemon restart reconciles cleanly (no orphaned VMs/netns/nft).
-- [scripts/debug_dns.sh](scripts/debug_dns.sh) — one sandbox, dumps guest- and host-side network state in one shot.
-
-Per-test artifacts land under `/tmp/crucible-smoke-*/` so you can inspect any failing assertion.
-
-### A note on fork cost and your filesystem
-
-Fork restores memory lazily via `userfaultfd`, so guest RAM is **not** copied per fork. The per-fork **rootfs**, however, is cloned: [fsutil.Clone](internal/fsutil/clone.go) prefers `FICLONE` (reflink COW, O(1)) and falls back to a full `io.Copy` when the filesystem lacks reflink support.
-
-**ext4 has no reflink.** Only XFS (`reflink=1`, default since kernel 5.10) and btrfs/f2fs do. If `stat -fc %T <work-base>` returns `ext2/ext3`, each rootfs clone is a full byte-copy. Put `--work-base` on a reflink-capable filesystem for cheap fork.
-
-Latency numbers land here once the bench harness produces reproducible measurements — we'd rather publish none than misleading ones.
-
-### Drive it with the CLI
-
-`crucible` is a thin client over the daemon's REST API — point it at a running daemon with `--addr` (or `CRUCIBLE_ADDR`; default `127.0.0.1:7878`).
-
-```bash
-# One-shot: create a sandbox, run a command, delete it. Exit code propagates.
-crucible run --profile python-3.12 -- python -c 'print(2**10)'
+# One-shot: create a sandbox, run a command, delete it. The command's exit code propagates.
+crucible run --profile python-3.12 -- python3 -c 'print(2**10)'
 
 # Or drive the lifecycle explicitly:
 SBX=$(crucible sandbox create --memory 1024 --profile python-3.12)
@@ -200,89 +88,97 @@ crucible sandbox exec $SBX -- pip install requests   # streams stdout/stderr liv
 SNP=$(crucible snapshot create $SBX)                  # freeze the warm state
 crucible fork $SNP --count 5                          # 5 parallel children from it
 crucible sandbox ls                                   # table of live sandboxes
-crucible sandbox rm $SBX
-
-crucible profile ls                                   # profiles the daemon was started with
 ```
 
-Add `-o json` to any command for machine-readable output (scripts and agents). Full command reference: [docs/cli.md](docs/cli.md).
+Add `-o json` to any command for machine-readable output.
 
-**Prefer raw HTTP?** Everything above is the daemon's REST API — see [docs/api.md](docs/api.md) for the endpoints, the exec frame protocol, and error codes.
+**TUI** — `crucible tui` opens a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. [Reference](docs/tui.md).
 
-### Drive it with the TUI
+**MCP** — `crucible mcp serve` exposes crucible to any [MCP](https://modelcontextprotocol.io) agent (Claude Code, Cursor, …) as native tools, with operator guardrails. [Reference](docs/mcp.md).
 
-`crucible tui` is a live terminal dashboard — a control center for the same daemon. It lists running sandboxes, renders the fork tree, and lets you create / snapshot / fork / delete and run streaming `exec` interactively, all as calls through the same typed client the CLI uses (so they can't drift). Point it at a daemon with `--addr`/`--token` like any other command:
+**Raw HTTP** — everything above is the daemon's REST API: endpoints, the exec frame protocol, and error codes are in [docs/api.md](docs/api.md).
 
-```bash
-crucible tui
-```
+## How it works
 
-`enter` opens a sandbox's detail + exec; `c`/`s`/`f`/`d` are create/snapshot/fork/delete; `t` toggles the fork tree. Against a scoped token, forbidden actions are gated (and struck through in the hint). Full reference: [docs/tui.md](docs/tui.md).
+A single Go binary is both the daemon and the CLI; each guest runs a small vsock agent. The daemon boots Firecracker microVMs under jailer, runs commands over vsock with streamed output, captures snapshots, and forks end-to-end — each fork restored with lazy `userfaultfd` memory, its own netns + DHCP-assigned IP behind a default-deny allowlist, and a per-fork identity refresh. A durable registry is journaled and reconciled on restart (orphaned VMs / netns / nft rules are reaped). The full walkthrough is in [docs/architecture.md](docs/architecture.md); networking has its own [design doc](docs/network.md).
 
-Each sandbox gets a workdir under `--work-base` (default `/tmp/crucible/run/`) holding the Firecracker API socket, the hybrid-vsock UDS, and `firecracker.log` (guest serial console). `Ctrl-C` / `SIGTERM` gracefully drains active sandboxes.
+## Build from source
 
-## Development
+Requirements: a Linux host with KVM (`/dev/kvm`), Go 1.25+, a Firecracker **v1.15+** binary, an uncompressed guest kernel (`vmlinux`), and a rootfs image. Full setup — including the KVM/jailer host requirements and `sysctl` for lazy fork — is in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 git clone https://github.com/gnana997/crucible && cd crucible
-make build && ./crucible version
+make build     # daemon + CLI  → ./crucible
+make agent     # guest agent (static linux/amd64) → ./bin/crucible-agent
 ```
 
-Make targets: `build`, `agent`, `rootfs` (needs `BASE_ROOTFS=`), `profile` (needs `PROFILE=`, docker), `test`, `race`, `vet`, `fmt`, `lint`, `tidy`, `clean`.
+Run the daemon in development mode (direct Firecracker, no sudo, no jailer — no snapshot/fork):
 
-Repository layout:
-
-```
-cmd/crucible/               CLI (cobra: sandbox/snapshot/fork/profile/run) + daemon wiring
-cmd/crucible-agent/         guest-side binary (vsock listener: /exec, /network/refresh, /identity/refresh)
-internal/fcapi/             hand-written Firecracker HTTP-over-UDS client
-internal/fsutil/            Clone (FICLONE reflink / copy), Move
-internal/jailer/            argv builder, chroot staging, cleanup, orphan reap
-internal/runner/            firecracker + jailer process lifecycle (Start / Restore)
-internal/memfault/          userfaultfd page-fault handler — lazy snapshot memory for fork
-internal/sandbox/           ID gen + Manager (lifecycle, exec, snapshot, fork, clone-safety) + durable registry/reconcile
-internal/daemon/            HTTP server, routes, middleware, network adapter
-internal/api/               REST wire types (shared by daemon + client; the SDK will mirror these)
-internal/client/            typed Go client for the daemon API (shared by the CLI and MCP server)
-internal/mcpserver/         MCP server (crucible mcp serve) — thin wrapper over internal/client + operator guardrails
-internal/tui/               live terminal dashboard (crucible tui) — Bubble Tea; thin consumer of internal/client
-internal/tokenstore/        daemon API-key store (hashed bearer keys) + runtime verifier
-internal/agentwire/         shared protocol (frame format, ExecRequest/Result, identity refresh)
-internal/agentapi/          host-side client over hybrid-vsock UDS
-internal/network/           Manager + subnet pool, per-sandbox netns/veth/tap/bridge, nft base + per-sandbox rules
-internal/network/dhcp/      per-netns DHCP responder (SO_BINDTODEVICE-pinned; no MAC filter so forks work)
-internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AAAA stripping + rate limiting)
-scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / smoke_mcp / debug_dns
-profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
-packaging/                  systemd unit (crucible.service) + config template; installed by ./install.sh
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, tui.md, policy.md, profiles.md, network.md
+```bash
+./crucible daemon --firecracker-bin /path/to/firecracker --kernel /path/to/vmlinux --rootfs assets/rootfs.ext4
 ```
 
-Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), `github.com/spf13/cobra` (the CLI), and the Charm stack (`bubbletea`/`bubbles`/`lipgloss`) for the TUI. Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
+…or production-style with jailer chroot + per-sandbox networking (needs root). **Fork is supported only in jailer mode.**
 
-CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` on every push and PR.
+```bash
+sudo ./crucible daemon \
+  --firecracker-bin /path/to/firecracker --jailer-bin /path/to/jailer \
+  --kernel /path/to/vmlinux --rootfs assets/rootfs.ext4 \
+  --chroot-base /srv/jailer --network-egress-iface eth0
+```
 
-## Roadmap (near-term)
+> **Fork cost depends on your filesystem.** Fork memory is lazy (not copied), but the per-fork **rootfs** is cloned via `FICLONE` reflink (O(1)) — and **ext4 has no reflink**, so on ext4 each clone is a full byte-copy. Put `--work-base` on XFS (`reflink=1`) or btrfs for cheap fork.
 
-- **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd), plus an **MCP server** (`crucible mcp serve`) and **daemon API-key auth** for remote/hosted access.
-- **v0.1.3**: daemon-enforced **scoped / policy tokens** — bind an API key to a policy (operations, egress ceiling, profiles, resource caps, expiry) so a handed-out key is worthless beyond its bounds.
-- **v0.2.0**: a **TUI** (`crucible tui`) — live dashboard, fork trees, streaming exec, and create/snapshot/fork/delete with scope-gating; plus fork lineage on the API (`source_snapshot_id`).
-- **v0.2.x** (planned): durable per-sandbox activity logs (view/stream/search exec + lifecycle history), CLI-driven image pull, a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
+Make targets: `build`, `agent`, `rootfs`, `profile`, `test`, `race`, `vet`, `fmt`, `lint`, `tidy`, `clean`. Contribution setup, the code map, and end-to-end smoke tests are in [CONTRIBUTING.md](CONTRIBUTING.md); dependencies and package layout in [docs/architecture.md](docs/architecture.md).
+
+## What you get
+
+**Isolation** — every sandbox is a Firecracker microVM under jailer (chroot + mount/PID namespaces + a dropped uid), with cgroup v2 quotas and per-request vCPU/memory/fork ceilings. A real VM boundary, not a shared kernel.
+
+**Snapshot & fork** — freeze warm state, then fork *N* children that restore with lazy `userfaultfd` memory (no guest RAM copied per fork) and a copy-on-write rootfs. Clone-safety reseeds each fork's RNG and rotates its machine-id before it's reachable.
+
+**Networking** — default-deny egress; a per-sandbox hostname allowlist enforced in host nftables + a DNS proxy, with resolved IPs range-filtered against SSRF to metadata/private ranges.
+
+**Drive it your way** — a [CLI](docs/cli.md), a live [TUI](docs/tui.md), and an [MCP server](docs/mcp.md), all thin clients over one REST API. Bind an API key to a daemon-enforced [scoped policy](docs/policy.md).
+
+**Observability** — every exec returns a structured result (exit, timing, and 7 CPU/memory/I/O counters); a Prometheus `/metrics` endpoint and JSON logs. Durable per-sandbox activity logs are next.
+
+**Operate it** — one static Go binary; a durable registry reconciled on restart (no leaked VMs, netns, or nft rules); an install script + systemd unit.
+
+> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 11 MCP tools · 8 prebuilt profiles · 9 direct deps · 512 MB / 1 vCPU / 60 s safe defaults
+
+### Performance
+
+Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is the biggest lever — reflink (btrfs/XFS) makes fork's rootfs clone O(1), ext4 copies it — so here's both. Full methodology + distributions in [docs/benchmarks.md](docs/benchmarks.md):
+
+| | ext4 (common default) | btrfs / XFS (reflink) |
+|---|---|---|
+| Fork (warm → child) | ~690 ms | **~207 ms** |
+| Fork throughput (64-way) | 3.7/s | **45/s** |
+| 128 forks, host RAM | 4.9 GB | **1.2 GB** (vs 64 GB naïve copy) |
+| Exec roundtrip | ~3 ms | ~3 ms |
+
+Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
+
+*Full shipped-vs-planned capability matrix: [docs/ROADMAP.md](docs/ROADMAP.md).*
+
+## Roadmap
+
+- **v0.1** — core runtime: Firecracker + jailer, snapshot/fork with lazy memory, clone-safety, default-deny networking, durable registry, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd, an MCP server, and daemon API-key auth.
+- **v0.1.3** — daemon-enforced **scoped / policy tokens**.
+- **v0.2.0** (current) — a **TUI** (`crucible tui`), plus fork lineage on the API (`source_snapshot_id`).
+- **v0.2.x** (planned) — durable per-sandbox activity logs, CLI-driven image pull, a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Security
 
-crucible runs untrusted code, so isolation is a core property — but it is **`v0.1` and not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default and ships with optional bearer-key auth (required, with TLS, to bind a non-loopback address). See [SECURITY.md](SECURITY.md) for the isolation model, current caveats, and how to report a vulnerability.
+crucible runs untrusted code, so isolation is a core property — but it is **pre-1.0 and not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default and ships with optional bearer-key auth (required, with TLS, to bind a non-loopback address). See [SECURITY.md](SECURITY.md) for the isolation model, current caveats, and how to report a vulnerability.
 
 ## Contributing
 
-Early days — the API is stabilizing. If you're building a coding agent and want crucible to fit your workflow, open an issue describing it; concrete use cases shape priorities more than wishlists. Build/test setup, style, and PR guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md); the codebase walk-through is in [docs/architecture.md](docs/architecture.md).
+Early days — the API is stabilizing. If you're building a coding agent and want crucible to fit your workflow, open an issue describing it; concrete use cases shape priorities more than wishlists. Build/test setup, style, and PR guidelines are in [CONTRIBUTING.md](CONTRIBUTING.md); the codebase walk-through is in [docs/architecture.md](docs/architecture.md). By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).
-
----
-
-*crucible is a working name.*

@@ -1,6 +1,6 @@
 # Contributing to crucible
 
-Thanks for your interest in crucible. It's an early (`v0.1`) project, so the most valuable contributions right now are bug reports with reproductions, correctness fixes, and docs — but PRs of any size are welcome. This guide covers how to build, test, and match the house style.
+Thanks for your interest in crucible. It's an early (pre-1.0) project, so the most valuable contributions right now are bug reports with reproductions, correctness fixes, and docs — but PRs of any size are welcome. This guide covers how to build, test, and match the house style. By participating you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Ground rules
 

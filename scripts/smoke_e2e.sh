@@ -3,8 +3,7 @@
 # Extensive end-to-end smoke test for crucible.
 #
 # Covers tier 1 (correctness-critical) and tier 2 (high-value
-# edge cases) scenarios from docs/network.md and the feature
-# checklist in CRUCIBLE_README.md v0.1:
+# edge cases) scenarios from docs/network.md:
 #
 #   01  default-deny: sandbox with no network has no eth0 IP, no DNS
 #   02  exec round-trip: stdout + exit_code + duration
@@ -41,7 +40,7 @@
 #        JAILER_BIN=/path/to/jailer \
 #        KERNEL=/path/to/vmlinux \
 #        ROOTFS=./assets/rootfs-with-agent.ext4 \
-#        EGRESS_IFACE=wlp1s0 \
+#        EGRESS_IFACE=eth0 \
 #        scripts/smoke_e2e.sh
 
 set -u

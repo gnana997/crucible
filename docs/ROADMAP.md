@@ -1,76 +1,82 @@
 # Roadmap
 
-This doc lists what is planned, roughly in order. Each section is a coherent milestone — items inside a section are the ones expected to land together. Checkboxes reflect the current state: anything `[x]` is actually working on `main`; anything `[ ]` is not. Nothing is called "done" until it ships.
+What's shipped and what's planned, roughly in order. Each section is a coherent milestone — items inside a section are the ones that landed (or are expected to land) together. A `[x]` is actually working on `main`; a `•` is planned. Nothing is called "done" until it ships.
 
 For the motivation and design principles behind these choices, see [VISION.md](VISION.md).
 
 ---
 
-## v0.1 — Core runtime *(in progress)*
+## Shipped
+
+### v0.1 — Core runtime
 
 The minimal usable thing: boot a sandbox, run a command inside it, get a structured result back, and fork it cheaply.
 
-**Working today:**
-
-- [x] Firecracker orchestration in Go (boot a microVM via the Firecracker API), under the jailer
+- [x] Firecracker orchestration in Go (boot a microVM via the Firecracker API), under the jailer (chroot + mount/PID namespaces + privilege drop)
 - [x] HTTP API: create / list / inspect / delete sandboxes, exec, snapshot, fork
 - [x] Snapshot + fork primitives — a fork serves guest memory lazily from the snapshot via `userfaultfd` (no per-fork RAM copy)
 - [x] Clone-safety — per-fork kernel RNG reseed and machine-identifier rotation, applied before a fork is reachable
 - [x] Default-deny networking — each sandbox in its own netns, egress limited to a DNS-proxy hostname allowlist with range-filtered resolved addresses
 - [x] Per-request resource ceilings (vCPU, memory, fork fan-out) plus a per-sandbox lifetime and a per-exec deadline
 - [x] Structured execution record per exec (exit code, timing, signal, timeout/OOM flags, and CPU/memory/page-fault/context-switch/IO usage)
-- [x] Durable sandbox registry with reconcile-on-restart
-- [x] Structured JSON lifecycle logs
+- [x] Durable sandbox registry with reconcile-on-restart, and structured JSON lifecycle logs
 - [x] Host-side cgroup quotas (cpu.max / memory.max / pids.max) sized per sandbox, on by default under jailer
 - [x] Prometheus `/metrics` endpoint — `sandboxes_created_total`, `sandboxes_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`
-- [x] Native language rootfs profiles (`base`, `python`, `node`, `go`, versioned) — built from official language images via `make profile`, selected by the create `profile` field ([profiles.md](profiles.md))
-- [x] CLI over the REST API — `sandbox` (create/ls/inspect/rm/exec), `snapshot`, `fork`, `profile ls`, and a `run` one-shot, on a reusable typed Go client; `-o json` everywhere ([cli.md](cli.md))
-- [x] Install script + systemd unit — `install.sh` drops the binary, a `crucible.service` unit, and a config template; `sudo systemctl enable --now crucible` runs the daemon as a managed service (auto-restart, journald logs, start on boot)
+- [x] Native language rootfs profiles (`base`, `python`, `node`, `go`, versioned) — built from official language images via `make profile` ([profiles.md](profiles.md))
+- [x] CLI over the REST API — `sandbox`, `snapshot`, `fork`, `profile ls`, and a `run` one-shot, on a reusable typed Go client; `-o json` everywhere ([cli.md](cli.md))
+- [x] Install script + systemd unit — `install.sh` drops the binary, a `crucible.service` unit, and a config template
 
-With that, the v0.1 core runtime is feature-complete.
+### v0.1.2 — MCP server + API-key auth
 
-*(The Python SDK moved to v0.3 alongside observability: driving the API through the CLI first stabilizes the surface an SDK should target. A TUI and an MCP server are v0.2.)*
+- [x] **MCP server** (`crucible mcp serve`) — a stdio [Model Context Protocol](https://modelcontextprotocol.io) server so any MCP agent (Claude Code, Cursor, …) drives crucible as native tools, with operator guardrails the agent can't widen. Built on `internal/client`, so an MCP call and the CLI hit the identical path and can't drift ([mcp.md](mcp.md)).
+- [x] **Daemon API-key auth** — bearer keys hashed at rest; once any key exists every request must present it, and binding a non-loopback address is refused without keys **and** TLS ([SECURITY.md](../SECURITY.md)).
 
-## v0.2 — Interfaces, policy, and language expansion
+### v0.1.3 — Scoped / policy tokens
 
-Make crucible pleasant to drive — for agents and humans — and give operators real policy control. The two new interfaces below are deliberately thin: v0.1 factored the daemon's REST surface into shared wire types (`internal/api`) and a typed client (`internal/client`) that the CLI already sits on, so the MCP server and TUI are consumers of that same client, not parallel reimplementations.
+- [x] Bind a key to a policy the **daemon** enforces — allowed operations, an egress ceiling, a profile allowlist, resource caps, and an expiry — so a handed-out key is worthless beyond its bounds. `crucible policy validate/show`, `GET /whoami` ([policy.md](policy.md)).
 
-- **MCP server.** Expose crucible as a [Model Context Protocol](https://modelcontextprotocol.io) server so any MCP-compatible agent (Claude Code, Cursor, and others) can create sandboxes, `exec`, snapshot, and fork as native tools — no shell wrapping, no SDK. Built directly on `internal/client`, so an MCP tool call and a CLI command hit the exact same API path and can't drift.
-- **TUI.** ✅ **Shipped in v0.2.0** (`crucible tui`). A live terminal dashboard — running sandboxes, the fork tree, and interactive streaming `exec`, plus create/snapshot/fork/delete gated on the token's scope. A thin consumer of `internal/client`; the output layer built for the CLI feeds it. See [tui.md](tui.md). *(Durable per-sandbox activity logs — searchable exec/lifecycle history in the dashboard — are a fast-follow; live exec streaming ships now, persistence next.)*
-- Language profiles: Rust, Java, Ruby, Swift, C/C++, bash-only, minimal-alpine
-- **Per-language seccomp policies.** Hand-tuned syscall allowlists for Python, Node, Go, Rust runtimes. Generic policies are too loose; per-language is the right granularity.
-- **Custom rootfs builder.** `crucible rootfs build ./Dockerfile` produces a Firecracker-compatible rootfs image you can use as a custom profile. Most teams will want this.
-- **Policy files.** `policy.yaml` declares quotas, syscall rules, network allowlists, and mount policies as a single versionable artifact.
-- **DNS filtering.** Network allowlists expand to hostname-based rules, enforced at the DNS layer (not just IP).
-- **Packet capture on demand.** `crucible sandbox tcpdump sbx_7k2m` gives you a pcap of everything the sandbox did on the network. Useful for debugging, essential for security review.
+### v0.2.0 — TUI + fork lineage *(current)*
 
-## v0.3 — Observability and debugging
+- [x] **TUI** (`crucible tui`) — a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. A thin consumer of `internal/client` ([tui.md](tui.md)).
+- [x] **Fork lineage on the API** — `source_snapshot_id` records which snapshot a sandbox was forked from, so the fork genealogy is reconstructable by any client (this is what the tree view draws).
 
-Take the v0.1 primitives and turn them into first-class integrations.
+## Planned
 
-- **OpenTelemetry export.** Every sandbox lifecycle event, every exec, every snapshot emitted as OTel spans with stable semantic conventions. OTLP exporter configured via standard env vars. Goes to Jaeger, Tempo, Datadog, Honeycomb, Grafana — anywhere that speaks OTLP.
-- **Prometheus histograms.** Upgrade the v0.1 `/metrics` endpoint with proper histograms for latency-sensitive operations, plus reference Grafana dashboards as code.
-- **Syscall tracing.** Optional per-sandbox syscall log via ptrace or eBPF. Expensive to enable; valuable when you need to understand exactly what an agent's code did.
-- **Filesystem diff.** `crucible fs diff sbx_7k2m` shows every file created, modified, or deleted inside the sandbox vs. its starting rootfs.
-- **Record and replay.** Capture a full execution trace (stdin/stdout, env vars, filesystem writes, network bytes). Replay deterministically inside a new sandbox for debugging. Essential for reproducing agent failures.
+### v0.2.x — Next
 
-## v0.4 — Fork trees
+- • **Durable per-sandbox activity logs** — the immediate fast-follow. Persist every exec (command + streamed output) and lifecycle event to an append-only per-sandbox log, exposed over the API and viewable/streamable/searchable in the TUI. Today exec output is live-only and leaves no trail once a client detaches; this closes that gap.
+- • **Custom rootfs builder.** `crucible rootfs build ./Dockerfile` produces a Firecracker-compatible rootfs you can use as a custom profile.
+- • **OCI image pull.** Fetch a profile rootfs from `ghcr.io` / a private registry (the `image: {path, oci}` wire contract is already frozen; it returns `501` today).
+- • **More language profiles** — Rust, Java, Ruby, Swift, C/C++, bash-only, minimal-alpine.
+- • **`policy.yaml`.** A single versionable artifact that supersets scoped tokens — quotas, syscall rules, network allowlists, and mount policies.
+- • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
+- • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
 
-Make parallel agent exploration a first-class workflow, not just a primitive.
+### v0.3 — Observability and debugging
 
-- **Fork tree API.** Explicit parent/child relationships between snapshots. Explore with depth limits and branch pruning.
-- **Tree visualization.** `crucible tree show sbx_7k2m` renders the fork genealogy of a sandbox as a tree.
-- **Scoring hooks.** Attach a scoring function to a fork tree; crucible prunes the lowest-scoring branches and continues exploring the most promising ones. Beam search for code.
-- **Shared memory reads.** Children forked from the same snapshot can read shared pages without duplication, cutting memory cost per fork substantially.
+Turn the per-exec records into first-class, exportable telemetry.
 
-## Longer term
+- • **OpenTelemetry export.** Every lifecycle event, exec, and snapshot as OTel spans with stable semantic conventions; OTLP to Jaeger / Tempo / Datadog / Honeycomb / Grafana.
+- • **Prometheus histograms.** Proper latency histograms on the `/metrics` endpoint, plus reference Grafana dashboards as code.
+- • **Syscall tracing.** Optional per-sandbox syscall log via ptrace or eBPF — expensive to enable, valuable when you need to know exactly what an agent's code did.
+- • **Filesystem diff.** `crucible fs diff sbx_…` shows every file created, modified, or deleted vs. the starting rootfs.
+- • **Record and replay.** Capture a full execution trace (stdin/stdout, env, filesystem writes, network bytes) and replay it deterministically in a new sandbox.
 
-Directions that matter once the core is solid. Not committed to a version or a fixed order yet.
+### v0.4 — Fork trees
 
-- **Interactive and streaming execution.** Streaming stdout/stderr (SSE or gRPC), bidirectional stdin so agents can drive REPLs and language servers, and persistent workspaces that survive beyond a single exec.
-- **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and the common agent frameworks, building on the v0.2 MCP server.
-- **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
-- **Benchmarking harness.** Published regression numbers for cold start, fork latency, and network throughput.
-- **Stable API + external security audit.** A versioned API with a deprecation policy, and a published third-party audit — the bar for calling anything `v1.0`.
-- **WASM profiles.** WebAssembly sandboxes alongside VM sandboxes, for workloads where full-VM isolation is overkill.
-- **Deterministic replay for security research.** Record a sandbox execution at syscall granularity and replay it deterministically to study agent failures or malware.
+Make parallel agent exploration a first-class workflow, not just a primitive. Fork lineage (v0.2.0) and the TUI tree view are the groundwork.
+
+- • **Fork tree API.** Explicit parent/child relationships between snapshots, with depth limits and branch pruning.
+- • **Scoring hooks.** Attach a scoring function to a fork tree; crucible prunes the lowest-scoring branches and keeps exploring the best. Beam search for code.
+- • **Shared memory reads.** Children forked from the same snapshot read shared pages without duplication, cutting memory cost per fork.
+
+### Longer term
+
+Directions that matter once the core is solid. Not committed to a version or order yet.
+
+- • **Interactive execution.** Bidirectional stdin so agents can drive REPLs and language servers, and persistent workspaces that survive beyond a single exec (streamed stdout/stderr already ships).
+- • **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and common agent frameworks, building on the MCP server.
+- • **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
+- • **Benchmarking harness.** Published regression numbers for cold start, fork latency, and network throughput.
+- • **Stable API + external security audit.** A versioned API with a deprecation policy and a published third-party audit — the bar for `v1.0`.
+- • **WASM profiles.** WebAssembly sandboxes alongside VM sandboxes, for workloads where full-VM isolation is overkill.

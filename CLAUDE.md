@@ -10,13 +10,15 @@ Start with `README.md`. Deeper docs live in `docs/`: [VISION](docs/VISION.md)
 (why it's shaped this way), [architecture](docs/architecture.md) (how the code
 fits together), [api](docs/api.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
 [tui](docs/tui.md), [policy](docs/policy.md),
-[profiles](docs/profiles.md), [network](docs/network.md), and
+[profiles](docs/profiles.md), [network](docs/network.md),
+[benchmarks](docs/benchmarks.md), and
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** the v0.1 core runtime is feature-complete — runtime, CLI, native
-rootfs profiles, a Prometheus `/metrics` endpoint, host cgroup quotas, and an
-install script + systemd unit. See the ROADMAP for what's planned next.
+**Status:** v0.2.0. The core runtime is feature-complete (runtime, CLI, native
+rootfs profiles, `/metrics`, cgroup quotas, install/systemd), plus an MCP server,
+daemon API-key auth with scoped/policy tokens, and a TUI (`crucible tui`). See the
+ROADMAP for what's planned next.
 
 ## Working style
 

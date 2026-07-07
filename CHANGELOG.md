@@ -34,8 +34,16 @@ API path and can't drift.
 - **Fork lineage on the API.** `SandboxResponse` gains `source_snapshot_id` (the
   snapshot a sandbox was forked from, stamped in `forkOne`), so the fork
   genealogy is reconstructable by any client — this is what the tree view draws.
-- `docs/tui.md` and a `demo/tui.tape` [vhs](https://github.com/charmbracelet/vhs)
-  script for regenerating the demo GIF.
+- **`crucible daemon --max-fork`** (env `CRUCIBLE_MAX_FORK`) — bound how many
+  sandboxes a single fork request may create (0 = the built-in default of 64). A
+  scoped token's own `max_fork` can still only tighten it.
+- **Benchmark harness** — `cmd/crucible-bench` (`make bench`) drives a real
+  daemon through `internal/client` and reports latency distributions, fork
+  fan-out scaling, lazy-memory efficiency, and density; see
+  [docs/benchmarks.md](docs/benchmarks.md).
+- `docs/tui.md` and `demo/tui.tape`, `demo/network.tape`, `demo/bench.tape`
+  [vhs](https://github.com/charmbracelet/vhs) scripts for regenerating the demo
+  GIFs.
 
 ### Changed
 

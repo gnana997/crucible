@@ -78,6 +78,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// Only takes effect under jailer mode; the direct-exec runner has
 		// no cgroup to write. "off" disables the limits.
 		cgroupQuotas = fs.String("cgroup-quotas", "derive", "host cgroup v2 limits per sandbox VMM (jailer mode): derive|off")
+		// maxFork bounds how many sandboxes a single fork request may create,
+		// protecting the daemon from fan-out alone. 0 uses the built-in
+		// default (64). A scoped token's own max_fork can only tighten this.
+		maxFork = fs.Int("max-fork", envInt("CRUCIBLE_MAX_FORK", 0), "max sandboxes a single fork request may create (0 = built-in default of 64); env CRUCIBLE_MAX_FORK")
 		// Network flags: when --network-egress-iface is set AND
 		// --jailer-bin is set, the daemon can provision per-sandbox
 		// netns + nft + DHCP + DNS proxy. Without both, sandbox
@@ -312,7 +316,8 @@ Required flags:
 		ReloadAllowlist: func(patterns []string) (sandbox.NetworkAllowlist, error) {
 			return network.New(patterns)
 		},
-		QuotaPolicy: quotaPolicy,
+		QuotaPolicy:  quotaPolicy,
+		MaxForkCount: *maxFork,
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
@@ -447,6 +452,17 @@ func defaultJailGID() uint {
 		}
 	}
 	return 10000
+}
+
+// envInt returns the integer value of the env var named key, or def when the
+// var is unset or not a valid integer.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
 }
 
 // tokenArgs holds the flags/positionals pulled from a `daemon token` invocation.

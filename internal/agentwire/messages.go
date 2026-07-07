@@ -64,7 +64,7 @@ type ExecResult struct {
 	// reached at least 95% of the guest's total memory. Close to
 	// correct in practice but not bulletproof — a precise answer
 	// requires per-exec cgroup v2 memory.events, which lands with
-	// per-exec cgroups in a later weekend.
+	// per-exec cgroups in a later release.
 	OomKilled bool `json:"oom_killed,omitempty"`
 
 	// Error is an agent-side failure string. Populated when the agent

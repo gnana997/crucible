@@ -1,6 +1,7 @@
 # build artifacts
 /crucible
 /crucible-agent
+/crucible-bench
 /bin/
 /dist/
 /build/
@@ -25,3 +26,6 @@ coverage.txt
 # spike/ firecracker binaries (large, reproducible downloads)
 # kept at parent level for Checkpoint Zero; never commit here.
 /spike/
+
+# benchmark run artifact
+bench-results*.json

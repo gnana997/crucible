@@ -18,7 +18,7 @@ Today, agent builders solve this one of three ways:
 
 ## What crucible is
 
-A single Go binary you run on a Linux host. It speaks HTTP: you hand it a command, it gives you back stdout, stderr, an exit code, and a structured execution record. Behind the scenes it boots Firecracker microVMs, restores them from snapshots, forks them cheaply, isolates their networking, and cleans up when you're done.
+A single Go binary you run on a Linux host. It speaks HTTP: you hand it a command, it gives you back stdout, stderr, an exit code, and a structured execution record. Behind the scenes it boots Firecracker microVMs, restores them from snapshots, forks them cheaply, isolates their networking, and cleans up when you're done. Drive it with the CLI, a live TUI dashboard, or an MCP server for agents — all thin clients over the same API, so they can't drift.
 
 The interesting features are the ones you don't have to ask for:
 
@@ -46,7 +46,7 @@ If you need a primitive, use Firecracker. If you want to hand somebody a credit 
 
 **Sandbox.** A Firecracker microVM with its own kernel, rootfs, and network policy. Lives as long as you need it; cleaned up on timeout or explicit delete.
 
-**Rootfs.** The filesystem image a sandbox boots from. You supply one today; pre-baked language profiles (`base`, `python`, `node`, `go`) and a custom rootfs builder are planned.
+**Rootfs.** The filesystem image a sandbox boots from. Pre-baked language profiles (`base`, `python`, `node`, `go`) ship today; you can also supply your own image, and a custom rootfs builder is planned.
 
 **Snapshot.** A frozen sandbox state — memory, registers, disk — captured at a point in time. Restores without a cold boot, and is the basis for forking.
 
@@ -86,7 +86,7 @@ crucible turns this into two steps:
 1. Run setup once in a parent sandbox: `git clone`, `pip install`, boot the app, load fixtures.
 2. Snapshot. Now fork N children from that snapshot. Each child starts at exactly the point the parent finished setup — memory, disk, and loaded processes intact. Dependencies are already installed; the app is already warm.
 
-Illustrative agent workflow:
+Illustrative agent workflow (pseudocode — a Python SDK is planned; today you'd drive this through the CLI or the HTTP API):
 
 ```python
 with c.sandbox(profile="python") as parent:
@@ -120,7 +120,7 @@ Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This 
 
 **Self-hosted, single binary, no cloud.** No telemetry, no callbacks home, no account. Download a binary, run it. This matters for data locality, cost control, and basic trust.
 
-**Production-honest.** Documented limitations, no claims the tool hasn't earned. `v0.1` means `v0.1` — see [SECURITY.md](../SECURITY.md) for exactly what is and isn't safe today.
+**Production-honest.** Documented limitations, no claims the tool hasn't earned. Pre-1.0 means pre-1.0 — see [SECURITY.md](../SECURITY.md) for exactly what is and isn't safe today.
 
 ## FAQ
 
@@ -137,13 +137,11 @@ Firecracker's attack surface is intentionally minimal — no USB, no PCI, no leg
 No — Firecracker requires KVM, which requires Linux. On macOS, run crucible inside a Linux VM (Lima, UTM, Docker Desktop).
 
 **Is this production-ready? Can I run untrusted multi-tenant code?**
-Not yet. It's `v0.1`, single-operator, loopback by default (optional bearer-key auth for remote access), with no per-key authorization scopes — a pre-release, not a hardened multi-tenant platform. See [SECURITY.md](../SECURITY.md) for the current isolation model and its limits.
+Not yet. It's pre-1.0 and single-operator: loopback by default, with optional bearer-key auth and daemon-enforced scoped tokens for remote access — but a pre-release, not a hardened multi-tenant platform. See [SECURITY.md](../SECURITY.md) for the current isolation model and its limits.
 
 **How does this compare to E2B?**
 E2B is a hosted service — great for "hand somebody a credit card and be done." crucible is self-hosted — better if you need data locality, cost control, or you don't want your agent traces leaving your infra. Similar runtime goals; opposite product shape.
 
-## Who built this
+## Origins
 
-I'm Gnana — a platform engineer working on systems, isolation, and AI-agent infrastructure. crucible started as frustration with the options for running agent-generated code safely: the choices were all wrong in different ways, and the gap between "raw Firecracker" and "pay somebody" was too big to leave alone.
-
-Writing about platform engineering and systems: [gnanasivasai.dev](https://gnanasivasai.dev)
+crucible started as frustration with the options for running agent-generated code safely: the choices were all wrong in different ways, and the gap between "raw Firecracker" and "pay somebody" was too big to leave alone. It's built by engineers who work on systems, isolation, and AI-agent infrastructure.

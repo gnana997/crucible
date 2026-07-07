@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest a capability or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Concrete use cases shape priorities more than wishlists — tell us what you're
+        trying to do, not just what to build. Check [docs/ROADMAP.md](../blob/main/docs/ROADMAP.md)
+        first; it may already be planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The use case or problem, and why the current behavior falls short.
+      placeholder: "I'm building an agent that … and I can't … because …"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like crucible to do? An API shape, flag, or command sketch helps.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried or other approaches you weighed.
+    validations:
+      required: false

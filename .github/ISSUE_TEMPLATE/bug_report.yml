@@ -1,0 +1,56 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please include enough detail to reproduce it.
+        For **security vulnerabilities, do not open a public issue** — see [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+      placeholder: "crucible sandbox exec … returned X; I expected Y."
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands (daemon flags + client commands) that trigger it.
+      render: shell
+      placeholder: |
+        1. sudo ./crucible daemon --jailer-bin … --network-egress-iface eth0
+        2. crucible run --profile python-3.12 -- …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: crucible version
+      description: Output of `crucible version`.
+      placeholder: "v0.2.0 (or a commit SHA)"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS + kernel, Firecracker version, jailer on/off, networking on/off, work-base filesystem.
+      placeholder: |
+        - OS/kernel: Ubuntu 24.04, 6.8.0
+        - Firecracker: v1.16.1, jailer: yes
+        - Networking: yes (--network-egress-iface eth0)
+        - work-base fs: xfs
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Daemon logs (`journalctl -u crucible` or `--log-format text`) around the failure. Redact anything sensitive.
+      render: shell
+    validations:
+      required: false

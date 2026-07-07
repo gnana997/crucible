@@ -1,157 +1,158 @@
 # Network: default-deny with per-sandbox allowlist
 
-> Design doc for the v0.1 network feature. The doc is deliberately concrete — it describes the implementation we intend to build, not every possible alternative. Supersedes the brief mention in [VISION.md](VISION.md). For the higher-level "why network isolation?" see the FAQ in [CRUCIBLE_README.md](../../CRUCIBLE_README.md).
+> How crucible's per-sandbox networking works — default-deny egress with a hostname allowlist, enforced on the host kernel. The document is deliberately concrete about the implementation. For the higher-level "why network isolation?", see [VISION.md](VISION.md).
 
 ![crucible default-deny egress](../demo/network.gif)
 
 *In action: a sandbox created with `--net-allow pypi.org` resolves and reaches pypi.org over HTTPS, while every other host — e.g. `example.com` — is refused at the DNS proxy. The allowlist is the whole reachable surface. (Regenerate with `vhs demo/network.tape`.)*
 
-## Goals (v0.1)
+## Design goals
 
 1. **Default-deny.** A sandbox with no network config gets no NIC attached and zero egress reachability. This is the out-of-the-box experience.
-2. **Hostname allowlist override.** A sandbox configured with `network.enabled=true` and an allowlist of hostname patterns can reach exactly those hostnames (A/AAAA records only) over any TCP/UDP port. Everything else — ICMP to arbitrary hosts, egress to IP literals, connections to ports on resolved IPs that we didn't answer for — is dropped.
-3. **Enforcement on the host kernel.** Policy is applied in the host's nftables and a host-side DNS proxy that the guest is forced to use. The guest itself is untrusted — if user code escalates to root and tears down guest-side firewall rules, the host rules still block egress.
+2. **Hostname allowlist override.** A sandbox configured with `network.enabled=true` and an allowlist of hostname patterns can reach exactly those hostnames (A/AAAA records only) over any TCP/UDP port. Everything else — ICMP to arbitrary hosts, egress to IP literals, connections to ports on resolved IPs we didn't answer for — is dropped.
+3. **Enforcement on the host kernel.** Policy is applied in the host's nftables and a host-side DNS proxy the guest is forced to use. The guest is untrusted — if user code escalates to root and tears down guest-side firewall rules, the host rules still block egress.
 4. **Per-sandbox isolation.** Sandbox A cannot see, reach, or influence sandbox B's network traffic, even if both are allowlisted to overlapping destinations.
 5. **Clean lifecycle.** Create → use → delete leaves no orphan namespaces, veth pairs, nftables tables, or DNS proxy state. Daemon-crash recovery wipes stale per-sandbox network state on startup.
 
-## Non-goals (v0.1)
+## Non-goals
 
-- IPv6 (deferred; add-on later). All allocation and rules are IPv4-only.
-- CIDR-based allowlists (`10.0.0.0/8`). Hostname-only for v0.1.
-- Port allowlists (`pypi.org:443` only). We allow any port to allowed IPs; we don't try to constrain ports.
-- Protocol allowlists. TCP, UDP, ICMP all allowed to allowed IPs — no per-protocol filter.
-- Rate limiting. No egress rate limit per sandbox.
-- Packet capture / traffic logging. The v0.2 "Packet capture on demand" item is exactly this.
-- Bring-your-own-DNS (forcing a specific upstream resolver per sandbox). All sandboxes share the same upstream.
-- Policy files. Configuration is per-request JSON; YAML policy files are a v0.2 item.
-- Running the DNS proxy in a separate process. It's in-proc for v0.1.
+These are deliberate exclusions, not oversights:
+
+- **IPv6.** All allocation and rules are IPv4-only (deferred).
+- **CIDR-based allowlists** (`10.0.0.0/8`). Hostname-only.
+- **Port allowlists** (`pypi.org:443`). Any port to allowed IPs; ports aren't constrained.
+- **Protocol allowlists.** TCP, UDP, ICMP all allowed to allowed IPs — no per-protocol filter.
+- **Egress rate limiting.** No per-sandbox rate limit.
+- **Packet capture / traffic logging** — a planned item (`crucible sandbox tcpdump`, see [ROADMAP.md](ROADMAP.md)).
+- **Bring-your-own-DNS** (a per-sandbox upstream resolver). All sandboxes share the same upstream.
+- **Policy files.** Configuration is per-request JSON; a `policy.yaml` superset is planned.
+- **A separate DNS-proxy process.** The proxy runs in-process in the daemon.
 
 ## Architecture
 
-```
-                          ┌─────────────────────────────────────────────────────┐
-                          │                  Host root netns                    │
-                          │                                                     │
-                          │   crucible-dns dummy iface: 10.20.255.254/32        │
-                          │                        │                            │
-                          │   ┌────────────────────▼───────────────────────┐    │
-┌────────────┐  veth-A-h  │   │  DNS proxy (miekg/dns)                     │    │
-│ sandbox A  │◄───────────┼───┤  single UDP listener on 10.20.255.254:53   │    │
-│ netns      │ 10.20.0.1  │   │  policies sync.Map[guest-src-IP → policy]  │    │
-│ guest:     │            │   │  upstream: --dns-upstream (system | IP)    │    │
-│  10.20.0.3 │            │   └───────────────┬────────────────────────────┘    │
-└────────────┘            │                   │                                 │
-                          │                   └──► upstream resolver :53        │
-┌────────────┐  veth-B-h  │                                                     │
-│ sandbox B  │◄───────────┤   ┌─────────────────────────────────────────────┐   │
-│ netns      │ 10.20.1.1  │   │  nftables inet table "crucible":            │   │
-│ guest:     │            │   │    per-sandbox chain keyed on iifname       │   │
-│  10.20.1.3 │            │   │    - accept udp/53 to 10.20.255.254         │   │
-└────────────┘            │   │    - accept to @sandbox-<id>-allowed set    │   │
-                          │   │    - drop rest                              │   │
-                          │   │  postrouting: masquerade on egress iface    │   │
-                          │   └─────────────────────────────────────────────┘   │
-                          └─────────────────────────────────────────────────────┘
+Every sandbox routes DNS to one shared host-side proxy and egresses through one shared nftables table; the guest's source IP — unique because every sandbox owns its own `/30` — is the key that maps a packet to its policy.
+
+```mermaid
+flowchart LR
+    subgraph nsA["sandbox A netns"]
+        gA["guest 10.20.0.2<br/>tap ⇄ bridge ⇄ veth"]
+    end
+    subgraph nsB["sandbox B netns"]
+        gB["guest 10.20.1.2<br/>tap ⇄ bridge ⇄ veth"]
+    end
+    subgraph host["host root netns"]
+        nft["nftables 'crucible' table<br/>per-sandbox chain (by source /30):<br/>• accept udp/53 to 10.20.255.254<br/>• accept dst in @sandbox-allowed set<br/>• drop the rest<br/>postrouting: masquerade on egress"]
+        dns["DNS proxy (miekg/dns)<br/>10.20.255.254:53<br/>src-IP → policy (sync.Map)"]
+        eg["egress iface"]
+    end
+    up["upstream resolver :53"]
+    net["internet"]
+
+    gA -- "veth-A" --> nft
+    gB -- "veth-B" --> nft
+    nft -- "udp/53" --> dns
+    nft -- "@allowed" --> eg
+    dns -- "forward" --> up
+    eg --> net
 ```
 
-**The DNS anycast IP.** We allocate `10.20.255.254` inside the subnet pool as a reserved host-side address, bound to a dummy interface in the host root netns. Every sandbox gets a route `10.20.255.254/32 via <its own gateway>` so DNS queries traverse the veth into host root netns and land on the single shared listener. Source IP of the incoming packet — the guest's `.3` — identifies the sandbox, unambiguously, because every sandbox owns a unique /30. O(1) sync.Map lookup maps source IP to the sandbox's policy.
+**The DNS anycast IP.** The daemon reserves `10.20.255.254` inside the subnet pool as a host-side address, bound to a `crucible-dns` dummy interface in the host root netns. Every sandbox gets a route `10.20.255.254/32 via <its own gateway>`, so DNS queries traverse the veth into host root netns and land on the single shared listener. The source IP of the incoming packet — the guest's address — identifies the sandbox unambiguously, because every sandbox owns a unique `/30`. An O(1) `sync.Map` lookup maps source IP to that sandbox's policy.
 
 Each sandbox gets:
 
-- **Its own network namespace** on the host.
-- **A veth pair**: one end (`veth-<id>-h`) stays in the host root netns, the other end (`veth-<id>-g`) is moved into the sandbox netns.
-- **A tap device** inside the sandbox netns, which Firecracker uses as the guest's NIC.
-- **A /30 subnet** from the 10.20.0.0/16 pool: .0 network, .1 host-side veth (also the guest's default gateway and DNS target), .2 guest-side veth... wait — we flip this. Actually let's use /30 cleanly: `.1` is host-side, `.2` is guest-side veth-to-tap routing, `.3` is the guest IP. The guest talks to `.1` for DNS and egress.
+- **Its own network namespace** on the host (`crucible-<id>`).
+- **A veth pair**: one end (`veth-<id>-h`) stays in the host root netns; the other (`veth-<id>-g`) moves into the sandbox netns.
+- **A bridge inside the netns** joining the guest's `tap-<id>` (Firecracker's NIC) to `veth-<id>-g`, so the guest and the host-side veth share one L2 segment.
+- **A `/30` from the `10.20.0.0/16` pool.** Within the block: the host-side veth holds the first usable address (the guest's **gateway**), the guest holds the second (e.g. gateway `10.20.0.13`, guest `10.20.0.14` in block `10.20.0.12/30`). DNS points at the shared anycast `10.20.255.254`.
 
-(The actual addressing is boring; the point is each sandbox has a dedicated small subnet and the host end is a stable gateway address.)
+Three shared host-root-netns resources are allocated once at startup:
 
-The daemon holds three shared host-root-netns resources, allocated once at startup:
+- **The `crucible-dns` dummy interface**, carrying the anycast IP `10.20.255.254/32` every sandbox routes DNS to.
+- **The DNS proxy**, one UDP listener bound to `10.20.255.254:53` (`miekg/dns` for wire format). Policies keyed by guest source IP in a `sync.Map` — O(1) read path, no mutex on the hot path.
+- **A single nftables `inet` table** named `crucible`, containing a per-sandbox set of allowed IPs and a per-sandbox chain of filter rules.
 
-- **The `crucible-dns` dummy interface**, carrying the reserved anycast IP `10.20.255.254/32` that every sandbox routes DNS to.
-- **The DNS proxy**, one UDP listener bound to `10.20.255.254:53`, using `miekg/dns` for wire format. Policies keyed by guest source IP in a `sync.Map` — O(1) read path, no mutex on the hot path.
-- **A single nftables `inet` table** named `crucible`, containing a per-sandbox set of allowed IPs and a chain per sandbox for the filter rules.
+## Per-sandbox setup (on `Manager.Create`)
 
-## Per-sandbox setup (on Manager.Create)
+Order matters — each step assumes the previous succeeded; a failure triggers rollback that unwinds in reverse.
 
-Order matters — each step assumes the previous has succeeded; failures trigger rollback that unwinds in reverse.
-
-1. **Allocate a /30 from the pool.** Bitmap in the Manager. Rejects create if exhausted (cap around 16K concurrent sandboxes, plenty).
-2. **Create network namespace.** `ip netns add crucible-<sandbox-id-sanitized>` (shell out for v0.1; switch to netlink if we outgrow it).
-3. **Create veth pair.** `ip link add veth-<id>-h type veth peer name veth-<id>-g`. Move `veth-<id>-g` into the sandbox netns.
-4. **Assign IPs and bring links up.**
-   - Host side: `ip addr add 10.20.X.1/30 dev veth-<id>-h; ip link set veth-<id>-h up`.
-   - Guest side (in netns): `ip addr add 10.20.X.2/30 dev veth-<id>-g; ip link set veth-<id>-g up; ip link set lo up`.
-5. **Create tap inside the sandbox netns.** `ip tuntap add tap-<id> mode tap; ip link set tap-<id> up`. Firecracker will attach here.
-6. **Route inside the sandbox netns.**
-   - Default route: `10.20.X.1` via `veth-<id>-g`. But wait — Firecracker will be on the tap. The guest kernel sees the tap as its NIC. We need:
-     - Tap bridged to veth-<id>-g? Simpler: a bridge inside the netns joining tap and veth-g. Then guest IP `.3` lives on the same L2 as the host-side veth `.1` routing.
-     - Or: just a Layer-3 relay. Put tap and veth-g in the same bridge; assign bridge the `.2` address. Guest IP is `.3`, gateway `.1`.
-   - Simpler + cleaner: **bridge inside the netns**. `ip link add br-<id> type bridge; ip link set veth-<id>-g master br-<id>; ip link set tap-<id> master br-<id>; ip addr add 10.20.X.2/30 dev br-<id>` and the guest gets `.3` with gateway `.1`.
-7. **Register in the nftables `crucible` table.**
-   - Add an IP set `sandbox-<id>-allowed` (type `ipv4_addr`, `flags timeout`).
-   - Add a chain `sandbox-<id>` with rules:
-     - `iifname "veth-<id>-h" ip daddr 10.20.X.1 udp dport 53 accept` — DNS to the proxy.
-     - `iifname "veth-<id>-h" ip daddr @sandbox-<id>-allowed accept` — allowed IPs.
-     - `iifname "veth-<id>-h" drop` — everything else from this sandbox.
-   - Hook into the `forward` chain via a rule that jumps to `sandbox-<id>` when source matches the sandbox's subnet.
-   - Masquerade (one shared rule in `postrouting` on the egress interface) handles NAT for all sandboxes.
-8. **Register with the DNS proxy.** `proxy.Register(sandboxID, sourceIP=10.20.X.3, allowlist=[...])`. The proxy now knows: queries arriving from 10.20.X.3 should be filtered against that allowlist.
-9. **Tell jailer to use this netns.** Pass `--netns /var/run/netns/crucible-<sandbox-id-sanitized>` to the jailer argv. Firecracker joins the netns on exec.
-10. **Configure Firecracker's network interface.** `PUT /network-interfaces/eth0` with `host_dev_name=tap-<id>` and a guest MAC we generate. The guest IP `.3` + gateway `.1` + DNS `.1` we either burn into the guest image at rootfs-build time, or we set them via a small init that reads them from vsock metadata on boot. **Lean: bake a `crucible-network` systemd unit in the rootfs that reads config from a virtio-mmio device or a vsock metadata channel** — but that's a later weekend. For v0.1, **use kernel boot-args to DHCP**, and run a tiny DHCP server in each sandbox netns that answers exactly one lease. This is uglier but requires zero changes to the rootfs.
+1. **Allocate a `/30` from the pool.** A bitmap in the network Manager; create is rejected if exhausted (cap ~16K concurrent sandboxes).
+2. **Create the network namespace** — `crucible-<sandbox-id>`.
+3. **Create the veth pair** and move `veth-<id>-g` into the sandbox netns.
+4. **Assign IPs and bring links up** — host-side veth gets the gateway address; the guest side is configured via DHCP (below).
+5. **Create the `tap-<id>`** inside the sandbox netns for Firecracker to attach to.
+6. **Bridge inside the netns.** A bridge joins `veth-<id>-g` and `tap-<id>` so the guest (on the tap) and the host-side veth (`.1` of the `/30`, the gateway) sit on the same L2 segment. The guest reaches the gateway and, through it, the DNS anycast and allowed egress.
+7. **Register in the nftables `crucible` table** — an IP set `sandbox-<id>-allowed` (with per-entry timeouts) and a chain `sandbox-<id>`:
+   - `iifname "veth-<id>-h" ip daddr 10.20.255.254 udp dport 53 accept` — DNS to the proxy.
+   - `iifname "veth-<id>-h" ip daddr @sandbox-<id>-allowed accept` — allowed IPs.
+   - `iifname "veth-<id>-h" drop` — everything else from this sandbox.
+   The `forward` chain jumps to `sandbox-<id>` when the source matches the sandbox's subnet; a single shared `postrouting` masquerade rule on the egress interface NATs all sandboxes.
+8. **Register with the DNS proxy** — `proxy.Register(sandboxID, sourceIP, allowlist)`. Queries from that source IP are now filtered against the allowlist.
+9. **Tell jailer to use this netns** — pass `--netns /var/run/netns/crucible-<id>` to the jailer argv; Firecracker joins the netns on exec.
+10. **Configure Firecracker's NIC** — `PUT /network-interfaces/eth0` with `host_dev_name=tap-<id>` and a generated guest MAC. The guest's IP/gateway/DNS are handed out over DHCP by a per-netns responder, so the rootfs needs no per-sandbox baking.
 
 ### Guest IP configuration: per-netns DHCP + agent-driven refresh on fork
 
-**DHCP client in the guest: systemd-networkd.** Modern Ubuntu (since ~18.04) and Debian ship with systemd-networkd as the default DHCP client; `isc-dhcp-client` is deprecated and no longer in base images. The crucible rootfs ships a small netplan config at `/etc/netplan/60-crucible-eth0.yaml` that tells systemd-networkd to DHCP on eth0 — that's the entire guest-side setup. iproute2's `ip` binary (for the link-bounce at fork time) is always present.
+**DHCP client in the guest: systemd-networkd.** Modern Ubuntu/Debian ship systemd-networkd as the default DHCP client. The crucible rootfs ships a small netplan config at `/etc/netplan/60-crucible-eth0.yaml` that tells it to DHCP on eth0 — that's the entire guest-side setup. iproute2's `ip` (for the link-bounce at fork time) is always present.
 
-**Initial boot:** systemd-networkd brings eth0 up, sends DHCPDISCOVER, gets an OFFER from the per-netns responder, REQUESTs, ACKs, configures eth0. The per-netns DHCP responder is hand-rolled (one MAC, one lease, short TTL), enters the target netns via `runtime.LockOSThread` + `unix.Setns(CLONE_NEWNET)` before binding UDP/67, and answers for the sandbox's pre-assigned IP + gateway + DNS (10.20.255.254) + a 60s lease.
+**Initial boot:** systemd-networkd brings eth0 up, DISCOVERs, and the per-netns responder OFFERs → REQUEST → ACK, configuring eth0. The responder is hand-rolled (one MAC, one lease, short TTL); it enters the target netns via `runtime.LockOSThread` + `unix.Setns(CLONE_NEWNET)` before binding UDP/67, and answers for the sandbox's pre-assigned IP + gateway + DNS (`10.20.255.254`).
 
-**Fork resume:** snapshot captures the source's eth0 config (source's IP, source's gateway). After the fork's Firecracker completes `LoadSnapshot` and the VM resumes, the guest thinks it still has the source's IP in the source's subnet — neither of which is reachable from the fork's new netns. Without intervention, the guest is "dark" until systemd-networkd's next renewal cycle.
+**Fork resume:** a snapshot captures the source's eth0 config (its IP, its gateway) — neither reachable from the fork's new netns. Without intervention the guest is "dark" until systemd-networkd's next renewal. crucible fixes this: `crucible-agent` exposes `POST /network/refresh` over vsock, which `sandbox.Manager.Fork` invokes immediately after resume. The agent:
 
-We fix this by having **`crucible-agent` expose a `POST /network/refresh` endpoint over vsock**. The host's `sandbox.Manager.Fork` invokes this immediately after resume; the agent runs:
+1. `ip link set eth0 down` — the kernel flushes eth0's config.
+2. `ip link set eth0 up` — systemd-networkd sees the link-up event and starts a fresh DHCP cycle (DISCOVER, not a renewal of the stale lease).
+3. Polls `net.InterfaceByName("eth0")` for a non-link-local IPv4, bounded by the handler timeout — returning once the new address is configured.
 
-1. `ip link set eth0 down` — kernel flushes eth0's config, emits a link-down event.
-2. `ip link set eth0 up` — link comes back; systemd-networkd sees the link-up event and starts a fresh DHCP cycle from scratch (DISCOVER, not a renewal of the stale lease).
-3. Poll `net.InterfaceByName("eth0")` for a non-link-local IPv4, bounded by the 10s handler timeout. Returns once the address is configured, i.e. once systemd-networkd has completed the exchange with our responder.
-
-Adds roughly one DHCP round-trip (~100–300 ms) to fork cost — invisible next to the existing snapshot-restore overhead.
-
-**Fork-REQUEST NAK path:** if systemd-networkd sends a REQUEST carrying the source's IP (can happen if it retained the lease before the link bounce), our DHCP responder compares requested-IP to offered-IP and replies NAK; systemd-networkd falls back to DISCOVER and lands on the fork's correct address on the next exchange.
-
-Failure mode: if the agent isn't available (VM still booting, vsock not yet ready) or the RPC fails, `Manager.Fork` logs a warning and moves on. The fork's guest will recover via systemd-networkd's own renewal cycle.
+This adds roughly one DHCP round-trip (~100–300 ms) to fork cost, invisible next to snapshot-restore overhead. If systemd-networkd REQUESTs the source's stale IP, the responder compares requested-vs-offered and NAKs, forcing a DISCOVER onto the correct address. If the agent is unreachable (VM still booting, vsock not ready), `Manager.Fork` logs a warning and moves on — the guest recovers on systemd-networkd's own renewal cycle.
 
 ## Packet flow
 
-**Scenario A: allowed DNS query.** Guest does `getaddrinfo("pypi.org")`. Glibc reads `/etc/resolv.conf`, sees nameserver `10.20.X.1`, sends a UDP DNS query from `10.20.X.3:random` to `10.20.X.1:53`. The packet traverses tap → bridge → veth-g → host root netns. nftables: matches `dport 53 accept`, forwards to the DNS proxy. Proxy looks up the source IP (10.20.X.3) → sandbox ID → allowlist. `pypi.org` matches `pypi.org`; proxy forwards the query to upstream (1.1.1.1), gets the A record (e.g. 151.101.0.223), adds that IP to `sandbox-<id>-allowed` set with a TTL equal to the DNS answer's TTL (clamped to a sensible floor), returns the response to the guest.
+The allowed path — a DNS lookup that populates the nftables set, then egress to the attested IP:
 
-**Scenario B: allowed HTTP request.** Guest initiates TCP to 151.101.0.223:443. Packet leaves tap, traverses to host netns forward chain. nftables: matches `ip daddr @sandbox-<id>-allowed accept`. Packet forwards to egress interface; masquerade rewrites source IP to host's primary interface IP; packet leaves the host. Return packets hit conntrack (stateful) and are un-masqueraded back to the guest.
+```mermaid
+sequenceDiagram
+    participant G as Guest (10.20.0.14)
+    participant NFT as nftables (host)
+    participant DNS as DNS proxy
+    participant UP as Upstream resolver
+    participant NET as Internet
+    G->>NFT: DNS query "pypi.org" → 10.20.255.254:53
+    NFT->>DNS: accept (udp/53)
+    Note over DNS: src-IP → allowlist;<br/>"pypi.org" matches
+    DNS->>UP: forward query
+    UP-->>DNS: A 151.101.0.223
+    Note over DNS,NFT: add 151.101.0.223 to<br/>@sandbox-allowed (DNS TTL)
+    DNS-->>G: answer 151.101.0.223
+    G->>NFT: TCP 151.101.0.223:443
+    NFT->>NET: accept (∈ @allowed) + masquerade
+    NET-->>G: response (conntrack)
+```
 
-**Scenario C: denied destination.** Guest tries TCP to 1.2.3.4:22 (not in allowlist; we never resolved anything to that IP). Packet leaves tap, hits nft `sandbox-<id>` chain. No match on `dport 53`. Not in `@sandbox-<id>-allowed`. Falls through to `drop`. Guest sees a connection timeout. No ICMP unreachable (we drop silently — attackers probing for what's reachable get no signal).
+Walking the cases:
 
-**Scenario D: denied DNS query.** Guest resolves `evil.example.com`. DNS proxy sees query from known source IP, looks up allowlist, no match. Proxy returns `NXDOMAIN` (not `REFUSED` — less clueful that a filter exists). Guest gets NXDOMAIN, fails lookup, never even tries to connect.
-
-**Scenario E: IP literal.** Guest does `curl http://93.184.216.34` (example.com's IP). No DNS lookup happens. Packet goes to forward chain. 93.184.216.34 isn't in the allowed set (no DNS answer ever added it). Dropped. This is the point of the design — the allowlist pivots on *DNS-attested* IPs, so IP literals never work unless the user resolved a hostname that answered with that IP.
+- **Allowed DNS query.** The guest queries `10.20.255.254:53`. nftables matches `dport 53 accept` and forwards to the proxy. The proxy maps source IP → sandbox → allowlist; `pypi.org` matches, so it forwards to upstream, gets the A record, **adds that IP to `sandbox-<id>-allowed` with a TTL from the DNS answer** (clamped to a floor), and returns the response.
+- **Allowed HTTP request.** The guest opens TCP to the resolved IP. nftables matches `ip daddr @sandbox-<id>-allowed accept`; the packet egresses with masquerade, and conntrack un-masquerades the return path.
+- **Denied destination.** TCP to an IP nothing resolved to falls through to `drop`. The guest sees a connection timeout — no ICMP unreachable (silent, so probing for reachable hosts gets no signal).
+- **Denied DNS query.** A lookup for a non-allowlisted name returns `NXDOMAIN` (not `REFUSED` — less clueful that a filter exists); the guest fails the lookup and never connects.
+- **IP literal.** `curl http://93.184.216.34` does no DNS lookup, so that IP was never added to the set — dropped. This is the point of the design: the allowlist pivots on **DNS-attested** IPs, so IP literals never work unless a hostname you resolved answered with that IP.
 
 ## Allowlist syntax & matching
 
-**v0.1 grammar.**
+Grammar — two rules, case-insensitive:
 
-- Exact match: `pypi.org`. Case-insensitive.
-- Single-label wildcard: `*.npmjs.org` matches `registry.npmjs.org` and `www.npmjs.org`. Does **not** match `a.b.npmjs.org` or bare `npmjs.org`.
+- **Exact match:** `pypi.org`.
+- **Single-label wildcard:** `*.npmjs.org` matches `registry.npmjs.org` and `www.npmjs.org`, but **not** `a.b.npmjs.org` or bare `npmjs.org`.
 
-That's it. Two rules. No regex, no CIDR, no port numbers.
+No regex, no CIDR, no port numbers.
 
-**Matching algorithm.** Build a trie keyed by reversed DNS labels per sandbox's allowlist. Query `registry.npmjs.org` → look up `org.npmjs.registry` in the trie. Match if any prefix of the query ends in an exact entry OR in a single-label wildcard entry at the matching depth. O(labels) per query.
+**Matching.** A trie keyed by reversed DNS labels per sandbox's allowlist. `registry.npmjs.org` → look up `org.npmjs.registry`; match if a prefix ends in an exact entry or a single-label wildcard at the matching depth. O(labels) per query.
 
 **Corner cases.**
 
-- `*` on its own is rejected at config time (too broad — that's "all internet" and should be `enabled: true, allowlist: [...everything...]` explicitly).
-- Allowlist entries with uppercase letters are normalized to lowercase.
-- Trailing dots stripped (`pypi.org.` → `pypi.org`).
-- Wildcards only allowed as the first label. `*.foo.*.com` is rejected.
+- Bare `*` is rejected at config time (that's "all internet" and must be requested explicitly).
+- Entries are lowercased; trailing dots stripped (`pypi.org.` → `pypi.org`).
+- Wildcards only in the first label — `*.foo.*.com` is rejected.
 
 ## API shape
-
-Frozen wire contract (shipped already as `ImageRef`-style stub in createSandboxRequest, needs populating now):
 
 ```json
 POST /sandboxes
@@ -167,12 +168,12 @@ POST /sandboxes
 
 **Field semantics.**
 
-- `network` absent → no network, equivalent to `{"enabled": false}`.
-- `network.enabled = false` (or absent) → no NIC attached, all other network fields ignored.
-- `network.enabled = true`, `allowlist` absent or empty → **rejected with 400.** We require an explicit allowlist. "Full internet" is not a supported v0.1 config — users who need it can open a FR. (Rationale: default-deny ethos; make "full internet" require an explicit gesture we don't implement yet.)
-- `network.enabled = true`, `allowlist` populated → apply per this doc.
+- `network` absent → no network (equivalent to `{"enabled": false}`).
+- `network.enabled = false` → no NIC attached; other network fields ignored.
+- `network.enabled = true` with an absent/empty `allowlist` → **400.** An explicit allowlist is required; "full internet" is not a supported config (default-deny ethos — it must be an explicit gesture).
+- `network.enabled = true` with a populated `allowlist` → applied per this doc.
 
-**Response.** The `sandboxResponse` gains a `network` substruct describing the applied policy (helpful for debugging):
+**Response.** The sandbox response carries a `network` substruct describing the applied policy:
 
 ```json
 {
@@ -180,67 +181,63 @@ POST /sandboxes
   "network": {
     "enabled": true,
     "allowlist": ["..."],
-    "guest_ip": "10.20.0.3",
-    "gateway": "10.20.0.1"
+    "guest_ip": "10.20.0.14",
+    "gateway": "10.20.0.13"
   }
 }
 ```
 
 ## Lifecycle integration
 
-Where the new work plugs into existing flows:
+Where networking plugs into the sandbox lifecycle:
 
-- **Manager.Create** — after `jailer.Stage` completes, before running jailer: allocate subnet, set up netns, veth, tap, nftables, register with DNS proxy. Pass the netns path to JailerRunner.
-- **JailerRunner.Start** — accept `NetNS` field on `runner.Spec`. Pass as `--netns` to jailer argv.
-- **Manager.Delete** — after `handle.Shutdown()` (which handles chroot + cgroup cleanup): tear down nftables chain/set, deregister from DNS proxy, delete netns (which also kills the veth pair). Best-effort + idempotent.
-- **Manager.Snapshot** — network state is *host-side*; snapshots don't capture it. No changes required.
-- **Manager.Fork** — each fork gets its own subnet/netns/veth; inherits the source's allowlist policy. The fork's DHCP server hands it a new IP; Firecracker's snapshot state recorded the source's eth0 MAC + IP, so on restore the fork's kernel has stale network config and needs to rediscover. DHCP handles this via the standard "rebind on resume" path. (This is the detail worth smoke-testing — may push us toward option 3 / agent-based reconfig if DHCP doesn't re-issue on snapshot restore.)
-- **Daemon startup (orphan reap)** — list all netns named `crucible-*`, all nft chains in the `crucible` table, wipe everything. Similar to the existing jailer orphan reap.
+- **`Manager.Create`** — after `jailer.Stage`, before running jailer: allocate the subnet, set up netns/veth/bridge/tap/nftables, register with the DNS proxy, and pass the netns path to the runner.
+- **`Manager.Delete`** — after the VM handle shuts down (chroot + cgroup cleanup): tear down the nftables chain/set, deregister from the DNS proxy, and delete the netns (which removes the veth pair). Best-effort and idempotent.
+- **`Manager.Snapshot`** — network state is host-side, so snapshots don't capture it. No changes required.
+- **`Manager.Fork`** — each fork gets its own subnet/netns/veth and inherits the source's allowlist. The fork's DHCP responder hands it a new IP; because the restored guest kernel holds the source's stale eth0 config, the daemon calls the agent's `/network/refresh` to bounce the link and re-DHCP onto the correct address (see above).
+- **Daemon startup (orphan reap)** — list every `crucible-*` netns and every chain in the `crucible` nft table left by a prior run and wipe them, mirroring the jailer orphan reap.
 
 ## Failure modes
 
 | Failure | Blast radius | Response |
 |---|---|---|
-| DNS proxy crashes | All sandboxes lose DNS | Log loudly, kill daemon. Systemd unit restarts it. (Fail-closed beats mystery behavior.) |
-| `nft` command fails during create | One sandbox | Roll back: delete netns, release subnet, return 500 to caller. |
-| Netns creation fails (EPERM / EBUSY) | One sandbox | Same. |
-| Subnet pool exhausted | One sandbox | Reject with 429 + clear error ("no network subnets available; delete some sandboxes"). |
-| Guest tries to reach non-allowed IP | Expected | Drop silently. nft counter increments — visible in future `/metrics`. |
-| Allowlist syntax invalid | One sandbox | Reject with 400 at create time, never reach setup. |
-| DHCP server in netns dies | One sandbox | Guest loses lease → loses network when lease expires. For v0.1 we give huge lease (24h); revisit if an issue. |
-| A second networked daemon starts on the host | Daemon fails to start | The DNS proxy binds the shared anycast IP `10.20.255.254:53`, so two networked daemons on one host collide: `network init failed: dnsproxy: bind 10.20.255.254:53: address already in use`. **One networked crucible daemon per host** (the `10.20.0.0/16` pool and the DNS anycast IP are host-global). Stop the other daemon — e.g. `sudo systemctl stop crucible` before running a second instance or a smoke test — or run the second daemon without `--network-egress-iface`. |
+| DNS proxy crashes | All sandboxes lose DNS | Log loudly, kill the daemon; the systemd unit restarts it. (Fail-closed beats mystery behavior.) |
+| `nft` command fails during create | One sandbox | Roll back: delete netns, release subnet, return 500. |
+| Netns creation fails (EPERM / EBUSY) | One sandbox | Same rollback. |
+| Subnet pool exhausted | One sandbox | Reject with a clear error ("no network subnets available; delete some sandboxes"). |
+| Guest reaches a non-allowed IP | Expected | Dropped silently; an nft counter increments. |
+| Allowlist syntax invalid | One sandbox | Rejected with 400 at create time, before any setup. |
+| DHCP responder in the netns dies | One sandbox | The guest keeps its lease until expiry, then loses network. Leases are long to make this rare. |
+| A second networked daemon starts on the host | Daemon fails to start | The DNS proxy binds the shared anycast `10.20.255.254:53`, so two networked daemons collide (`bind: address already in use`). **One networked crucible daemon per host** — the `10.20.0.0/16` pool and the anycast IP are host-global. Stop the other (`sudo systemctl stop crucible`) or run the second without `--network-egress-iface`. |
 
-## Testing strategy
+## Testing
 
-- **Unit tests** (`internal/network/allowlist_test.go`): trie construction, wildcard matching, reject-bad-input cases, normalization.
-- **Unit tests** (`internal/network/subnet_test.go`): allocator allocates unique /30s, releases on delete, rejects exhaustion.
-- **Unit tests** (`internal/network/dnsproxy_test.go`): use an in-process upstream stub; exercise allowed / denied / timeout-exceeded / NXDOMAIN-on-no-match / set-update-on-allowed cases.
-- **Integration test** (root-only; gated by `-tags=integration`): spin up a real netns, set up veth + nft + DNS proxy, run `curl` inside the netns against a known-allowed + known-denied IP, assert the allowed one succeeds and denied times out.
-- **End-to-end** ([smoke_fork.sh](../scripts/smoke_fork.sh)): extend with a "network" variant that creates a sandbox with `allowlist: ["example.com"]`, execs `curl https://example.com` (expect 200) and `curl https://google.com` (expect timeout).
+- **Unit** (`internal/network/allowlist.go` tests): trie construction, wildcard matching, reject-bad-input, normalization.
+- **Unit** (`internal/network/subnet.go` / `bitmap.go` tests): the allocator hands out unique `/30`s, releases them on delete, and rejects exhaustion.
+- **Unit** (`internal/network/dnsproxy` tests): an in-process upstream stub exercises allowed / denied / NXDOMAIN-on-no-match / set-update-on-allowed cases.
+- **End-to-end** ([smoke_e2e.sh](../scripts/smoke_e2e.sh)): default-deny, allowlisted (allowed / denied / IP-literal / `*.domain`), and per-fork networking against a live daemon.
 
 ## Package layout
 
 ```
 internal/network/
   doc.go              package doc
-  subnet.go           /30 pool allocator
-  subnet_test.go
-  netns.go            netns create/delete (shell out to `ip netns`)
-  veth.go             veth pair + bridge + tap setup inside netns
+  manager.go          owns the subnet pool + DNS proxy; wires to sandbox.Manager; orphan reap
+  subnet.go           /30 pool
+  bitmap.go           allocation bitmap
+  netns.go            netns create/delete (shells out to `ip netns`)
+  veth.go             veth pair + bridge + tap setup inside the netns
   nft.go              nftables rule emission via `nft -f -`
   allowlist.go        trie + pattern matching
-  allowlist_test.go
-  dnsproxy/
-    proxy.go          UDP DNS proxy, per-source-IP policy lookup
-    proxy_test.go
-    upstream.go       forwarding to 1.1.1.1 (or configurable)
-  manager.go          owns subnet pool, DNS proxy, reap-orphans, wires to sandbox.Manager
+  exec.go             namespaced command execution helpers
+  reap.go             startup orphan reap (netns + nft)
+  dhcp/               per-netns DHCP responder (responder.go, wire.go)
+  dnsproxy/           UDP DNS proxy + upstream forwarding (proxy.go, upstream.go)
 ```
 
 ## Dependencies
 
-- **`golang.org/x/sys/unix`** — already in. For any netlink/syscall work.
-- **Shell out to `ip` and `nft`** — for v0.1. Both are standard on any distro that can run Firecracker, and shelling is easier to read/debug than the netlink/libmnl dance. Move to pure-Go netlink in a later pass if it bites.
-- **One new direct dep: `github.com/miekg/dns`** for DNS wire format + upstream client. Roll-our-own was rejected after weighing EDNS0, TCP-fallback, and CNAME-chain-walking requirements against the ~500–800 LOC of RFC-1035 machinery we'd need to write and harden. miekg/dns is used by CoreDNS + ExternalDNS; transitively pulls only `golang.org/x/net` (and `golang.org/x/sys`, which we already have).
-- **DHCP stays hand-rolled.** Protocol is narrow (one MAC, one lease, two request types), frozen in practice (RFC 2131 from 1997), and the responder is a natural teaching artifact. ~260 LOC total; no library pulled in.
-- **No netlink library.** All network-namespace/link/nftables manipulation shells out to `ip` and `nft` (v0.1). Debuggable and readable; subprocess latency is a non-issue at per-sandbox-create-once granularity.
+- **`golang.org/x/sys/unix`** — netns entry (`Setns`) and syscall work.
+- **`github.com/miekg/dns`** — DNS wire format + the upstream client. Chosen over rolling our own after weighing EDNS0, TCP fallback, and CNAME-chain walking against the RFC-1035 machinery it would require; it's used by CoreDNS and ExternalDNS and pulls only `golang.org/x/net`.
+- **DHCP is hand-rolled** — the protocol is narrow (one MAC, one lease, two request types) and stable; the responder is ~260 LOC with no library pulled in.
+- **No netlink library** — namespace/link/nftables manipulation shells out to `ip` and `nft`. Readable and debuggable; subprocess latency is a non-issue at per-sandbox-create-once granularity.

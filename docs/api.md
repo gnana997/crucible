@@ -1,6 +1,6 @@
 # HTTP API
 
-crucible is driven entirely over HTTP. This is the `v0.1` reference for the daemon's REST surface.
+crucible is driven entirely over HTTP. This is the reference for the daemon's REST surface.
 
 - **Base URL:** whatever you pass to `--listen` (default `http://127.0.0.1:7878`).
 - **Authentication.** Off by default on loopback; required as soon as any API key exists. Pass `Authorization: Bearer <key>`. See [Authentication](#authentication) below and [SECURITY.md](../SECURITY.md).

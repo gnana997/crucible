@@ -13,44 +13,68 @@ crucible is two programs that talk over a [vsock](https://man7.org/linux/man-pag
 
 The host never runs guest code directly — it hands an `ExecRequest` to the agent over vsock and streams framed output back. The VM boundary is always between the daemon and the code it runs.
 
-```
-   HTTP client (SDK, curl, agent framework)
-        │  REST + streamed frames
-        ▼
-   ┌─────────────────────────────────────────┐
-   │  crucible daemon (host)                   │
-   │                                           │
-   │  internal/daemon   HTTP routes/handlers   │
-   │  internal/sandbox  Manager: lifecycle     │
-   │  internal/runner   Firecracker driver     │
-   │  internal/fcapi    Firecracker API client │
-   │  internal/jailer   jailer argv builder    │
-   │  internal/network  netns/veth/nft/DNS     │
-   │  internal/memfault userfaultfd pager      │
-   │  internal/agentapi host→guest vsock client│
-   └───────────────┬───────────────────────────┘
-                   │ vsock (per VM)
-                   ▼
-   ┌─────────────────────────────────────────┐
-   │  Firecracker microVM                      │
-   │    guest kernel + rootfs                  │
-   │    crucible-agent (exec, usage, identity) │
-   └─────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph clients["Interfaces — thin clients over internal/client"]
+        cli["CLI (cmd/crucible)"]
+        tui["TUI (internal/tui)"]
+        mcp["MCP server (internal/mcpserver)"]
+        raw["curl / agent framework"]
+    end
+    cli --> client["internal/client<br/>typed Go client"]
+    tui --> client
+    mcp --> client
+    client -- "REST + streamed frames" --> daemon
+    raw -- "REST" --> daemon
+
+    subgraph daemon["crucible daemon (host)"]
+        routes["internal/daemon — routes, auth, validation"]
+        mgr["internal/sandbox — Manager: lifecycle + registry"]
+        runner["internal/runner + fcapi — Firecracker driver"]
+        jailer["internal/jailer — chroot / ns / uid drop"]
+        net["internal/network — netns / veth / nft / DNS"]
+        uffd["internal/memfault — userfaultfd pager"]
+        routes --> mgr
+        mgr --> runner
+        mgr --> jailer
+        mgr --> net
+        mgr --> uffd
+    end
+
+    daemon -- "vsock (per VM)" --> vm
+
+    subgraph vm["Firecracker microVM"]
+        agent["crucible-agent<br/>exec · usage · identity / network refresh"]
+    end
 ```
 
 ## Packages
 
+**Entry points & interfaces** — the CLI, TUI, and MCP server are all thin clients over one typed client, so they can't drift from each other or the daemon:
+
 | Package | Responsibility |
 |---|---|
-| `cmd/crucible` | CLI entry (`daemon`, `version`) and daemon wiring/flags |
+| `cmd/crucible` | Entry point: the `daemon` subcommand and the client subcommands (`sandbox`, `snapshot`, `fork`, `run`, `profile`, `policy`, `mcp`, `tui`, `version`) |
 | `cmd/crucible-agent` | Guest agent: `/exec`, usage collection, `/identity/refresh`, `/network/refresh` |
-| `internal/daemon` | HTTP server, routing, request/response DTOs, validation |
+| `internal/client` | Typed Go client for the daemon's REST API — the CLI, MCP server, and TUI all sit on it |
+| `internal/tui` | Live terminal dashboard (`crucible tui`) — Bubble Tea; a thin consumer of `internal/client` |
+| `internal/mcpserver` | MCP server (`crucible mcp serve`) — thin wrapper over `internal/client` + operator guardrails |
+| `internal/api` | Shared REST wire types (used by both the daemon and the client) |
+
+**Daemon internals:**
+
+| Package | Responsibility |
+|---|---|
+| `internal/daemon` | HTTP server, routing, middleware, auth, request/response validation |
 | `internal/sandbox` | `Manager` — the core lifecycle: create, exec, snapshot, fork, delete, and the durable registry |
 | `internal/runner` | Firecracker driver: boot, snapshot, load, resume, rootfs patch — the load→vsock→rootfs→resume ordering lives here |
 | `internal/fcapi` | Thin typed client for the Firecracker REST API over its control socket |
 | `internal/jailer` | Builds the jailer argv (chroot, namespaces, uid drop) when running jailed |
-| `internal/network` | Per-sandbox netns, veth/tap, nftables program, hostname allowlist, subnet allocator, DNS proxy |
+| `internal/network` | Per-sandbox netns, veth/tap, nftables program, hostname allowlist, subnet allocator, and the DNS proxy (+ `dhcp/`, `dnsproxy/`) |
 | `internal/memfault` | `userfaultfd` pager that serves guest memory lazily from a snapshot file on fork |
+| `internal/tokenstore` | API-key store (SHA-256-hashed bearer keys) + runtime verifier |
+| `internal/policy` | Scoped-token policy model + enforcement (operations, egress, profiles, resource caps) |
+| `internal/metrics` | Prometheus `/metrics` collectors |
 | `internal/agentwire` | The exec wire protocol: request/result messages + the binary frame stream |
 | `internal/agentapi` | Host-side client that speaks to the guest agent over vsock |
 
@@ -90,6 +114,24 @@ Because the body is committed before the command finishes, post-`200` failures (
 
 Fork is all-or-nothing: a failure partway through rolls back every child already started, so the response is either all N sandboxes or an error.
 
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Manager
+    participant R as runner + memfault
+    participant A as guest-agent (vsock)
+    C->>M: POST /snapshots/{id}/fork?count=N
+    loop each child
+        M->>R: clone rootfs (FICLONE) + LoadSnapshot
+        R->>R: register userfaultfd region<br/>(pages served lazily from snapshot)
+        M->>A: /identity/refresh (fresh entropy, new id)
+        A->>A: reseed kernel RNG, rotate machine-id / hostname
+        M->>A: /network/refresh (bounce eth0 → re-DHCP)
+        Note over M,A: only now is the fork reachable
+    end
+    M-->>C: N sandbox records (or rollback + error)
+```
+
 ## State and durability
 
 The `Manager` holds live sandbox and snapshot state in memory, and mirrors lifecycle events to an append-only journal on disk. On daemon restart it **reconciles**: it replays the journal, re-adopts state that is still valid, and cleans up what isn't (orphaned workdirs, dead VMs). This is what lets the daemon restart without leaking host resources — but note it is single-host state only; there is no shared or replicated store.
@@ -106,4 +148,4 @@ With `--jailer-bin` set, each Firecracker VMM runs under the [jailer](https://gi
 
 ## What isn't here yet
 
-crucible is `v0.1`. The daemon supports optional bearer-key auth (off by default on loopback) but has no per-key scopes yet; there is no audit trail beyond operational logs; and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.
+crucible is pre-1.0. The daemon supports optional bearer-key auth and daemon-enforced scoped tokens (off by default on loopback); there is no per-sandbox activity log / audit trail beyond operational logs yet; and per-sandbox OCI images are stubbed (`501`). See [ROADMAP.md](ROADMAP.md) for what's planned and [SECURITY.md](../SECURITY.md) for the honest limits.

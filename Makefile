@@ -10,7 +10,7 @@ BASE_ROOTFS ?=
 OUT_ROOTFS  ?= assets/rootfs.ext4
 ROOTFS_SIZE ?= 1G
 
-.PHONY: all build agent rootfs profile test race vet fmt lint tidy clean hooks help
+.PHONY: all build bench agent rootfs profile test race vet fmt lint tidy clean hooks help
 
 all: fmt vet test build
 
@@ -31,6 +31,11 @@ help:
 
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/crucible
+
+# Benchmark harness (drives a running daemon through internal/client).
+bench:
+	mkdir -p bin
+	go build -ldflags '$(LDFLAGS)' -o bin/crucible-bench ./cmd/crucible-bench
 
 # The guest agent always runs inside a Linux microVM, so we pin the
 # target triple and build statically to avoid libc surprises inside
