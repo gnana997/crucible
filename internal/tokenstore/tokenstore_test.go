@@ -122,10 +122,14 @@ func TestAddScopedTokenRoundTrips(t *testing.T) {
 	}
 
 	// A fresh store reads the policy back from disk.
-	got, ok := Open(path).VerifyPolicy(raw)
+	idn, ok := Open(path).Identify(raw)
 	if !ok {
-		t.Fatal("VerifyPolicy should accept the scoped key")
+		t.Fatal("Identify should accept the scoped key")
 	}
+	if idn.TokenID != e.ID {
+		t.Errorf("Identify TokenID = %q, want %q", idn.TokenID, e.ID)
+	}
+	got := idn.Policy
 	if got == nil {
 		t.Fatal("expected a policy, got nil")
 	}
@@ -146,12 +150,12 @@ func TestVerifyPolicyUnscoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := Open(path).VerifyPolicy(raw)
+	idn, ok := Open(path).Identify(raw)
 	if !ok {
 		t.Fatal("unscoped key should verify")
 	}
-	if got != nil {
-		t.Errorf("unscoped key should carry a nil policy, got %+v", got)
+	if idn.Policy != nil {
+		t.Errorf("unscoped key should carry a nil policy, got %+v", idn.Policy)
 	}
 }
 
@@ -177,7 +181,7 @@ func TestVerifyPolicyRejectsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := Open(path).VerifyPolicy(rawExpired); ok {
+	if _, ok := Open(path).Identify(rawExpired); ok {
 		t.Error("expired key must not verify")
 	}
 	if Open(path).Verify(rawExpired) {
@@ -188,7 +192,7 @@ func TestVerifyPolicyRejectsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := Open(path).VerifyPolicy(rawLive); !ok {
+	if _, ok := Open(path).Identify(rawLive); !ok {
 		t.Error("unexpired key should verify")
 	}
 }

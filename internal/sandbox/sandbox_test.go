@@ -425,7 +425,7 @@ func TestManagerSnapshotAndFork(t *testing.T) {
 		t.Errorf("source gone after snapshot: %v", err)
 	}
 
-	forks, err := m.Fork(context.Background(), snap.ID, 3)
+	forks, err := m.Fork(context.Background(), snap.ID, 3, "")
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
@@ -575,7 +575,7 @@ func TestSnapshotRollbackResumeIsBounded(t *testing.T) {
 
 func TestManagerForkUnknownSnapshot(t *testing.T) {
 	m, _ := newTestManager(t)
-	_, err := m.Fork(context.Background(), "snap_0000000000000", 1)
+	_, err := m.Fork(context.Background(), "snap_0000000000000", 1, "")
 	if !errors.Is(err, ErrSnapshotNotFound) {
 		t.Errorf("err = %v, want ErrSnapshotNotFound", err)
 	}
@@ -591,7 +591,7 @@ func TestManagerForkRejectsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Fork(context.Background(), snap.ID, 0); err == nil {
+	if _, err := m.Fork(context.Background(), snap.ID, 0, ""); err == nil {
 		t.Error("Fork(count=0): got nil, want error")
 	}
 }
@@ -610,7 +610,7 @@ func TestManagerForkRollbackOnFailure(t *testing.T) {
 	}
 
 	r.restoreErr = errors.New("restore boom")
-	_, err = m.Fork(context.Background(), snap.ID, 3)
+	_, err = m.Fork(context.Background(), snap.ID, 3, "")
 	if err == nil {
 		t.Fatal("Fork: got nil, want error")
 	}
@@ -644,7 +644,7 @@ func TestManagerForkBoundsConcurrency(t *testing.T) {
 	}
 
 	const count = 8
-	forks, err := m.Fork(context.Background(), snap.ID, count)
+	forks, err := m.Fork(context.Background(), snap.ID, count, "")
 	if err != nil {
 		t.Fatalf("Fork: %v", err)
 	}
@@ -677,7 +677,7 @@ func TestManagerForkRejectsOversizedCount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = m.Fork(context.Background(), snap.ID, m.MaxForkCount()+1)
+	_, err = m.Fork(context.Background(), snap.ID, m.MaxForkCount()+1, "")
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("Fork oversized count: err = %v, want ErrInvalidConfig", err)
 	}
@@ -701,7 +701,7 @@ func TestManagerForkFailsWithoutAgentChannel(t *testing.T) {
 	}
 
 	r.t = nil // stop Restore serving a stub agent → forks get no channel
-	_, err = m.Fork(context.Background(), snap.ID, 1)
+	_, err = m.Fork(context.Background(), snap.ID, 1, "")
 	if err == nil || !strings.Contains(err.Error(), "no agent channel") {
 		t.Fatalf("Fork without agent channel: err = %v, want 'no agent channel'", err)
 	}
@@ -886,7 +886,7 @@ func TestManagerReconcileAfterRestart(t *testing.T) {
 	if _, err := os.Stat(snap.Dir); err != nil {
 		t.Errorf("snapshot dir removed by reconcile: %v", err)
 	}
-	forks, err := m2.Fork(context.Background(), snap.ID, 2)
+	forks, err := m2.Fork(context.Background(), snap.ID, 2, "")
 	if err != nil {
 		t.Fatalf("Fork from re-adopted snapshot: %v", err)
 	}
@@ -1033,5 +1033,26 @@ func TestManagerReconcileDropsSnapshotWithMissingFiles(t *testing.T) {
 	}
 	if n := len(m2.ListSnapshots()); n != 0 {
 		t.Errorf("ListSnapshots = %d, want 0 after dropping dangling snapshot", n)
+	}
+}
+
+func TestCountByToken(t *testing.T) {
+	m, _ := newTestManager(t)
+	for _, tok := range []string{"a", "a", "b", ""} {
+		if _, err := m.Create(context.Background(), CreateConfig{TokenID: tok}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.CountByToken("a"); got != 2 {
+		t.Errorf("CountByToken(a) = %d, want 2", got)
+	}
+	if got := m.CountByToken("b"); got != 1 {
+		t.Errorf("CountByToken(b) = %d, want 1", got)
+	}
+	if got := m.CountByToken(""); got != 0 {
+		t.Errorf(`CountByToken("") = %d, want 0 (unauthenticated is not counted)`, got)
+	}
+	if got := m.CountByToken("nope"); got != 0 {
+		t.Errorf("CountByToken(unknown) = %d, want 0", got)
 	}
 }

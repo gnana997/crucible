@@ -237,6 +237,54 @@ echo "== auth: expecting success WITH the token"
 driver "$KEY"
 stop_daemon
 
+# ---- run 3: scoped token — daemon-enforced policy + MCP tool mirror -----
+# A token that may create/exec/delete/read but has NO network (net_allow_max: []
+# and no fork/snapshot ops). Proves: (a) the MCP server advertises only the
+# permitted tools (fork/snapshot hidden), (b) the daemon rejects an out-of-policy
+# request (run with net_allow), and (c) an in-policy run still works.
+echo "== scoped token: minting"
+SCOPED_TF="$SMOKE_ROOT/scoped-tokens.json"
+printf '%s' '{"operations":["create","exec","delete","read"],"net_allow_max":[]}' > "$SMOKE_ROOT/scoped.json"
+SKEY="$("$CRUCIBLE_BIN" daemon token add --token-file "$SCOPED_TF" --name scoped --policy "$SMOKE_ROOT/scoped.json" | grep -o 'crucible_[A-Za-z0-9_-]*')"
+[[ -n "$SKEY" ]] || { echo "error: could not mint scoped token" >&2; exit 4; }
+start_daemon --token-file "$SCOPED_TF"
+
+cat >"$SMOKE_ROOT/scoped_driver.py" <<'PY'
+import json, os, subprocess, sys
+CRUX, ADDR, TOKEN = os.environ["CRUX"], os.environ["ADDR"], os.environ["TOKEN"]
+DEFAULT_PROFILE = os.environ.get("DEFAULT_PROFILE", "")
+p = subprocess.Popen([CRUX, "--addr", ADDR, "--token", TOKEN, "mcp", "serve"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr, text=True, bufsize=1)
+def send(o): p.stdin.write(json.dumps(o) + "\n"); p.stdin.flush()
+def read(): return json.loads(p.stdout.readline())
+def fail(m): print("FAIL:", m); p.kill(); sys.exit(1)
+send({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"s","version":"0"}}}); read()
+send({"jsonrpc":"2.0","method":"notifications/initialized"})
+send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+names = sorted(t["name"] for t in read()["result"]["tools"])
+print("scoped tools/list:", names)
+if "fork" in names or "snapshot" in names: fail("fork/snapshot should be hidden (not in the token's operations)")
+if "run" not in names: fail("run should be advertised (create+exec+delete are allowed)")
+def call(name, args):
+    send({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":name,"arguments":args}})
+    return read()["result"]
+# out-of-policy: net_allow against a net_allow_max:[] ceiling → daemon must reject.
+r = call("run", {"profile":DEFAULT_PROFILE, "command":["true"], "net_allow":["pypi.org"]})
+if not r.get("isError"): fail("run with net_allow should be rejected by the token's network ceiling")
+print("daemon rejected out-of-policy network:", r["content"][0]["text"])
+# in-policy: a plain run (no network) should still work.
+r = call("run", {"profile":DEFAULT_PROFILE, "command":["sh","-c","echo scoped-ok"]})
+if r.get("isError"): fail("in-policy run should succeed: %s" % r["content"])
+if "scoped-ok" not in r["structuredContent"]["stdout"]: fail("run output wrong: %r" % r["structuredContent"])
+print("in-policy run:", "exit=%d stdout=%r" % (r["structuredContent"]["exit_code"], r["structuredContent"]["stdout"]))
+p.stdin.close()
+try: p.wait(timeout=10)
+except Exception: p.kill()
+print("scoped driver OK")
+PY
+CRUX="$CRUCIBLE_BIN" ADDR="$ADDR" TOKEN="$SKEY" DEFAULT_PROFILE="$PROFILE" python3 "$SMOKE_ROOT/scoped_driver.py"
+stop_daemon
+
 # ---- regression guard: no VM/cgroup leak after teardown -------------
 # Every sandbox above was deleted, and both daemons are stopped. A delete that
 # failed to kill its firecracker child (the --new-pid-ns leak) would leave a

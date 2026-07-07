@@ -7,22 +7,29 @@ import (
 	"strings"
 
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/internal/tokenstore"
 )
 
-// policyCtxKey keys the presenting token's policy in the request context. A nil
-// *policy.Policy (or an absent value) means unrestricted — an unscoped key, or
-// an unauthenticated loopback request.
-type policyCtxKey struct{}
+// identityCtxKey keys the verified caller (token id + policy) in the request
+// context. Absent means unrestricted — an unauthenticated loopback request.
+type identityCtxKey struct{}
 
-func withPolicy(ctx context.Context, p *policy.Policy) context.Context {
-	return context.WithValue(ctx, policyCtxKey{}, p)
+func withIdentity(ctx context.Context, id tokenstore.Identity) context.Context {
+	return context.WithValue(ctx, identityCtxKey{}, id)
 }
 
 // policyFor returns the enforced policy for r, or nil when the request is
 // unrestricted (unscoped token, or auth disabled).
 func policyFor(r *http.Request) *policy.Policy {
-	p, _ := r.Context().Value(policyCtxKey{}).(*policy.Policy)
-	return p
+	id, _ := r.Context().Value(identityCtxKey{}).(tokenstore.Identity)
+	return id.Policy
+}
+
+// tokenIDFor returns the id of the API key behind r, or "" when unauthenticated.
+// Sandboxes are stamped with it so per-token quotas can count them.
+func tokenIDFor(r *http.Request) string {
+	id, _ := r.Context().Value(identityCtxKey{}).(tokenstore.Identity)
+	return id.TokenID
 }
 
 // enforcePolicy gates each request by the presenting token's allowed operations.

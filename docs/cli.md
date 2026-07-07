@@ -97,12 +97,24 @@ List the rootfs profiles the daemon was started with (`--rootfs-dir`). See [prof
 **API keys.** `crucible daemon token` manages the daemon's bearer keys (stored hashed in `--token-file`, default `/var/lib/crucible/tokens.json`):
 
 ```bash
-crucible daemon token add --name laptop    # prints the raw key once — save it
-crucible daemon token list                  # id, name, created — never the key
+crucible daemon token add --name laptop                       # unscoped (full access), prints the key once
+crucible daemon token add --name agent --policy p.json --ttl 24h  # scoped + expiring
+crucible daemon token list                  # id, name, scope, expiry — never the key
 crucible daemon token revoke <id>           # rotate = add a new key, then revoke the old
 ```
 
-With no keys, a loopback daemon serves unauthenticated. Once any key exists, auth is required. Binding a non-loopback `--listen` is refused unless keys and `--tls-cert`/`--tls-key` are both set. See [SECURITY.md](../SECURITY.md) and [api.md](api.md#authentication).
+With no keys, a loopback daemon serves unauthenticated. Once any key exists, auth is required. Binding a non-loopback `--listen` is refused unless keys and `--tls-cert`/`--tls-key` are both set. `--policy` binds a key to a [scoped policy](policy.md) the daemon enforces; `--ttl` sets an expiry. See [SECURITY.md](../SECURITY.md) and [api.md](api.md#authentication).
+
+### `crucible policy`
+
+Author and inspect [scoped-token policies](policy.md):
+
+```bash
+crucible policy validate p.json    # static check — the same validation token add runs (fail-closed)
+crucible policy show               # what the current --token may actually do (asks the daemon /whoami)
+```
+
+`policy validate` reads a file or `-` (stdin). `policy show -o json` emits the effective policy for scripting.
 
 ### `crucible mcp serve`
 

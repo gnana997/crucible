@@ -44,6 +44,7 @@ Full motivation, design, and FAQ: [docs/VISION.md](docs/VISION.md).
 | Install script + systemd unit (run the daemon as a managed service) | ✅ `./install.sh` + `packaging/crucible.service` |
 | **MCP server** (`crucible mcp serve`) — full tool catalog over stdio, operator guardrails | ✅ done — drive crucible from any MCP agent; see [docs/mcp.md](docs/mcp.md) |
 | **Daemon API-key auth** — bearer keys, hashed at rest, TLS-required for non-loopback | ✅ done — `crucible daemon token add/list/revoke`; see [SECURITY.md](SECURITY.md) |
+| **Scoped / policy tokens** — bind a key to a daemon-enforced policy (operations, egress ceiling, profiles, resource caps, expiry) | ✅ done — `--policy`/`--ttl`, `crucible policy validate/show`; see [docs/policy.md](docs/policy.md) |
 | OCI image pull (ghcr.io / private registries → ext4 rootfs) | ⏳ planned — wire contract (`image: {path, oci}`) frozen now; both return `501` in v0.1 |
 | Python SDK | ⏳ deferred — the HTTP API is stable and usable from any language |
 
@@ -238,7 +239,7 @@ internal/network/dnsproxy/  DNS proxy (allowlist + resolved-IP range filter + AA
 scripts/                    rootfs builder + build-profile + smoke_fork / smoke_clone_safety / smoke_e2e / smoke_restart / smoke_mcp / debug_dns
 profiles/                   profiles.env (profile → base image) + Dockerfile for native language rootfs images
 packaging/                  systemd unit (crucible.service) + config template; installed by ./install.sh
-docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, profiles.md, network.md
+docs/                       VISION.md, ROADMAP.md, architecture.md, api.md, cli.md, mcp.md, policy.md, profiles.md, network.md
 ```
 
 Direct dependencies (kept small on purpose): `golang.org/x/sys` (raw Linux syscalls), `github.com/mdlayher/vsock` (AF_VSOCK listener), `github.com/miekg/dns` (DNS wire format in the proxy), `github.com/prometheus/client_golang` (the `/metrics` endpoint), and `github.com/spf13/cobra` (the CLI). Everything else — HTTP, JSON, the Firecracker API client, the hybrid-vsock handshake, the frame protocol, the `userfaultfd` handler — is stdlib + hand-written.
@@ -248,7 +249,8 @@ CI runs `go vet`, `gofmt` check, `-race` tests, `go build`, and `golangci-lint` 
 ## Roadmap (near-term)
 
 - **v0.1** (current): core runtime — feature-complete (runtime, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd), plus an **MCP server** (`crucible mcp serve`) and **daemon API-key auth** for remote/hosted access.
-- **v0.2**: a TUI (live dashboard + fork trees) and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus policy files (daemon-enforced scoped tokens), more language profiles, and a custom rootfs builder.
+- **v0.1.3**: daemon-enforced **scoped / policy tokens** — bind an API key to a policy (operations, egress ceiling, profiles, resource caps, expiry) so a handed-out key is worthless beyond its bounds.
+- **v0.2**: a TUI (live dashboard + fork trees) and CLI-driven image pull (fetch/lazy-pull profiles from a release), plus a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 

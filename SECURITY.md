@@ -18,7 +18,7 @@ Each sandbox is a **Firecracker microVM with its own guest kernel** — escape r
 
 The operator sets policy at launch (`--net-allow-max`, `--max-sandboxes`, `--max-fork`, `--max-timeout`, `--allow-profiles`, `--tools`/`--deny-tools`); the agent operates strictly within it and cannot widen it. Networking stays default-deny, and even an agent-chosen allowlist is range-filtered, so agent egress reaches only *public* hosts it names — never cloud-metadata or internal services.
 
-**Known bound — the local same-user bypass.** A local daemon key sits in a file your OS user can read. A same-user agent with a shell tool could read it and call the loopback daemon directly, past the MCP guardrails. Bearer keys make the *remote* story solid but don't close this; the future fix is daemon-enforced **scoped tokens** (a stolen token then buys only the capability it already had). Until then, protect a local key like any credential. See [docs/mcp.md](docs/mcp.md#limitations) for the full discussion.
+**The local same-user bypass — closed for scoped tokens.** A local daemon key sits in a file your OS user can read, so a same-user agent with a shell tool could read it and call the loopback daemon directly, past the MCP guardrails. **Scoped tokens** close this: the daemon enforces each token's policy (operations, network, resource caps, expiry), so a stolen scoped token buys only the bounded capability it already had — the bypass gains nothing. Scope the keys you hand to agents; an *unscoped* key still grants full access, so protect it like any credential. See [docs/policy.md](docs/policy.md) for the policy model and [docs/mcp.md](docs/mcp.md#limitations).
 
 ## Current status and limitations
 

@@ -217,25 +217,32 @@ func (s *Store) Enabled() bool {
 	return len(s.entries) > 0
 }
 
-// VerifyPolicy verifies key and returns its policy (nil for an unscoped key).
-// ok is false when the key is unknown or expired. The returned *Policy is for
-// the caller to read only — do not mutate it.
-func (s *Store) VerifyPolicy(key string) (p *policy.Policy, ok bool) {
+// Identity is the verified caller behind an API key: the key's id (for
+// attribution, e.g. per-token quotas) and its policy (nil for an unscoped key).
+type Identity struct {
+	TokenID string
+	Policy  *policy.Policy
+}
+
+// Identify verifies key and returns the caller's identity. ok is false when the
+// key is unknown or expired. The returned Policy is for the caller to read only
+// — do not mutate it.
+func (s *Store) Identify(key string) (Identity, bool) {
 	if key == "" {
-		return nil, false
+		return Identity{}, false
 	}
 	s.reload()
 	s.mu.Lock()
 	e, found := s.entries[hashKey(key)]
 	s.mu.Unlock()
 	if !found || e.Expired(time.Now()) {
-		return nil, false
+		return Identity{}, false
 	}
-	return e.Policy, true
+	return Identity{TokenID: e.ID, Policy: e.Policy}, true
 }
 
 // Verify reports whether key matches a stored, unexpired token.
 func (s *Store) Verify(key string) bool {
-	_, ok := s.VerifyPolicy(key)
+	_, ok := s.Identify(key)
 	return ok
 }

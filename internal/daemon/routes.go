@@ -175,9 +175,10 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Scoped-token ceilings. max_sandboxes is counted host-total here (simple,
-	// correct under the single-operator model); per-token counting is a later
-	// refinement. Every violation is reported at once.
+	// Scoped-token ceilings — every violation reported at once. max_sandboxes is
+	// counted per token (CountByToken), so one token can't consume another's
+	// budget (best-effort: the count races a concurrent create).
+	tokenID := tokenIDFor(r)
 	if pol := policyFor(r); pol != nil {
 		var reqNet []string
 		if req.Network != nil && req.Network.Enabled {
@@ -188,7 +189,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 			pol.CheckNetAllow(reqNet),
 			pol.CheckVCPUs(req.VCPUs),
 			pol.CheckMemory(req.MemoryMiB),
-			pol.CheckCapacity(len(s.cfg.Manager.List()), 1),
+			pol.CheckCapacity(s.cfg.Manager.CountByToken(tokenID), 1),
 		); err != nil {
 			writeError(w, http.StatusForbidden, err)
 			return
@@ -202,6 +203,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		TimeoutSec: req.TimeoutSec,
 		Profile:    req.Profile,
 		Network:    netCfg,
+		TokenID:    tokenID,
 	})
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {
@@ -443,11 +445,12 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Scoped-token ceilings: the fork count and the resulting live-sandbox total.
+	// Scoped-token ceilings: the fork count and the token's resulting sandbox total.
+	tokenID := tokenIDFor(r)
 	if pol := policyFor(r); pol != nil {
 		if err := errors.Join(
 			pol.CheckFork(count),
-			pol.CheckCapacity(len(s.cfg.Manager.List()), count),
+			pol.CheckCapacity(s.cfg.Manager.CountByToken(tokenID), count),
 		); err != nil {
 			writeError(w, http.StatusForbidden, err)
 			return
@@ -463,7 +466,7 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	forks, err := s.cfg.Manager.Fork(r.Context(), id, count)
+	forks, err := s.cfg.Manager.Fork(r.Context(), id, count, tokenID)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
 			writeError(w, http.StatusNotFound, err)

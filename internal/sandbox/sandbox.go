@@ -143,6 +143,7 @@ type Sandbox struct {
 	MemoryMiB int
 	Workdir   string
 	Profile   string // rootfs profile this sandbox booted from; empty = default rootfs
+	TokenID   string // id of the API key that created it; "" when unauthenticated. Used for per-token max_sandboxes.
 	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
@@ -188,6 +189,11 @@ type CreateConfig struct {
 	// ManagerConfig.Network; otherwise Create returns an error
 	// rather than silently falling back to no-network.
 	Network *NetworkConfig
+
+	// TokenID attributes this sandbox to the API key that created it, so
+	// per-token quotas (scoped-token max_sandboxes) can count it. Empty for
+	// unauthenticated (loopback) creates.
+	TokenID string
 }
 
 // NetworkConfig declares the per-sandbox network intent. Exactly
@@ -605,6 +611,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		MemoryMiB: memMiB,
 		Workdir:   workdir,
 		Profile:   req.Profile,
+		TokenID:   req.TokenID,
 		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
 		Network:   netHandle,
@@ -777,6 +784,25 @@ func (m *Manager) List() []*Sandbox {
 		out = append(out, s)
 	}
 	return out
+}
+
+// CountByToken returns how many live sandboxes were created by the given API
+// key id — the count a scoped token's max_sandboxes is enforced against. A
+// tokenID of "" (unauthenticated) is never counted here; those creates aren't
+// policy-bounded.
+func (m *Manager) CountByToken(tokenID string) int {
+	if tokenID == "" {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	n := 0
+	for _, s := range m.sandboxes {
+		if s.TokenID == tokenID {
+			n++
+		}
+	}
+	return n
 }
 
 // Shutdown tears down every sandbox currently in the map. Errors are not
@@ -1013,7 +1039,7 @@ func (m *Manager) MaxForkCount() int {
 // succeeded is torn down before returning — Fork remains
 // all-or-nothing. The first observed error is returned (indexed by
 // its fork position for readability).
-func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sandbox, error) {
+func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenID string) ([]*Sandbox, error) {
 	if count <= 0 {
 		return nil, errors.New("sandbox: Fork count must be > 0")
 	}
@@ -1053,7 +1079,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sa
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			sb, err := m.forkOne(ctx, snap)
+			sb, err := m.forkOne(ctx, snap, tokenID)
 			results[idx] = forkResult{sb: sb, err: err}
 		}(i)
 	}
@@ -1090,7 +1116,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int) ([]*Sa
 
 // forkOne creates a single fork. Split out so Fork's all-or-nothing
 // loop stays readable.
-func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error) {
+func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (*Sandbox, error) {
 	// Bound the restore to guest memory, for the same reason Snapshot does:
 	// LoadSnapshot carries no fcapi wall-clock cap and r.Context() no
 	// deadline, so a wedged firecracker must not hang this goroutine. Forks
@@ -1168,6 +1194,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot) (*Sandbox, error)
 		VCPUs:     snap.VCPUs,
 		MemoryMiB: snap.MemoryMiB,
 		Workdir:   workdir,
+		TokenID:   tokenID,
 		VSockPath: handle.VSockPath(),
 		CreatedAt: time.Now().UTC(),
 		Network:   netHandle,

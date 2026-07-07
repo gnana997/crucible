@@ -111,10 +111,8 @@ The MCP server reaches the daemon as a normal client, so it uses the daemon's [b
 
 ## Limitations
 
-**The local same-user bypass (honest, and narrow).** Locally, the daemon key sits in a file your OS user can read. A same-user agent that *also* has a shell tool could read that key and hit the loopback daemon directly, past this server's guardrails. Bearer keys make the *remote* story solid but don't bound this. Treat a local key like any credential: on a shared box, protect it.
+**The local same-user bypass — closed for scoped tokens.** Locally, the daemon key sits in a file your OS user can read, so a same-user agent that *also* has a shell tool could read it and hit the loopback daemon directly, past this server's guardrails. **[Scoped tokens](policy.md)** close this: the policy is enforced by the *daemon*, so a stolen scoped token buys only the capability it already had — the bypass gains nothing, and these MCP guardrails become a mirror rather than the security boundary. The MCP server even asks the daemon (`/whoami`) what its token may do and advertises only those tools. Hand agents *scoped* keys; an unscoped key still grants full access.
 
-Why not mTLS / workload identity? Those answer *"is this client who it claims to be?"* — but the MCP server and the agent's other tools share the *same* OS user, so they have the same identity. You can't hide a secret from a same-user process.
-
-The real fix (future) is **scoped tokens**: a token bound to a policy the *daemon* enforces (no network, N sandboxes, these tools). Then a stolen token buys only the capability it already had — the bypass gains nothing, and these MCP guardrails become convenience rather than the security boundary. Until then, the bound above is the honest ceiling.
+Why not mTLS / workload identity? Those answer *"is this client who it claims to be?"* — but the MCP server and the agent's other tools share the *same* OS user, so they have the same identity. You can't hide a secret from a same-user process; you make it worthless to steal instead.
 
 See [SECURITY.md](../SECURITY.md) for the isolation model and how to report a vulnerability.

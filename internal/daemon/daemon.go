@@ -144,13 +144,13 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		pol, ok := store.VerifyPolicy(bearerToken(r.Header.Get("Authorization")))
+		id, ok := store.Identify(bearerToken(r.Header.Get("Authorization")))
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="crucible"`)
 			writeError(w, http.StatusUnauthorized, errors.New("missing or invalid API key"))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(withPolicy(r.Context(), pol)))
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), id)))
 	})
 }
 

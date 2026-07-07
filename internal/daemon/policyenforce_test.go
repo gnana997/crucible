@@ -143,3 +143,13 @@ func TestWhoamiNoAuth(t *testing.T) {
 		t.Errorf("no-auth whoami = %d (%s), want scoped:false", code, body)
 	}
 }
+
+func TestMaxSandboxesPerToken(t *testing.T) {
+	srv, tok := scopedServer(t, &policy.Policy{MaxSandboxes: 1}, 0)
+	if code, body := call(t, srv, "POST", "/sandboxes", tok, "{}"); code != 201 {
+		t.Fatalf("first create = %d (%s), want 201", code, body)
+	}
+	if code, body := call(t, srv, "POST", "/sandboxes", tok, "{}"); code != 403 {
+		t.Errorf("second create = %d (%s), want 403 (per-token max_sandboxes)", code, body)
+	}
+}

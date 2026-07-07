@@ -6,6 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.1.3] — unreleased
+
+Scoped / policy tokens: bind an API key to a policy the **daemon** enforces, so a
+leaked or handed-out key is worthless beyond its policy — the fix that makes the
+MCP guardrails a real boundary and remote/hosted access genuinely safe.
+
+### Added
+
+- **Scoped tokens.** `crucible daemon token add --policy <file> --ttl <dur>`
+  mints a key bound to a JSON policy — allowed operations, an egress ceiling, a
+  profile allowlist, and resource caps (sandboxes / fork / timeout / vCPU /
+  memory) — with an optional expiry. The daemon enforces the policy on every
+  request; an unscoped key keeps full access, so nothing regresses. See
+  [docs/policy.md](docs/policy.md).
+- **`crucible policy validate <file|->`** — the *same* validation that gates
+  `token add` (fail-closed), reporting every problem at once.
+- **`crucible policy show` / `GET /whoami`** — the effective policy for the
+  presenting token, so a client can discover exactly what it may do.
+- **MCP tool mirror.** `mcp serve` asks `/whoami` at startup and advertises only
+  the tools the token's policy permits (the daemon still enforces regardless).
+- `docs/policy.md`, plus a scoped-token check in `scripts/smoke_mcp.sh`.
+
+### Changed
+
+- `daemon token list` now shows each key's scope (full/scoped) and expiry.
+- The MCP server's `--max-*` / `--net-allow-max` flags are **narrow-only**: they
+  layer on top of the daemon-enforced token policy and can only tighten it.
+
+### Security
+
+- **The local same-user bypass is closed for scoped tokens.** Enforcement is
+  daemon-authoritative, so an agent that steals its MCP server's scoped key and
+  calls the loopback daemon directly gets only the bounded capability it already
+  had. Expired tokens are rejected (`401`), and `max_sandboxes` is counted
+  per-token so tokens don't share a budget. (OAuth-style short-lived session
+  tokens — an MCP server exchanging its key for a scoped session token — are
+  deferred.)
+
 ## [0.1.2] — 2026-07-07
 
 The MCP release: drive crucible from any MCP agent as native tools, and reach a
@@ -112,6 +150,7 @@ Initial release — the core single-host Firecracker microVM sandbox runtime.
   `-o json`), native language rootfs profiles (base/python/node/go), a
   Prometheus `/metrics` endpoint, and an install script + systemd unit.
 
-[0.1.2]: https://github.com/gnana997/crucible/compare/v0.1.1...HEAD
+[0.1.3]: https://github.com/gnana997/crucible/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/gnana997/crucible/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/gnana997/crucible/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/gnana997/crucible/releases/tag/v0.1.0
