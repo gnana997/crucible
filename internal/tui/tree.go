@@ -4,15 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-
 	"github.com/gnana997/crucible/internal/api"
-)
-
-var (
-	sbxNodeStyle  = lipgloss.NewStyle().Foreground(accent).Bold(true)
-	snapNodeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	treeStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )
 
 // renderTree builds the fork genealogy from the sandbox + snapshot lists and
@@ -103,7 +95,7 @@ func writeNode(b *strings.Builder, prefix, label string, last bool) string {
 }
 
 func sandboxLabel(sb api.SandboxResponse) string {
-	label := sbxNodeStyle.Render(sb.ID)
+	label := sbxNodeStyle.Render("● " + sb.ID)
 	var extra []string
 	if sb.Profile != "" {
 		extra = append(extra, sb.Profile)

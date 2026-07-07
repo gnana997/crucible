@@ -6,18 +6,9 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
-)
-
-var (
-	accent     = lipgloss.Color("13") // bright magenta
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(accent).Padding(0, 1)
-	metaStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 )
 
 var columns = []table.Column{
