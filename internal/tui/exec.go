@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -53,6 +54,33 @@ func runExec(cl *client.Client, id, cmdline string, ch chan execEvent) {
 		agentwire.ExecRequest{Cmd: []string{"sh", "-c", cmdline}},
 		&chanWriter{ch: ch}, &chanWriter{ch: ch, stderr: true})
 	ch <- execEvent{done: true, res: res, fail: err}
+}
+
+// attachShell opens a long-lived interactive shell in the sandbox via
+// client.ExecInteractive and streams its output into ch, exactly like
+// runExec but for a persistent session. The caller writes each entered line
+// to the returned pipe as stdin; closing the pipe (or the shell exiting)
+// ends the session with a done event. No timeout: an interactive session is
+// user-paced, and detach/quit/close tears it down.
+func attachShell(cl *client.Client, id string, ch chan execEvent) *io.PipeWriter {
+	pr, pw := io.Pipe()
+	go func() {
+		res, err := cl.ExecInteractive(context.Background(), id,
+			agentwire.ExecRequest{Cmd: []string{"/bin/sh"}},
+			pr, &chanWriter{ch: ch}, &chanWriter{ch: ch, stderr: true})
+		ch <- execEvent{done: true, res: res, fail: err}
+	}()
+	return pw
+}
+
+// sendStdin writes one line (plus newline) to a live shell's stdin. It runs
+// as a command so a synchronous io.Pipe write can never block the update
+// loop. Output arrives separately via the shell's frame stream on execCh.
+func sendStdin(pw *io.PipeWriter, line string) tea.Cmd {
+	return func() tea.Msg {
+		_, _ = pw.Write([]byte(line + "\n"))
+		return nil
+	}
 }
 
 // waitExec reads the next streaming event. On each event the model re-issues

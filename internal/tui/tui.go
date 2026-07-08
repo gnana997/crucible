@@ -8,6 +8,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -89,8 +90,14 @@ type model struct {
 	input    textinput.Model
 	execVP   viewport.Model
 	execOut  string
-	execing  bool
+	execing  bool // a session (one-shot or interactive) is streaming
 	execCh   chan execEvent
+
+	// interactive shell (M1 ExecInteractive): when attached, each entered
+	// line is written to attachIn as stdin and session state (cwd/env)
+	// persists across commands. nil attachIn means one-shot mode.
+	attached bool
+	attachIn *io.PipeWriter
 
 	lastRefresh   time.Time
 	ready         bool
@@ -151,6 +158,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
+			m.closeAttach() // drop the live shell's stdin so the guest tears it down
 			return m, tea.Quit
 		}
 		if m.confirming {
@@ -247,12 +255,31 @@ func (m model) updateMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.selected = sb
 				m.mode = modeDetail
 				m.execOut = ""
-				m.execVP.SetContent(metaStyle.Render("run a command in this sandbox — type below and press enter"))
+				m.execVP.SetContent(metaStyle.Render("run a command (enter) — or open an interactive shell (tab)"))
 				m.input.Reset()
 				return m, m.input.Focus()
 			}
 		}
 		return m, nil
+	case "tab":
+		// Shortcut from the list: open the sandbox's detail view and drop
+		// straight into an interactive shell. Inside detail, tab toggles it.
+		if m.mode != modeDashboard {
+			break
+		}
+		sb, ok := m.selectedSandbox()
+		if !ok {
+			return m, nil
+		}
+		if !m.can(policy.OpExec) {
+			m.notice, m.noticeErr = "exec not permitted by policy scope", true
+			return m, nil
+		}
+		m.selected = sb
+		m.mode = modeDetail
+		m.execOut = ""
+		m.input.Reset()
+		return m, tea.Batch(m.input.Focus(), m.startShell())
 	case "c":
 		return m.startAction(policy.OpCreate, "create", m.createCmd())
 	case "s":
@@ -326,33 +353,105 @@ func (m model) updateConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m model) updateDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		// Leaving detail also tears down any live shell; the session drains
+		// to a done event in the background (execCh is buffered).
+		m.closeAttach()
 		m.mode = modeDashboard
 		m.input.Blur()
 		return m, nil
+	case "tab":
+		return m.toggleAttach()
 	case "enter":
-		cmdline := strings.TrimSpace(m.input.Value())
-		if cmdline == "" || m.execing {
-			return m, nil
+		if m.attached {
+			return m.sendShellLine()
 		}
-		if !m.can(policy.OpExec) {
-			m.execOut += errStyle.Render("exec not permitted by policy scope") + "\n"
-			m.execVP.SetContent(m.execOut)
-			m.execVP.GotoBottom()
-			m.input.Reset()
-			return m, nil
-		}
-		ch := make(chan execEvent, 64)
-		m.execCh = ch
-		m.execing = true
-		m.execOut = promptStyle.Render("$ "+cmdline) + "\n"
-		m.execVP.SetContent(m.execOut)
-		m.input.Reset()
-		go runExec(m.cfg.Client, m.selected.ID, cmdline, ch)
-		return m, waitExec(ch)
+		return m.runOneShot()
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+// toggleAttach opens or closes the interactive shell from the detail view.
+// Attaching is blocked while a one-shot is still streaming (single active
+// session).
+func (m model) toggleAttach() (tea.Model, tea.Cmd) {
+	if m.attached {
+		m.closeAttach()
+		return m, nil
+	}
+	if m.execing {
+		return m, nil
+	}
+	if !m.can(policy.OpExec) {
+		m.appendExec(errStyle.Render("exec not permitted by policy scope") + "\n")
+		return m, nil
+	}
+	return m, m.startShell()
+}
+
+// startShell begins an interactive shell session in the selected sandbox and
+// returns the command that pumps its output. The caller must have set
+// m.selected/m.mode and ensured no session is active.
+func (m *model) startShell() tea.Cmd {
+	ch := make(chan execEvent, 64)
+	m.execCh = ch
+	m.execing = true
+	m.attached = true
+	m.appendExec(metaStyle.Render("— interactive shell: state persists across commands · tab to detach —") + "\n")
+	m.attachIn = attachShell(m.cfg.Client, m.selected.ID, ch)
+	return waitExec(ch)
+}
+
+// sendShellLine feeds one line to the live shell's stdin, echoing it into the
+// scrollback (there is no PTY echo).
+func (m model) sendShellLine() (tea.Model, tea.Cmd) {
+	if m.attachIn == nil {
+		return m, nil // detaching; ignore until the done event lands
+	}
+	line := strings.TrimSpace(m.input.Value())
+	m.appendExec(promptStyle.Render("$ "+line) + "\n")
+	m.input.Reset()
+	return m, sendStdin(m.attachIn, line)
+}
+
+// runOneShot runs a single command as a fresh `sh -c`, appending its block to
+// the scrollback (history of prior commands is preserved).
+func (m model) runOneShot() (tea.Model, tea.Cmd) {
+	cmdline := strings.TrimSpace(m.input.Value())
+	if cmdline == "" || m.execing {
+		return m, nil
+	}
+	if !m.can(policy.OpExec) {
+		m.appendExec(errStyle.Render("exec not permitted by policy scope") + "\n")
+		m.input.Reset()
+		return m, nil
+	}
+	ch := make(chan execEvent, 64)
+	m.execCh = ch
+	m.execing = true
+	m.appendExec(promptStyle.Render("$ "+cmdline) + "\n")
+	m.input.Reset()
+	go runExec(m.cfg.Client, m.selected.ID, cmdline, ch)
+	return m, waitExec(ch)
+}
+
+// closeAttach drops the live shell's stdin (EOF → the guest shell exits).
+// Idempotent; the flags flip on the resulting done event so a new session
+// can't start mid-teardown.
+func (m *model) closeAttach() {
+	if m.attachIn != nil {
+		_ = m.attachIn.Close()
+		m.attachIn = nil
+	}
+}
+
+// appendExec accumulates output into the scrollback and pins the viewport to
+// the newest line.
+func (m *model) appendExec(s string) {
+	m.execOut += s
+	m.execVP.SetContent(m.execOut)
+	m.execVP.GotoBottom()
 }
 
 func (m model) handleExecEvent(e execEvent) (tea.Model, tea.Cmd) {
@@ -364,6 +463,8 @@ func (m model) handleExecEvent(e execEvent) (tea.Model, tea.Cmd) {
 	}
 	if e.done {
 		m.execing = false
+		m.attached = false
+		m.attachIn = nil
 		m.execOut += "\n" + exitLine(e.res, e.fail) + "\n"
 		m.execVP.SetContent(m.execOut)
 		m.execVP.GotoBottom()
@@ -475,16 +576,21 @@ func (m model) helpLine(compact bool) string {
 			s = "↑/↓ scroll · [t] dashboard · [r]efresh · [q]uit"
 		}
 	case modeDetail:
-		if compact {
-			s = "enter run · esc back"
-		} else {
-			s = "type a command · enter run · esc back · ctrl+c quit"
+		switch {
+		case m.attached && compact:
+			s = "shell · tab detach · esc back"
+		case m.attached:
+			s = "interactive shell — type & enter · tab detach · esc back"
+		case compact:
+			s = "enter run · tab shell · esc back"
+		default:
+			s = "enter run · tab interactive shell · esc back · ctrl+c quit"
 		}
 	default:
 		if compact {
 			s = m.actionsHelp() + " · [q]uit"
 		} else {
-			s = "↑/↓ move · enter detail · " + m.actionsHelp() + " · [t]ree · [r] · [q]uit"
+			s = "↑/↓ move · enter detail · tab shell · " + m.actionsHelp() + " · [t]ree · [r] · [q]uit"
 		}
 	}
 	return helpStyle.Render(s)

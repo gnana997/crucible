@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/internal/client"
 )
 
 // openDetail drives the model to the detail view for the first sandbox row.
@@ -74,6 +76,166 @@ func TestExecEventStream(t *testing.T) {
 	}
 	if !strings.Contains(m.execOut, "exit 0") {
 		t.Errorf("exit summary missing: %q", m.execOut)
+	}
+}
+
+// TestScrollbackRetainsPriorCommands is the M2 scrollback property: a
+// finished command's block stays in the buffer when the next one runs, so
+// the whole session's history shows up (not just the last run).
+func TestScrollbackRetainsPriorCommands(t *testing.T) {
+	m := openDetail(t)
+
+	// First command block, driven through the event stream to completion.
+	m.execCh = make(chan execEvent, 8)
+	m.execing = true
+	m.appendExec("$ echo one\n")
+	m = step(m, execEvent{out: []byte("one\n")})
+	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+
+	// Second command block appends; the first must survive.
+	m.execCh = make(chan execEvent, 8)
+	m.execing = true
+	m.appendExec("$ echo two\n")
+	m = step(m, execEvent{out: []byte("two\n")})
+	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+
+	for _, want := range []string{"echo one", "one", "echo two", "two"} {
+		if !strings.Contains(m.execOut, want) {
+			t.Errorf("scrollback missing %q:\n%s", want, m.execOut)
+		}
+	}
+}
+
+// TestAttachEnterEchoesAndSendsStdin: while attached, pressing enter echoes
+// the typed line into the scrollback (no PTY echo) and writes it to the
+// shell's stdin pipe.
+func TestAttachEnterEchoesAndSendsStdin(t *testing.T) {
+	m := openDetail(t)
+	pr, pw := io.Pipe()
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, _ := pr.Read(buf)
+		got <- string(buf[:n])
+	}()
+
+	m.attached = true
+	m.execing = true
+	m.attachIn = pw
+	m.input.SetValue("ls -la")
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(model)
+
+	if !strings.Contains(m.execOut, "ls -la") {
+		t.Errorf("attach enter should echo the command into scrollback; execOut=%q", m.execOut)
+	}
+	if cmd == nil {
+		t.Fatal("attach enter should return a sendStdin command")
+	}
+	cmd() // perform the pipe write
+
+	select {
+	case s := <-got:
+		if strings.TrimSpace(s) != "ls -la" {
+			t.Errorf("stdin = %q, want %q", s, "ls -la")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("nothing written to the shell's stdin")
+	}
+}
+
+// TestAttachDoneResetsState: when the shell session ends, the model drops out
+// of attached mode and clears the stdin pipe so a new session can start.
+func TestAttachDoneResetsState(t *testing.T) {
+	m := openDetail(t)
+	_, pw := io.Pipe()
+	m.attached = true
+	m.execing = true
+	m.attachIn = pw
+	m.execCh = make(chan execEvent, 4)
+
+	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+
+	if m.attached {
+		t.Error("attached should be false after the shell exits")
+	}
+	if m.attachIn != nil {
+		t.Error("attachIn should be nil after the shell exits")
+	}
+	if m.execing {
+		t.Error("execing should be false after the shell exits")
+	}
+	if !strings.Contains(m.execOut, "exit 0") {
+		t.Errorf("exit summary missing from scrollback: %q", m.execOut)
+	}
+}
+
+// TestTabAttachBlockedWhileOneShotStreaming: tab must not start a shell while
+// a one-shot exec is still in flight (single active session).
+func TestTabAttachBlockedWhileOneShotStreaming(t *testing.T) {
+	m := openDetail(t)
+	m.execing = true // a one-shot is streaming
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(model)
+	if m.attached {
+		t.Error("tab should not attach a shell while a one-shot is streaming")
+	}
+}
+
+// deadClient points at a refused port so attachShell's goroutine fails fast
+// (a clean done event) instead of panicking on a nil client — lets us test
+// the synchronous attach state transitions without a live daemon.
+func deadClient() *client.Client { return client.New("127.0.0.1:1") }
+
+// TestTabInDetailAttachesShell proves tab actually attaches in the detail
+// view (the earlier blocked-path test couldn't distinguish "handled" from
+// "ignored").
+func TestTabInDetailAttachesShell(t *testing.T) {
+	m := openDetail(t)
+	m.cfg.Client = deadClient()
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(model)
+	defer m.closeAttach()
+
+	if !m.attached {
+		t.Error("tab in detail should attach an interactive shell")
+	}
+	if m.attachIn == nil {
+		t.Error("attachIn should be set after attaching")
+	}
+	if cmd == nil {
+		t.Error("attach should return a waitExec command")
+	}
+	if !strings.Contains(m.execOut, "interactive shell") {
+		t.Errorf("attach banner missing from scrollback: %q", m.execOut)
+	}
+}
+
+// TestTabFromListOpensDetailAndAttaches proves the list shortcut: tab on a
+// selected sandbox opens its detail view AND starts a shell in one step.
+func TestTabFromListOpensDetailAndAttaches(t *testing.T) {
+	m := step(newModel(Config{Addr: "http://x", Client: deadClient()}), tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = step(m, dataMsg{sandboxes: []api.SandboxResponse{
+		{ID: "sbx_a", Profile: "base", VCPUs: 1, MemoryMiB: 256, CreatedAt: time.Now()},
+	}})
+	if m.mode != modeDashboard {
+		t.Fatalf("precondition: expected dashboard, mode = %d", m.mode)
+	}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = next.(model)
+	defer m.closeAttach()
+
+	if m.mode != modeDetail {
+		t.Errorf("tab on the list should open the detail view, mode = %d", m.mode)
+	}
+	if m.selected.ID != "sbx_a" {
+		t.Errorf("selected = %q, want sbx_a", m.selected.ID)
+	}
+	if !m.attached {
+		t.Error("tab on the list should drop straight into a shell")
 	}
 }
 
