@@ -29,12 +29,15 @@ const (
 // deterministically, regardless of how a downstream tar consumer
 // handles duplicate names.
 const (
-	reservedPrefix   = "crucible"
-	injectedAgent    = "crucible/crucible-agent"
-	injectedRunJSON  = "crucible/run.json"
-	injectedDirMode  = 0o755
-	injectedExecMode = 0o755
-	injectedFileMode = 0o644
+	reservedPrefix  = "crucible"
+	injectedAgent   = "crucible/crucible-agent"
+	injectedRunJSON = "crucible/run.json"
+	// InjectedAgentPath is the in-image path of the injected agent
+	// (no leading slash), for callers building an init= boot arg.
+	InjectedAgentPath = injectedAgent
+	injectedDirMode   = 0o755
+	injectedExecMode  = 0o755
+	injectedFileMode  = 0o644
 )
 
 // AssembleOptions configures Assemble. Agent is required; zero values

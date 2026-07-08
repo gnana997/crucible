@@ -44,7 +44,7 @@ func TestSupervisorAlwaysPolicyRestartsWithDoublingBackoff(t *testing.T) {
 	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
 
 	// Crash #1: relaunch after the initial 100ms.
-	fc1.exitNow(childExit{runErr: errors.New("crash")})
+	fc1.exitNow(childExit{ws: exitStatusT(1)})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
 	st := waitForState(t, s, agentwire.ServiceStateRunning)
@@ -53,7 +53,7 @@ func TestSupervisorAlwaysPolicyRestartsWithDoublingBackoff(t *testing.T) {
 	}
 
 	// Crash #2 (quick): the delay doubled, so 100ms is not enough.
-	fc2.exitNow(childExit{runErr: errors.New("crash")})
+	fc2.exitNow(childExit{ws: exitStatusT(1)})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
 	requireStateStays(t, s, agentwire.ServiceStateBackingOff)
@@ -108,13 +108,13 @@ func TestSupervisorOnFailureBudgetExhausts(t *testing.T) {
 	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartOnFailure, 2, "/bin/app"))
 
 	for _, fc := range []*fakeChild{fc1, fc2} {
-		fc.exitNow(childExit{runErr: errors.New("crash")})
+		fc.exitNow(childExit{ws: exitStatusT(1)})
 		waitForState(t, s, agentwire.ServiceStateBackingOff)
 		clk.Advance(restartBackoffMax) // generous: fires whatever is armed
 		waitForState(t, s, agentwire.ServiceStateRunning)
 	}
 	// Third consecutive failure: budget (2) exhausted.
-	fc3.exitNow(childExit{runErr: errors.New("crash")})
+	fc3.exitNow(childExit{ws: exitStatusT(1)})
 	st := waitForState(t, s, agentwire.ServiceStateFailed)
 	if st.Restarts != 2 {
 		t.Errorf("Restarts = %d, want 2", st.Restarts)
@@ -131,14 +131,14 @@ func TestSupervisorStableRunResetsBackoff(t *testing.T) {
 	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
 
 	// Quick crash: delay consumed, next would be 200ms.
-	fc1.exitNow(childExit{runErr: errors.New("crash"), elapsed: 50 * time.Millisecond})
+	fc1.exitNow(childExit{ws: exitStatusT(1), elapsed: 50 * time.Millisecond})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
 	waitForState(t, s, agentwire.ServiceStateRunning)
 
 	// This run "survives" past the stability window (reported via its
 	// exit duration), so the delay resets to 100ms.
-	fc2.exitNow(childExit{runErr: errors.New("crash"), elapsed: restartStableAfter + time.Second})
+	fc2.exitNow(childExit{ws: exitStatusT(1), elapsed: restartStableAfter + time.Second})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
 	waitForState(t, s, agentwire.ServiceStateRunning)
@@ -152,7 +152,7 @@ func TestSupervisorStopCancelsBackoff(t *testing.T) {
 	s := newTestSupervisor(t, fr, clk)
 
 	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
-	fc.exitNow(childExit{runErr: errors.New("crash")})
+	fc.exitNow(childExit{ws: exitStatusT(1)})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 
 	if _, err := s.Stop(0); err != nil {
@@ -176,7 +176,7 @@ func TestSupervisorStartDuringBackoffLaunchesNow(t *testing.T) {
 	s := newTestSupervisor(t, fr, newFakeClock())
 
 	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
-	fc1.exitNow(childExit{runErr: errors.New("crash")})
+	fc1.exitNow(childExit{ws: exitStatusT(1)})
 	waitForState(t, s, agentwire.ServiceStateBackingOff)
 
 	st, err := s.Start() // no clock advance needed: explicit start is immediate

@@ -12,7 +12,9 @@ import (
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/network"
+	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -89,22 +91,53 @@ func validateNetwork(r *api.NetworkRequest) (*network.Allowlist, int, error) {
 	return al, 0, nil
 }
 
-// validateImage enforces the "exactly one of Path/OCI" rule. v0.1 returns
-// (501, stub error) for any set reference so callers get a clear signal
-// rather than a silent fallback to the daemon default.
-func validateImage(r *api.ImageRef) (status int, err error) {
-	pathSet := r.Path != ""
-	ociSet := r.OCI != ""
+// ociInitBootArgs is the kernel command line for a converted OCI image:
+// the runtime defaults plus init=<injected agent>, so the guest boots
+// crucible-agent as PID 1 instead of the (absent) /sbin/init.
+const ociInitBootArgs = runner.DefaultBootArgs + " init=/" + oci.InjectedAgentPath
+
+// imageError pairs an HTTP status with an error for image resolution.
+type imageErr struct {
+	status int
+	err    error
+}
+
+// resolveImage turns a request's ImageRef into a rootfs override + boot
+// args. No image → ("", "", nil). An OCI ref resolves against the image
+// store. A path override is still unimplemented. Exactly one of
+// Path/OCI must be set.
+func (s *Server) resolveImage(ref *api.ImageRef) (rootfs, bootArgs string, ierr *imageErr) {
+	if ref == nil {
+		return "", "", nil
+	}
+	pathSet := ref.Path != ""
+	ociSet := ref.OCI != ""
 	switch {
 	case pathSet && ociSet:
-		return http.StatusBadRequest, errors.New("image.path and image.oci are mutually exclusive")
+		return "", "", &imageErr{http.StatusBadRequest, errors.New("image.path and image.oci are mutually exclusive")}
 	case !pathSet && !ociSet:
-		return http.StatusBadRequest, errors.New("image must set either path or oci")
-	case ociSet:
-		return http.StatusNotImplemented, errors.New("image.oci not implemented in v0.1 (tracked for wk7/wk8)")
-	default: // pathSet only
-		return http.StatusNotImplemented, errors.New("image.path per-sandbox override not implemented in v0.1 (use daemon --rootfs flag)")
+		return "", "", &imageErr{http.StatusBadRequest, errors.New("image must set either path or oci")}
+	case pathSet:
+		return "", "", &imageErr{http.StatusNotImplemented, errors.New("image.path per-sandbox override not implemented (use image.oci or a profile)")}
 	}
+	// OCI reference.
+	if s.cfg.Images == nil {
+		return "", "", &imageErr{http.StatusNotImplemented, errors.New("image support is not enabled on this daemon (set --image-dir)")}
+	}
+	rec, err := s.cfg.Images.Get(ref.OCI)
+	if err != nil {
+		if errors.Is(err, oci.ErrImageNotFound) {
+			return "", "", &imageErr{http.StatusNotFound, fmt.Errorf("image %q not found; pull it first", ref.OCI)}
+		}
+		if errors.Is(err, oci.ErrAmbiguousImage) {
+			return "", "", &imageErr{http.StatusConflict, err}
+		}
+		return "", "", &imageErr{http.StatusInternalServerError, err}
+	}
+	if rec.RootfsPath == "" {
+		return "", "", &imageErr{http.StatusInternalServerError, errors.New("image record has no rootfs path")}
+	}
+	return rec.RootfsPath, ociInitBootArgs, nil
 }
 
 func sandboxResponseFrom(sb *sandbox.Sandbox) api.SandboxResponse {
@@ -170,12 +203,25 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ImageRef validation — field is frozen as wire contract now but
-	// any populated value returns a stub error in v0.1. See ImageRef.
-	if req.Image != nil {
-		status, err := validateImage(req.Image)
-		writeError(w, status, err)
+	// Image resolution. A per-sandbox path override is still 501; an OCI
+	// reference resolves against the image store to a converted rootfs
+	// the sandbox boots with the guest agent as PID 1. Both/neither is a
+	// 400. Returns the rootfs path + boot args, or "" when no image.
+	rootfsOverride, imgBootArgs, ierr := s.resolveImage(req.Image)
+	if ierr != nil {
+		writeError(w, ierr.status, ierr.err)
 		return
+	}
+	if rootfsOverride != "" {
+		// Networking for image sandboxes lands in the next milestone
+		// (guest-side netlink config); reject it now rather than boot a
+		// guest that can't configure its NIC.
+		if req.Network != nil && req.Network.Enabled {
+			writeError(w, http.StatusBadRequest,
+				errors.New("networking for OCI-image sandboxes is not supported yet"))
+			return
+		}
+		req.BootArgs = imgBootArgs
 	}
 
 	// Network validation — parses the allowlist into a matcher or
@@ -232,14 +278,15 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
-		VCPUs:      req.VCPUs,
-		MemoryMiB:  req.MemoryMiB,
-		BootArgs:   req.BootArgs,
-		TimeoutSec: req.TimeoutSec,
-		Profile:    req.Profile,
-		Network:    netCfg,
-		TokenID:    tokenID,
-		Service:    req.Service,
+		VCPUs:          req.VCPUs,
+		MemoryMiB:      req.MemoryMiB,
+		BootArgs:       req.BootArgs,
+		TimeoutSec:     req.TimeoutSec,
+		Profile:        req.Profile,
+		RootfsOverride: rootfsOverride,
+		Network:        netCfg,
+		TokenID:        tokenID,
+		Service:        req.Service,
 	})
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {

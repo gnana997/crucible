@@ -47,11 +47,35 @@ func resolveSignal(name string) (syscall.Signal, error) {
 // The loop — not the watcher — turns them into an ExecResult, because
 // only the loop knows whether a SIGKILL was ours (grace escalation)
 // and that distinction drives the OOM heuristic.
+//
+// It is deliberately runtime-agnostic: execChild fills it from os/exec's
+// ProcessState, the init-mode child fills it from the janitor's raw
+// wait4 results. ws/rusage are valid only when startErr is nil.
 type childExit struct {
-	runErr  error
-	state   *os.ProcessState
-	io      *procIOStats
-	elapsed time.Duration
+	ws       syscall.WaitStatus
+	rusage   *syscall.Rusage
+	io       *procIOStats
+	elapsed  time.Duration
+	startErr error // the process could not be started or reaped
+}
+
+// childExitFromState builds a childExit from os/exec's post-Wait state.
+// After a successful Start, ProcessState is always populated (even on a
+// non-zero or signalled exit), so a nil state means the wait itself
+// failed.
+func childExitFromState(waitErr error, ps *os.ProcessState, io *procIOStats, elapsed time.Duration) childExit {
+	exit := childExit{io: io, elapsed: elapsed}
+	if ps == nil {
+		exit.startErr = waitErr
+		return exit
+	}
+	if ws, ok := ps.Sys().(syscall.WaitStatus); ok {
+		exit.ws = ws
+	}
+	if ru, ok := ps.SysUsage().(*syscall.Rusage); ok {
+		exit.rusage = ru
+	}
+	return exit
 }
 
 // serviceChild is one launched entrypoint process. wait blocks until
@@ -129,12 +153,7 @@ func (c *execChild) wait() childExit {
 	runErr := c.cmd.Wait()
 	close(c.stopPoll)
 	<-c.pollDone
-	return childExit{
-		runErr:  runErr,
-		state:   c.cmd.ProcessState,
-		io:      c.lastIO.Load(),
-		elapsed: time.Since(c.started),
-	}
+	return childExitFromState(runErr, c.cmd.ProcessState, c.lastIO.Load(), time.Since(c.started))
 }
 
 // readProcRSS reads current and peak resident set size for a live

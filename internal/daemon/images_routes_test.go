@@ -101,6 +101,16 @@ func (f *fakeImageStore) Get(ref string) (*oci.ImageRecord, error) {
 	return nil, oci.ErrImageNotFound
 }
 
+// seed adds a record resolvable by the given ref, with a real rootfs
+// path so a create-from-image clone succeeds.
+func (f *fakeImageStore) seed(ref, rootfsPath string) *oci.ImageRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	rec := &oci.ImageRecord{Digest: ref, SourceRef: ref, RootfsPath: rootfsPath}
+	f.images[ref] = rec
+	return rec
+}
+
 func (f *fakeImageStore) Delete(ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

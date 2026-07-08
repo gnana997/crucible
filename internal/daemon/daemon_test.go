@@ -310,7 +310,9 @@ func TestCreateSandboxImageRefRejectsEmpty(t *testing.T) {
 	}
 }
 
-func TestCreateSandboxImageRefOCIReturns501(t *testing.T) {
+func TestCreateSandboxImageRefOCIWithoutStoreReturns501(t *testing.T) {
+	// A daemon with no image store (default test server) can't resolve an
+	// OCI reference — 501 with a clear "not enabled" signal.
 	ts, _ := newTestServer(t)
 
 	body := bytes.NewBufferString(`{"image":{"oci":"ghcr.io/x/y:1"}}`)
@@ -323,8 +325,8 @@ func TestCreateSandboxImageRefOCIReturns501(t *testing.T) {
 	}
 	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
-	if !strings.Contains(e.Error, "not implemented") {
-		t.Errorf("error = %q, want 'not implemented' substring", e.Error)
+	if !strings.Contains(e.Error, "not enabled") {
+		t.Errorf("error = %q, want 'not enabled' substring", e.Error)
 	}
 }
 

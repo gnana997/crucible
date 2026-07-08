@@ -138,7 +138,8 @@ func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *pro
 	// SIGKILLed the group — so it's our kill, not an OOM. TimedOut alone
 	// wouldn't catch a client cancel (context.Canceled), which is why we key
 	// on the raw ctx error here.
-	result.OomKilled = detectOOM(ps, ctxErr != nil, result.Usage.PeakMemoryBytes, guestMemTotalBytes())
+	ws, _ := ps.Sys().(syscall.WaitStatus)
+	result.OomKilled = detectOOM(ws, ctxErr != nil, result.Usage.PeakMemoryBytes, guestMemTotalBytes())
 }
 
 // buildEnv composes the command's environment. The agent's own env is

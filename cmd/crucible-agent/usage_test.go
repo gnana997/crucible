@@ -146,10 +146,20 @@ func processStateForSignal(t *testing.T, payload string) *os.ProcessState {
 	return cmd.ProcessState
 }
 
+// wsOf extracts the WaitStatus from a ProcessState for detectOOM tests.
+func wsOf(t *testing.T, ps *os.ProcessState) syscall.WaitStatus {
+	t.Helper()
+	ws, ok := ps.Sys().(syscall.WaitStatus)
+	if !ok {
+		t.Fatalf("no WaitStatus in ProcessState")
+	}
+	return ws
+}
+
 func TestDetectOOMSIGKILLAboveThreshold(t *testing.T) {
 	ps := processStateForSignal(t, "kill -9 $$")
 	// peak == guest total → exactly 100%, definitely >= 95%.
-	if !detectOOM(ps, false, 256<<20, 256<<20) {
+	if !detectOOM(wsOf(t, ps), false, 256<<20, 256<<20) {
 		t.Error("expected OomKilled=true for SIGKILL with peak==total")
 	}
 }
@@ -157,7 +167,7 @@ func TestDetectOOMSIGKILLAboveThreshold(t *testing.T) {
 func TestDetectOOMSIGKILLBelowThreshold(t *testing.T) {
 	ps := processStateForSignal(t, "kill -9 $$")
 	// 50% usage — well below 95% threshold, not an OOM.
-	if detectOOM(ps, false, 128<<20, 256<<20) {
+	if detectOOM(wsOf(t, ps), false, 128<<20, 256<<20) {
 		t.Error("expected OomKilled=false when peak well below threshold")
 	}
 }
@@ -171,7 +181,7 @@ func TestDetectOOMKilledByCtxIsNotOOM(t *testing.T) {
 	ps := processStateForSignal(t, "kill -9 $$")
 	for _, name := range []string{"deadline", "client-cancel"} {
 		t.Run(name, func(t *testing.T) {
-			if detectOOM(ps, true, 256<<20, 256<<20) {
+			if detectOOM(wsOf(t, ps), true, 256<<20, 256<<20) {
 				t.Errorf("expected OomKilled=false when killed by ctx (%s)", name)
 			}
 		})
@@ -194,21 +204,21 @@ func TestAttachUsageClientCancelNotReportedOOM(t *testing.T) {
 
 func TestDetectOOMCleanExitIsNotOOM(t *testing.T) {
 	ps := processStateForSignal(t, "exit 0")
-	if detectOOM(ps, false, 256<<20, 256<<20) {
+	if detectOOM(wsOf(t, ps), false, 256<<20, 256<<20) {
 		t.Error("expected OomKilled=false on clean exit")
 	}
 }
 
 func TestDetectOOMNonZeroExitIsNotOOM(t *testing.T) {
 	ps := processStateForSignal(t, "exit 1")
-	if detectOOM(ps, false, 256<<20, 256<<20) {
+	if detectOOM(wsOf(t, ps), false, 256<<20, 256<<20) {
 		t.Error("expected OomKilled=false on non-zero exit (not a signal)")
 	}
 }
 
 func TestDetectOOMUnknownGuestMemoryDoesNotFire(t *testing.T) {
 	ps := processStateForSignal(t, "kill -9 $$")
-	if detectOOM(ps, false, 256<<20, 0) {
+	if detectOOM(wsOf(t, ps), false, 256<<20, 0) {
 		t.Error("expected OomKilled=false when guestMemBytes is unknown (0)")
 	}
 }

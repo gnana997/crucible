@@ -47,15 +47,38 @@ func run(logger *slog.Logger) int {
 	}
 	logger.Info("crucible-agent listening", "vsock_port", agentwire.AgentVSockPort)
 
+	// Boot position: PID 1 inside a converted OCI image (init mode) vs a
+	// systemd-launched service inside a profile rootfs. The two differ in
+	// exactly two places — who reaps orphans (the reaper vs systemd) and
+	// the pseudo-filesystem setup — so both are decided here and the rest
+	// of the agent is oblivious.
+	var (
+		svcRunner   childRunner = execRunner{}
+		execHandler             = handleExec
+	)
+	if isInit() {
+		logger.Info("crucible-agent running as PID 1 (init mode)")
+		if err := mountPseudoFilesystems(logger); err != nil {
+			logger.Error("init: mount pseudo-filesystems failed", "err", err)
+			return 1
+		}
+		rp := newReaper(logger)
+		rp.start()
+		defer rp.stop()
+		svcRunner = initRunner{reaper: rp}
+		execHandler = rp.handleExecInit
+	}
+
 	// A previous agent instance (crashed, relaunched by systemd) may have
 	// orphaned a supervised service; kill it before accepting commands so
-	// two entrypoints never run at once.
+	// two entrypoints never run at once. In init mode /run is a fresh
+	// tmpfs, so this is a no-op.
 	reconcileStaleService(servicePidFile, logger)
-	sup := newSupervisor(execRunner{}, realClock{}, logger, servicePidFile)
+	sup := newSupervisor(svcRunner, realClock{}, logger, servicePidFile)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.HandleFunc("POST /exec", handleExec)
+	mux.HandleFunc("POST /exec", execHandler)
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
 	(&serviceAPI{sup: sup}).register(mux)

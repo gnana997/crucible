@@ -5,7 +5,6 @@ package main
 import (
 	"errors"
 	"log/slog"
-	"os/exec"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -21,10 +20,6 @@ var errNoServiceSpec = errors.New("no service configured")
 
 // errSupervisorDown is returned when the supervisor has shut down.
 var errSupervisorDown = errors.New("supervisor shut down")
-
-// errKilledBySupervisor marks a SIGKILL we issued ourselves (grace
-// escalation), so the OOM heuristic doesn't misattribute it.
-var errKilledBySupervisor = errors.New("killed by supervisor")
 
 // Restart backoff, mirroring Docker's numbers: delays start at 100ms
 // and double per consecutive restart up to a 1-minute cap; a run that
@@ -606,27 +601,21 @@ func (s *supervisor) Logs(fromSeq uint64, maxBytes int) (agentwire.ServiceLogsRe
 func serviceResult(exit childExit, killedByUs bool) agentwire.ExecResult {
 	r := agentwire.ExecResult{DurationMs: exit.elapsed.Milliseconds()}
 
-	var exitErr *exec.ExitError
 	switch {
-	case exit.runErr == nil:
-		r.ExitCode = 0
-	case errors.As(exit.runErr, &exitErr):
-		ps := exitErr.ProcessState
-		if ws, ok := ps.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-			r.Signal = unix.SignalName(ws.Signal())
-			r.ExitCode = 128 + int(ws.Signal())
-		} else {
-			r.ExitCode = ps.ExitCode()
-		}
-	default:
+	case exit.startErr != nil:
 		r.ExitCode = -1
-		r.Error = exit.runErr.Error()
+		r.Error = exit.startErr.Error()
+	case exit.ws.Signaled():
+		r.Signal = unix.SignalName(exit.ws.Signal())
+		r.ExitCode = 128 + int(exit.ws.Signal())
+	default:
+		r.ExitCode = exit.ws.ExitStatus()
 	}
 
-	var ctxErr error
-	if killedByUs {
-		ctxErr = errKilledBySupervisor
+	if exit.rusage != nil {
+		r.Usage = buildUsage(exit.rusage, exit.io)
+		// killedByUs (grace escalation) means our SIGKILL, not an OOM.
+		r.OomKilled = detectOOM(exit.ws, killedByUs, r.Usage.PeakMemoryBytes, guestMemTotalBytes())
 	}
-	attachUsage(&r, exit.state, exit.io, ctxErr)
 	return r
 }

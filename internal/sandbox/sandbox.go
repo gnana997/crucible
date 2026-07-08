@@ -181,6 +181,13 @@ type CreateConfig struct {
 	// An unknown profile is rejected with ErrInvalidConfig.
 	Profile string
 
+	// RootfsOverride, when set, is an absolute path to a rootfs template
+	// to clone for this sandbox instead of a profile or the daemon
+	// default — used to boot a converted OCI image from the image store.
+	// The daemon resolves it (and sets BootArgs to init the guest
+	// agent); Profile and RootfsOverride are mutually exclusive.
+	RootfsOverride string
+
 	// TimeoutSec, if > 0, is the sandbox's maximum lifetime in seconds.
 	// A background goroutine deletes the sandbox once the timeout fires.
 	// Zero disables the timeout (the sandbox lives until an explicit
@@ -546,11 +553,15 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		return nil, fmt.Errorf("%w: memory_mib %d exceeds max %d", ErrInvalidConfig, memMiB, MaxMemoryMiB)
 	}
 
-	// Resolve the rootfs template: a named profile picks a pre-baked
-	// image, otherwise the daemon's default rootfs. Validated up front so
-	// an unknown profile fails cleanly before any workdir is created.
+	// Resolve the rootfs template: an explicit override (a converted OCI
+	// image) wins; otherwise a named profile picks a pre-baked image,
+	// else the daemon's default rootfs. Validated up front so a bad
+	// selection fails cleanly before any workdir is created.
 	rootfsTemplate := m.cfg.Rootfs
-	if req.Profile != "" {
+	switch {
+	case req.RootfsOverride != "":
+		rootfsTemplate = req.RootfsOverride
+	case req.Profile != "":
 		p, ok := m.cfg.Profiles[req.Profile]
 		if !ok {
 			return nil, fmt.Errorf("%w: unknown profile %q", ErrInvalidConfig, req.Profile)

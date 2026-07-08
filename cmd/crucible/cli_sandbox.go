@@ -30,6 +30,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	var (
 		vcpus, memory, timeout int
 		profile                string
+		image                  string
 		netAllow               []string
 	)
 	cmd := &cobra.Command{
@@ -37,7 +38,13 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		Short: "Create a sandbox",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if image != "" && profile != "" {
+				return fmt.Errorf("--image and --profile are mutually exclusive")
+			}
 			req := api.CreateSandboxRequest{VCPUs: vcpus, MemoryMiB: memory, TimeoutSec: timeout, Profile: profile}
+			if image != "" {
+				req.Image = &api.ImageRef{OCI: image}
+			}
 			if len(netAllow) > 0 {
 				req.Network = &api.NetworkRequest{Enabled: true, Allowlist: netAllow}
 			}
@@ -56,6 +63,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "max lifetime in seconds (0 = none)")
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile (e.g. python-3.12)")
+	cmd.Flags().StringVar(&image, "image", "", "boot from a converted OCI image (digest or ref from `crucible image ls`)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	return cmd
 }

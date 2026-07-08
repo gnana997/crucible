@@ -161,12 +161,11 @@ func timevalToMs(tv syscall.Timeval) int64 {
 // 95% threshold (possible in cgroup-memory-constrained children
 // even when the VM itself has headroom) — again, per-exec cgroups
 // fix that in v0.2.
-func detectOOM(ps *os.ProcessState, killedByCtx bool, peakRSSBytes int64, guestMemBytes int64) bool {
-	if killedByCtx || ps == nil {
+func detectOOM(ws syscall.WaitStatus, killedByCtx bool, peakRSSBytes int64, guestMemBytes int64) bool {
+	if killedByCtx {
 		return false
 	}
-	ws, ok := ps.Sys().(syscall.WaitStatus)
-	if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+	if !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
 		return false
 	}
 	if guestMemBytes <= 0 || peakRSSBytes <= 0 {

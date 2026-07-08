@@ -379,14 +379,40 @@ func TestSupervisorSelfExitIsNotRequested(t *testing.T) {
 	s := newTestSupervisor(t, fr, newFakeClock())
 
 	mustConfigureStart(t, s, specWith("/bin/app"))
-	fc.exitNow(childExit{runErr: errors.New("boom"), elapsed: time.Second})
+	fc.exitNow(childExit{ws: exitStatusT(42), elapsed: time.Second})
 
 	st := waitForState(t, s, agentwire.ServiceStateStopped)
 	if st.LastExitRequested {
 		t.Error("LastExitRequested = true for a self-exit")
 	}
-	if st.LastExit == nil || st.LastExit.ExitCode != -1 || st.LastExit.Error == "" {
-		t.Errorf("LastExit = %+v, want -1 with error", st.LastExit)
+	// A self-exit reports its real exit code, not a synthetic error.
+	if st.LastExit == nil || st.LastExit.ExitCode != 42 {
+		t.Errorf("LastExit = %+v, want exit code 42", st.LastExit)
+	}
+}
+
+// exitStatusT builds a WaitStatus for a normal exit with the given code
+// (Linux encodes the exit code in bits 8–15). signalStatusT builds one
+// for a signal death (low 7 bits = signal number).
+func exitStatusT(code int) syscall.WaitStatus {
+	return syscall.WaitStatus(uint32(code&0xff) << 8)
+}
+
+func signalStatusT(sig syscall.Signal) syscall.WaitStatus {
+	return syscall.WaitStatus(uint32(sig) & 0x7f)
+}
+
+// TestServiceResultSignalConvention pins the 128+n exit-code mapping and
+// SIGNAME-style signal name for a signal death — the supervised-service
+// contract, independent of the runner.
+func TestServiceResultSignalConvention(t *testing.T) {
+	res := serviceResult(childExit{ws: signalStatusT(syscall.SIGKILL)}, false)
+	if res.ExitCode != 137 || res.Signal != "SIGKILL" {
+		t.Errorf("SIGKILL death = code %d signal %q, want 137 SIGKILL", res.ExitCode, res.Signal)
+	}
+	res = serviceResult(childExit{ws: exitStatusT(3)}, false)
+	if res.ExitCode != 3 || res.Signal != "" {
+		t.Errorf("exit 3 = code %d signal %q, want 3 (no signal)", res.ExitCode, res.Signal)
 	}
 }
 
