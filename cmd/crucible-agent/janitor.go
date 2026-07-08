@@ -114,9 +114,23 @@ func (r *reaper) reapAll() {
 // given writers by goroutines the handle owns. The child runs in its
 // own process group (Setpgid) so one signal reaches it and every
 // descendant.
-func (r *reaper) spawn(argv, env []string, dir string, cred *syscall.Credential, stdout, stderr io.Writer) (*reapedProc, error) {
+//
+// stdin is the child's fd 0. Pass nil for no stdin (the one-shot exec and
+// supervised-service case); pass the read end of a pipe for interactive
+// exec. On a successful start spawn closes stdin (the child owns its own
+// dup), so the caller only holds the write end.
+func (r *reaper) spawn(argv, env []string, dir string, cred *syscall.Credential, stdin *os.File, stdout, stderr io.Writer) (*reapedProc, error) {
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("reaper: empty argv")
+	}
+	// os.StartProcess does no PATH search, so a bare argv[0] (e.g. "sh"
+	// from `exec` or the TUI's `sh -c`) would fail to start. Resolve it
+	// against the child's PATH the way Docker does — matching profile
+	// mode, where os/exec.Command already does this. An absolute path is
+	// returned as-is, so the pre-resolved service argv is unaffected.
+	exe, err := lookExecutable(argv[0], pathFromEnv(env), dir)
+	if err != nil {
+		return nil, err
 	}
 	outR, outW, err := os.Pipe()
 	if err != nil {
@@ -131,14 +145,14 @@ func (r *reaper) spawn(argv, env []string, dir string, cred *syscall.Credential,
 	attr := &os.ProcAttr{
 		Dir:   dir,
 		Env:   env,
-		Files: []*os.File{nil, outW, errW}, // no stdin for now (B5)
+		Files: []*os.File{stdin, outW, errW}, // stdin nil = no fd 0
 		Sys:   &syscall.SysProcAttr{Setpgid: true, Credential: cred},
 	}
 
 	// Hold mu across StartProcess + registration so the reaper can't
 	// dispatch this child before we know its pid.
 	r.mu.Lock()
-	proc, err := os.StartProcess(argv[0], argv, attr)
+	proc, err := os.StartProcess(exe, argv, attr)
 	if err != nil {
 		r.mu.Unlock()
 		_ = outR.Close()
@@ -159,9 +173,14 @@ func (r *reaper) spawn(argv, env []string, dir string, cred *syscall.Credential,
 	r.mu.Unlock()
 
 	// The write ends belong to the child now; close our copies so the
-	// pipes report EOF when the child (and its descendants) let go.
+	// pipes report EOF when the child (and its descendants) let go. The
+	// stdin read end likewise belongs to the child — close our copy so the
+	// child sees EOF once the caller closes the write end.
 	_ = outW.Close()
 	_ = errW.Close()
+	if stdin != nil {
+		_ = stdin.Close()
+	}
 
 	rp := &reapedProc{
 		proc:     proc,
@@ -245,7 +264,7 @@ func (ir initRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer
 	if err != nil {
 		return nil, err
 	}
-	rp, err := ir.reaper.spawn(argv, env, spec.Cwd, cred, stdout, stderr)
+	rp, err := ir.reaper.spawn(argv, env, spec.Cwd, cred, nil, stdout, stderr)
 	if err != nil {
 		return nil, err
 	}

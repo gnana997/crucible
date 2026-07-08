@@ -33,7 +33,7 @@ func newTestReaper(t *testing.T) *reaper {
 
 func TestReaperSpawnExitCode(t *testing.T) {
 	r := newTestReaper(t)
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "exit 7"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "exit 7"}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestReaperSpawnExitCode(t *testing.T) {
 func TestReaperSpawnCapturesOutput(t *testing.T) {
 	r := newTestReaper(t)
 	var out, errB bytes.Buffer
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "echo to-out; echo to-err 1>&2"}, nil, "", nil, &out, &errB)
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "echo to-out; echo to-err 1>&2"}, nil, "", nil, nil, &out, &errB)
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -62,9 +62,41 @@ func TestReaperSpawnCapturesOutput(t *testing.T) {
 	}
 }
 
+// TestReaperSpawnResolvesBareCommandViaPATH guards the init-mode PATH fix:
+// a bare argv[0] (no slash) must be resolved against the env's PATH, since
+// os.StartProcess does no PATH search. Without it, `exec`/`sh -c` and the
+// TUI fail to start on OCI-image (PID-1) sandboxes with exit -1.
+func TestReaperSpawnResolvesBareCommandViaPATH(t *testing.T) {
+	r := newTestReaper(t)
+	var out bytes.Buffer
+	rp, err := r.spawn([]string{"sh", "-c", "echo resolved-ok"},
+		[]string{"PATH=/usr/local/bin:/usr/bin:/bin"}, "", nil, nil, &out, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("spawn bare sh: %v", err)
+	}
+	res := rp.wait()
+	if res.ws.ExitStatus() != 0 {
+		t.Errorf("exit status = %d, want 0", res.ws.ExitStatus())
+	}
+	if strings.TrimSpace(out.String()) != "resolved-ok" {
+		t.Errorf("stdout = %q, want %q", out.String(), "resolved-ok")
+	}
+}
+
+// TestReaperSpawnUnresolvableBareCommand: a bare name not on PATH fails at
+// spawn (a clean error), not with a confusing partial start.
+func TestReaperSpawnUnresolvableBareCommand(t *testing.T) {
+	r := newTestReaper(t)
+	_, err := r.spawn([]string{"definitely-not-a-real-binary-xyz"},
+		[]string{"PATH=/usr/bin:/bin"}, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("want error for unresolvable bare command, got nil")
+	}
+}
+
 func TestReaperSignalDeath(t *testing.T) {
 	r := newTestReaper(t)
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "kill -9 $$"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "kill -9 $$"}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -77,7 +109,7 @@ func TestReaperSignalDeath(t *testing.T) {
 func TestReaperSignalGroupStops(t *testing.T) {
 	r := newTestReaper(t)
 	// A process that ignores nothing but loops; we kill its group.
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "while :; do sleep 0.05; done"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "while :; do sleep 0.05; done"}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -96,7 +128,7 @@ func TestReaperEnvAndDir(t *testing.T) {
 	var out bytes.Buffer
 	rp, err := r.spawn(
 		[]string{"/bin/sh", "-c", `printf '%s %s' "$CRUCIBLE_X" "$PWD"`},
-		[]string{"CRUCIBLE_X=hello", "PATH=/bin:/usr/bin"}, dir, nil, &out, &bytes.Buffer{})
+		[]string{"CRUCIBLE_X=hello", "PATH=/bin:/usr/bin"}, dir, nil, nil, &out, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -118,7 +150,7 @@ func TestReaperConcurrentSpawns(t *testing.T) {
 		wg.Add(1)
 		go func(code int) {
 			defer wg.Done()
-			rp, err := r.spawn([]string{"/bin/sh", "-c", "exit " + strconv.Itoa(code)}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
+			rp, err := r.spawn([]string{"/bin/sh", "-c", "exit " + strconv.Itoa(code)}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 			if err != nil {
 				errs <- err
 				return
@@ -141,7 +173,7 @@ func TestReaperFastExitNoLostWakeup(t *testing.T) {
 	// on — the pending-map path. Run many to make the race likely.
 	r := newTestReaper(t)
 	for i := 0; i < 30; i++ {
-		rp, err := r.spawn([]string{"/bin/true"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
+		rp, err := r.spawn([]string{"/bin/true"}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
 		if err != nil {
 			t.Fatalf("spawn: %v", err)
 		}
@@ -160,7 +192,7 @@ func TestReaperFastExitNoLostWakeup(t *testing.T) {
 
 func TestReaperStartFailure(t *testing.T) {
 	r := newTestReaper(t)
-	if _, err := r.spawn([]string{"/nonexistent/binary"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+	if _, err := r.spawn([]string{"/nonexistent/binary"}, nil, "", nil, nil, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("spawn of a missing binary succeeded")
 	}
 }

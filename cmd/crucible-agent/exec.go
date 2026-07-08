@@ -45,6 +45,11 @@ const execWaitDelay = 2 * time.Second
 // the difference between "command finished" and "connection died" —
 // even on early errors, we try to write an exit frame with Error set.
 func handleExec(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("stdin") == "1" {
+		handleExecInteractive(w, r)
+		return
+	}
+
 	start := time.Now()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxExecRequestBody)

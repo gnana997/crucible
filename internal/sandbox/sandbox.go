@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -905,6 +906,24 @@ func (m *Manager) Exec(
 		return agentwire.ExecResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
 	}
 	return s.execClient.Exec(ctx, req, stdout, stderr)
+}
+
+// ExecInteractive opens a full-duplex framed exec session to the sandbox's
+// guest agent and returns the raw connection (see
+// agentapi.Client.ExecInteractive). The caller owns the conn and must Close
+// it to end the session; closing it terminates the command on the guest.
+//
+// Fails fast with ErrNotFound for unknown IDs, or a clear error when the
+// sandbox has no agent client (e.g. test stubs).
+func (m *Manager) ExecInteractive(ctx context.Context, id string, req agentwire.ExecRequest) (net.Conn, error) {
+	s, err := m.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if s.execClient == nil {
+		return nil, fmt.Errorf("sandbox %s has no agent vsock path", id)
+	}
+	return s.execClient.ExecInteractive(ctx, req)
 }
 
 // Get returns the sandbox with the given ID, or ErrNotFound.

@@ -168,6 +168,53 @@ func TestStreamWriterInterleaving(t *testing.T) {
 	}
 }
 
+func TestRoundTripStdinFrames(t *testing.T) {
+	// Inbound stdin frames use the same header layout and must round-trip
+	// through ReadFrame like any other frame.
+	var buf bytes.Buffer
+	payload := []byte("ls -la\n")
+	if err := WriteFrame(&buf, FrameStdin, payload); err != nil {
+		t.Fatalf("WriteFrame stdin: %v", err)
+	}
+	if err := WriteFrame(&buf, FrameStdinClose, nil); err != nil {
+		t.Fatalf("WriteFrame stdin-close: %v", err)
+	}
+
+	got, err := ReadFrame(&buf)
+	if err != nil {
+		t.Fatalf("ReadFrame: %v", err)
+	}
+	if got.Type != FrameStdin {
+		t.Errorf("Type = %d, want FrameStdin(%d)", got.Type, FrameStdin)
+	}
+	if !bytes.Equal(got.Payload, payload) {
+		t.Errorf("Payload = %q, want %q", got.Payload, payload)
+	}
+
+	closeFrame, err := ReadFrame(&buf)
+	if err != nil {
+		t.Fatalf("ReadFrame close: %v", err)
+	}
+	if closeFrame.Type != FrameStdinClose {
+		t.Errorf("Type = %d, want FrameStdinClose(%d)", closeFrame.Type, FrameStdinClose)
+	}
+	if len(closeFrame.Payload) != 0 {
+		t.Errorf("close payload len = %d, want 0", len(closeFrame.Payload))
+	}
+}
+
+func TestFrameKindsDistinctValues(t *testing.T) {
+	// The five wire values must stay distinct — a collision would route
+	// stdin bytes to a stdout writer (or vice versa) on the wire.
+	kinds := map[byte]string{
+		FrameStdout: "stdout", FrameStderr: "stderr", FrameExit: "exit",
+		FrameStdin: "stdin", FrameStdinClose: "stdin-close",
+	}
+	if len(kinds) != 5 {
+		t.Fatalf("frame kinds collide: %v", kinds)
+	}
+}
+
 func TestExecResultJSONRoundTrip(t *testing.T) {
 	// Sanity check for the terminal exit-frame payload shape.
 	want := ExecResult{

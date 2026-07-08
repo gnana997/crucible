@@ -7,7 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 )
@@ -73,6 +77,125 @@ func (c *Client) Exec(
 	}
 
 	return readFramedStream(resp.Body, stdout, stderr)
+}
+
+// ExecInteractive opens a full-duplex framed exec session to the guest
+// agent and returns the raw connection positioned at the first response
+// frame. Unlike Exec (a buffered net/http round-trip that cannot flush
+// per-keystroke stdin), it dials the vsock directly, writes
+// POST /exec?stdin=1 with the JSON ExecRequest, reads the response status,
+// and hands the caller the conn.
+//
+// The caller owns the returned conn: write FrameStdin / FrameStdinClose
+// frames to it, read FrameStdout / FrameStderr / FrameExit frames from it,
+// and Close it when done. Closing the conn terminates the command on the
+// guest (its handler observes the read error).
+func (c *Client) ExecInteractive(ctx context.Context, req agentwire.ExecRequest) (net.Conn, error) {
+	if len(req.Cmd) == 0 {
+		return nil, errors.New("agentapi: ExecRequest.Cmd is required")
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("agentapi: marshal: %w", err)
+	}
+
+	conn, err := c.dial(ctx, "", "")
+	if err != nil {
+		return nil, err
+	}
+
+	// Bound the request/response exchange; the dial cleared the handshake
+	// deadline, so re-arm it here and clear it again once the stream is up
+	// so the session can run for as long as the command takes.
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(DefaultHandshakeTimeout)
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+
+	var hdr bytes.Buffer
+	hdr.WriteString("POST /exec?stdin=1 HTTP/1.1\r\n")
+	hdr.WriteString("Host: agent\r\n")
+	hdr.WriteString("Content-Type: application/json\r\n")
+	fmt.Fprintf(&hdr, "Content-Length: %d\r\n", len(body))
+	// Connection: close so a pre-stream error response (not hijacked) ends
+	// with EOF rather than lingering on keep-alive.
+	hdr.WriteString("Connection: close\r\n")
+	hdr.WriteString("\r\n")
+	hdr.Write(body)
+	if _, err := conn.Write(hdr.Bytes()); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("agentapi: write exec request: %w", err)
+	}
+
+	status, err := readStatusCode(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("agentapi: read exec response: %w", err)
+	}
+	if status != http.StatusOK {
+		_ = conn.Close()
+		return nil, fmt.Errorf("agentapi: interactive exec returned %d", status)
+	}
+
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// maxHeaderLine caps a single status/header line read during the
+// interactive-exec response parse. Real lines are tiny; this is defensive.
+const maxHeaderLine = 8 << 10
+
+// readStatusCode reads an HTTP/1.1 status line and headers one byte at a
+// time — never over-reading into the frame stream that follows — and
+// returns the numeric status code. Deliberately not bufio, which would
+// buffer past the header terminator and swallow frame bytes.
+func readStatusCode(r io.Reader) (int, error) {
+	statusLine, err := readCRLFLine(r)
+	if err != nil {
+		return 0, err
+	}
+	parts := strings.SplitN(statusLine, " ", 3)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("malformed status line %q", statusLine)
+	}
+	code, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("malformed status code %q", parts[1])
+	}
+	for {
+		line, err := readCRLFLine(r)
+		if err != nil {
+			return 0, err
+		}
+		if line == "" {
+			break
+		}
+	}
+	return code, nil
+}
+
+// readCRLFLine reads until '\n', returning the line without a trailing
+// '\r'. Byte-at-a-time so no bytes past the line are consumed.
+func readCRLFLine(r io.Reader) (string, error) {
+	buf := make([]byte, 0, 64)
+	var one [1]byte
+	for len(buf) < maxHeaderLine {
+		if _, err := io.ReadFull(r, one[:]); err != nil {
+			return "", err
+		}
+		if one[0] == '\n' {
+			return strings.TrimSuffix(string(buf), "\r"), nil
+		}
+		buf = append(buf, one[0])
+	}
+	return "", errors.New("header line exceeded maximum length")
 }
 
 // readFramedStream consumes an agentwire frame stream, dispatching

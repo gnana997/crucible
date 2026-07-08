@@ -8,10 +8,20 @@ import (
 )
 
 // Frame kinds. Keep numeric values stable — they travel on the wire.
+//
+// Stdout/Stderr/Exit flow guest→host (response). Stdin/StdinClose flow
+// host→guest (request) and are used only by the interactive exec path
+// (POST /exec?stdin=1), where the connection is hijacked into a full-duplex
+// framed stream. The one-shot /exec path never sends inbound frames.
 const (
 	FrameStdout byte = 1
 	FrameStderr byte = 2
 	FrameExit   byte = 3
+	// FrameStdin carries a chunk of stdin bytes host→guest.
+	FrameStdin byte = 4
+	// FrameStdinClose signals stdin EOF (no payload) host→guest, so the
+	// guest process sees its stdin closed without the connection dropping.
+	FrameStdinClose byte = 5
 )
 
 // FrameHeaderSize is the fixed-width header that precedes every frame's

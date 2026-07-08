@@ -187,16 +187,21 @@ func newSandboxRmCmd(o *globalOpts) *cobra.Command {
 
 func newSandboxExecCmd(o *globalOpts) *cobra.Command {
 	var (
-		cwd     string
-		timeout int
-		env     []string
+		cwd         string
+		timeout     int
+		env         []string
+		interactive bool
 	)
 	cmd := &cobra.Command{
 		Use:   "exec <id> -- <command>...",
 		Short: "Run a command in a sandbox and stream its output",
 		Long: "Run a command in a sandbox and stream its stdout/stderr. The process " +
 			"exit code becomes crucible's exit code. Use -- to separate the command " +
-			"from crucible's own flags.",
+			"from crucible's own flags.\n\n" +
+			"With -i/--interactive the command's stdin is connected to crucible's " +
+			"stdin over a full-duplex stream, so you can drive a long-lived process " +
+			"(e.g. a shell). There is no PTY: it is a functional, line-buffered " +
+			"session, not a full terminal. See `crucible shell` for a shortcut.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := agentwire.ExecRequest{Cmd: args[1:], Cwd: cwd, TimeoutSec: timeout}
@@ -210,7 +215,7 @@ func newSandboxExecCmd(o *globalOpts) *cobra.Command {
 					req.Env[k] = v
 				}
 			}
-			res, err := o.client().Exec(cmd.Context(), args[0], req, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			res, err := runExec(cmd, o, args[0], req, interactive)
 			if err != nil {
 				return err
 			}
@@ -223,5 +228,47 @@ func newSandboxExecCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&cwd, "cwd", "", "working directory inside the guest")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "command deadline in seconds (0 = none)")
 	cmd.Flags().StringArrayVar(&env, "env", nil, "environment KEY=VALUE (repeatable)")
+	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "attach stdin for an interactive session (no PTY)")
+	return cmd
+}
+
+// runExec dispatches to the one-shot or interactive client exec path,
+// wiring the cobra command's stdio.
+func runExec(cmd *cobra.Command, o *globalOpts, id string, req agentwire.ExecRequest, interactive bool) (agentwire.ExecResult, error) {
+	if interactive {
+		return o.client().ExecInteractive(cmd.Context(), id, req, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+	}
+	return o.client().Exec(cmd.Context(), id, req, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// newShellCmd is a friendly alias for `sandbox exec -i <id> -- <shell>`:
+// open a long-lived interactive shell into a running sandbox. State (cwd,
+// env, shell variables) persists for the life of the session. No PTY.
+func newShellCmd(o *globalOpts) *cobra.Command {
+	var shellPath string
+	cmd := &cobra.Command{
+		Use:   "shell <id>",
+		Short: "Open an interactive shell in a sandbox",
+		Long: "Open a long-lived interactive shell into a running sandbox. Commands " +
+			"share state (cwd, environment) across the session. There is no PTY, so " +
+			"full-screen programs, colors, and Ctrl-C job control are not supported — " +
+			"it is a functional shell for exploring untrusted code.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			req := agentwire.ExecRequest{Cmd: []string{shellPath}}
+			res, err := o.client().ExecInteractive(cmd.Context(), args[0], req, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			if res.ExitCode != 0 {
+				return exitCodeError{res.ExitCode}
+			}
+			return nil
+		},
+	}
+	// Default to an absolute path: OCI-image sandboxes run the agent as PID 1,
+	// which spawns via os.StartProcess (no PATH lookup), so a bare "sh" would
+	// not resolve. /bin/sh exists in virtually every image and rootfs.
+	cmd.Flags().StringVar(&shellPath, "shell", "/bin/sh", "shell to launch inside the sandbox")
 	return cmd
 }

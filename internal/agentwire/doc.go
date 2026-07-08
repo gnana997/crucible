@@ -17,7 +17,18 @@
 // # Request
 //
 // POST /exec with ExecRequest as the JSON body. Exactly one command per
-// request. Interactive stdin is not supported in v0.1.
+// request.
+//
+// Two modes share this endpoint:
+//
+//   - One-shot (default): the request body is the JSON ExecRequest and
+//     nothing more; the response is the frame stream described below.
+//   - Interactive (POST /exec?stdin=1): after the JSON ExecRequest body,
+//     the connection is hijacked into a full-duplex framed stream. The
+//     host sends FrameStdin / FrameStdinClose frames; the guest replies
+//     with FrameStdout / FrameStderr / FrameExit frames as usual. This is
+//     what backs a live shell into a running sandbox — a functional (no
+//     PTY) session with persistent cwd/env.
 //
 // # Response
 //
@@ -35,8 +46,8 @@
 // escaping needed because sizes are explicit.
 //
 // This format is deliberately the same shape Docker uses for its container
-// attach/logs API. If a future v0.3 wants to add stdin, add FrameStdin for
-// inbound frames on the request body; the receiver logic mirrors ReadFrame.
+// attach/logs API. Inbound stdin frames (FrameStdin/FrameStdinClose) use
+// the same header layout and are parsed with ReadFrame on the guest side.
 package agentwire
 
 // AgentVSockPort is the fixed guest-side vsock port the agent listens on.

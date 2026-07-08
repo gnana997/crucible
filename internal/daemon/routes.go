@@ -608,6 +608,13 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Interactive exec is a separate, hijacked, full-duplex path. The
+	// one-shot streaming path below is untouched.
+	if r.URL.Query().Get("stdin") == "1" {
+		s.handleExecInteractive(w, r, id, req)
+		return
+	}
+
 	// Exec streams for as long as the command runs — untrusted builds and
 	// tests routinely exceed the server's WriteTimeout. That timeout is
 	// armed once at request start and never reset per write, so leaving it
@@ -660,6 +667,99 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, jerr.Error()))
 	}
 	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+}
+
+// handleExecInteractive bridges a hijacked client connection to a hijacked
+// guest-agent connection for a full-duplex interactive exec (a live shell).
+// The daemon becomes a bidirectional frame relay: raw stdin frames flow
+// client→agent, and agent→client frames are parsed so exec output can be
+// teed into the durable log store before being forwarded verbatim.
+//
+// The agent conn is established first so a dial failure is a clean HTTP
+// error before the client conn is hijacked and the framing contract begins.
+func (s *Server) handleExecInteractive(w http.ResponseWriter, r *http.Request, id string, req agentwire.ExecRequest) {
+	agentConn, err := s.cfg.Manager.ExecInteractive(r.Context(), id, req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("interactive exec: %w", err))
+		return
+	}
+	defer func() { _ = agentConn.Close() }()
+
+	rc := http.NewResponseController(w)
+	clientConn, clientBuf, err := rc.Hijack()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Errorf("hijack: %w", err))
+		return
+	}
+	defer func() { _ = clientConn.Close() }()
+
+	if _, err := io.WriteString(clientConn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n"); err != nil {
+		return
+	}
+
+	if s.cfg.LogStore != nil {
+		s.appendLog(id, logstore.Record{
+			TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamEvent,
+			Text: "exec (interactive): " + strings.Join(req.Cmd, " "),
+		})
+	}
+
+	// Client → agent: forward raw stdin frame bytes. When the client goes
+	// away (EOF/error), close the agent conn so the guest kills the command.
+	go func() {
+		_, _ = io.Copy(agentConn, clientBuf.Reader)
+		_ = agentConn.Close()
+	}()
+
+	// Agent → client: parse frames (to tee output), forward each verbatim.
+	exit := s.relayExecFrames(id, agentConn, clientConn)
+
+	if s.cfg.LogStore != nil {
+		s.appendLog(id, logstore.Record{
+			TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamEvent,
+			Text: fmt.Sprintf("exit %d", exit),
+		})
+	}
+}
+
+// relayExecFrames copies agentwire frames from the guest agent to the
+// client, teeing stdout/stderr payloads into the durable log store. It
+// returns the exit code carried by the terminal FrameExit (-1 if the stream
+// ends without one). Writes to the client are best-effort: a dead client
+// just ends the relay.
+func (s *Server) relayExecFrames(id string, agentConn io.Reader, clientConn io.Writer) int {
+	exit := -1
+	for {
+		f, err := agentwire.ReadFrame(agentConn)
+		if err != nil {
+			return exit
+		}
+		switch f.Type {
+		case agentwire.FrameStdout:
+			if s.cfg.LogStore != nil {
+				s.appendLog(id, logstore.Record{
+					TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamStdout, Text: string(f.Payload),
+				})
+			}
+		case agentwire.FrameStderr:
+			if s.cfg.LogStore != nil {
+				s.appendLog(id, logstore.Record{
+					TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamStderr, Text: string(f.Payload),
+				})
+			}
+		case agentwire.FrameExit:
+			var res agentwire.ExecResult
+			if json.Unmarshal(f.Payload, &res) == nil {
+				exit = res.ExitCode
+			}
+		}
+		if err := agentwire.WriteFrame(clientConn, f.Type, f.Payload); err != nil {
+			return exit
+		}
+		if f.Type == agentwire.FrameExit {
+			return exit
+		}
+	}
 }
 
 func (s *Server) handleCreateSnapshot(w http.ResponseWriter, r *http.Request) {

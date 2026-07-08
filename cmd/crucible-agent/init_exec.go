@@ -22,6 +22,11 @@ import (
 // spawns through the reaper instead of os/exec — because in init mode
 // no code may call os/exec Wait (it would race the reaper's wait4).
 func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
+	if req.URL.Query().Get("stdin") == "1" {
+		r.handleExecInitInteractive(w, req)
+		return
+	}
+
 	start := time.Now()
 
 	req.Body = http.MaxBytesReader(w, req.Body, maxExecRequestBody)
@@ -45,7 +50,7 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 
 	// One-shot exec keeps today's semantics (agent env, root); Docker-
 	// exec-style user/env fidelity is deferred past P1a (decision D2-8).
-	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil,
+	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil, nil,
 		fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr))
 	if err != nil {
 		writeExitFrame(fw, agentwire.ExecResult{

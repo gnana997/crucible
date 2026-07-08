@@ -14,9 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
@@ -31,9 +34,10 @@ var ErrNotFound = errors.New("not found")
 
 // Client talks to a crucible daemon over HTTP.
 type Client struct {
-	base  string
-	token string
-	http  *http.Client
+	base     string
+	token    string
+	http     *http.Client
+	insecure bool // skip TLS verification on raw (hijacked) dials
 }
 
 // Option configures a Client.
@@ -50,6 +54,7 @@ func WithToken(token string) Option {
 func WithInsecureSkipVerify() Option {
 	return func(c *Client) {
 		c.http.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		c.insecure = true
 	}
 }
 
@@ -242,7 +247,188 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecR
 	return result, nil
 }
 
+// ExecInteractive runs a command in a sandbox as a full-duplex interactive
+// session (a live shell). It dials the daemon on a raw connection, sends
+// POST /sandboxes/{id}/exec?stdin=1 with the JSON ExecRequest, then owns the
+// conn: it streams stdin as FrameStdin frames and reads FrameStdout /
+// FrameStderr / FrameExit back. stdin is read to EOF, at which point a
+// FrameStdinClose is sent. The returned ExecResult carries the exit code.
+//
+// There is no PTY — this is a functional shell (line-buffered, no raw mode
+// or terminal control), suitable for exploring a running sandbox.
+func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agentwire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (agentwire.ExecResult, error) {
+	var result agentwire.ExecResult
+
+	conn, host, err := c.dialRaw(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer func() { _ = conn.Close() }()
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return result, err
+	}
+	var hdr bytes.Buffer
+	fmt.Fprintf(&hdr, "POST /sandboxes/%s/exec?stdin=1 HTTP/1.1\r\n", sandboxID)
+	fmt.Fprintf(&hdr, "Host: %s\r\n", host)
+	hdr.WriteString("Content-Type: application/json\r\n")
+	fmt.Fprintf(&hdr, "Content-Length: %d\r\n", len(body))
+	// Connection: close so a pre-stream error response (which the server
+	// does not hijack) ends with EOF rather than lingering on keep-alive.
+	hdr.WriteString("Connection: close\r\n")
+	if c.token != "" {
+		fmt.Fprintf(&hdr, "Authorization: Bearer %s\r\n", c.token)
+	}
+	hdr.WriteString("\r\n")
+	hdr.Write(body)
+	if _, err := conn.Write(hdr.Bytes()); err != nil {
+		return result, fmt.Errorf("write exec request: %w", err)
+	}
+
+	status, err := readStatusCode(conn)
+	if err != nil {
+		return result, fmt.Errorf("read exec response: %w", err)
+	}
+	if status != http.StatusOK {
+		// Bound the error-body read so a misbehaving daemon can't wedge us.
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		msg, _ := io.ReadAll(io.LimitReader(conn, 8<<10))
+		return result, fmt.Errorf("daemon returned %d: %s", status, strings.TrimSpace(string(msg)))
+	}
+
+	// Pump stdin → frames. On stdin EOF/error, send FrameStdinClose so the
+	// guest process sees its stdin closed without dropping the connection.
+	fw := agentwire.NewFrameWriter(conn)
+	if stdin != nil {
+		go func() {
+			buf := make([]byte, 32*1024)
+			for {
+				n, rerr := stdin.Read(buf)
+				if n > 0 {
+					if werr := fw.WriteFrame(agentwire.FrameStdin, buf[:n]); werr != nil {
+						return
+					}
+				}
+				if rerr != nil {
+					_ = fw.WriteFrame(agentwire.FrameStdinClose, nil)
+					return
+				}
+			}
+		}()
+	}
+
+	gotExit := false
+	for {
+		frame, err := agentwire.ReadFrame(conn)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return result, fmt.Errorf("read exec frame: %w", err)
+		}
+		switch frame.Type {
+		case agentwire.FrameStdout:
+			if stdout != nil {
+				if _, err := stdout.Write(frame.Payload); err != nil {
+					return result, err
+				}
+			}
+		case agentwire.FrameStderr:
+			if stderr != nil {
+				if _, err := stderr.Write(frame.Payload); err != nil {
+					return result, err
+				}
+			}
+		case agentwire.FrameExit:
+			if err := json.Unmarshal(frame.Payload, &result); err != nil {
+				return result, fmt.Errorf("decode exit frame: %w", err)
+			}
+			gotExit = true
+		}
+	}
+	if !gotExit {
+		return result, errors.New("exec stream ended without an exit frame")
+	}
+	return result, nil
+}
+
 // --- internals -------------------------------------------------------
+
+// dialRaw opens a raw TCP (or TLS) connection to the daemon for a hijacked
+// full-duplex stream, returning the conn and the Host header value to use.
+// net/http can't be used for the interactive exec path: its client request
+// body is buffered, so per-keystroke stdin would not flush.
+func (c *Client) dialRaw(ctx context.Context) (net.Conn, string, error) {
+	u, err := url.Parse(c.base)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse daemon address %q: %w", c.base, err)
+	}
+	host := u.Host
+	if u.Scheme == "https" {
+		d := &tls.Dialer{Config: &tls.Config{InsecureSkipVerify: c.insecure, ServerName: u.Hostname()}}
+		conn, err := d.DialContext(ctx, "tcp", host)
+		if err != nil {
+			return nil, "", fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+		}
+		return conn, host, nil
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return nil, "", fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+	}
+	return conn, host, nil
+}
+
+// maxHeaderLine caps a single status/header line read while parsing the
+// interactive-exec response. Real lines are tiny; this is defensive.
+const maxHeaderLine = 8 << 10
+
+// readStatusCode reads an HTTP/1.1 status line and headers one byte at a
+// time — never over-reading into the frame stream that follows — and
+// returns the numeric status code.
+func readStatusCode(r io.Reader) (int, error) {
+	statusLine, err := readCRLFLine(r)
+	if err != nil {
+		return 0, err
+	}
+	parts := strings.SplitN(statusLine, " ", 3)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("malformed status line %q", statusLine)
+	}
+	code, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("malformed status code %q", parts[1])
+	}
+	for {
+		line, err := readCRLFLine(r)
+		if err != nil {
+			return 0, err
+		}
+		if line == "" {
+			break
+		}
+	}
+	return code, nil
+}
+
+// readCRLFLine reads until '\n', returning the line without a trailing
+// '\r'. Byte-at-a-time so no bytes past the line are consumed.
+func readCRLFLine(r io.Reader) (string, error) {
+	buf := make([]byte, 0, 64)
+	var one [1]byte
+	for len(buf) < maxHeaderLine {
+		if _, err := io.ReadFull(r, one[:]); err != nil {
+			return "", err
+		}
+		if one[0] == '\n' {
+			return strings.TrimSuffix(string(buf), "\r"), nil
+		}
+		buf = append(buf, one[0])
+	}
+	return "", errors.New("header line exceeded maximum length")
+}
 
 func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var rdr io.Reader
