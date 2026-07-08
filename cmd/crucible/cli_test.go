@@ -230,6 +230,60 @@ func TestCLIStopGracefullyStopsService(t *testing.T) {
 	}
 }
 
+func TestParseDiskSize(t *testing.T) {
+	ok := []struct {
+		in   string
+		want int64
+	}{
+		{"", 0},
+		{"0", 0},
+		{"1024", 1024},
+		{"512M", 512 << 20},
+		{"2G", 2 << 30},
+		{"2g", 2 << 30},
+		{"2GB", 2 << 30},
+		{"2GiB", 2 << 30},
+		{"4K", 4 << 10},
+		{"1T", 1 << 40},
+		{" 8G ", 8 << 30},
+	}
+	for _, c := range ok {
+		got, err := parseDiskSize(c.in)
+		if err != nil {
+			t.Errorf("parseDiskSize(%q) error: %v", c.in, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("parseDiskSize(%q) = %d, want %d", c.in, got, c.want)
+		}
+	}
+	for _, bad := range []string{"abc", "G", "-2G", "2X", "1.5G"} {
+		if _, err := parseDiskSize(bad); err == nil {
+			t.Errorf("parseDiskSize(%q) = nil error, want failure", bad)
+		}
+	}
+}
+
+// TestCLICreateDiskThreadsBytes: `create --disk 2G` sends disk_bytes on the wire.
+func TestCLICreateDiskThreadsBytes(t *testing.T) {
+	var created api.CreateSandboxRequest
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&created)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_disk"})
+	}))
+	defer ts.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"--addr", ts.URL, "sandbox", "create", "--disk", "2G"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errb.String())
+	}
+	if created.DiskBytes != 2<<30 {
+		t.Errorf("DiskBytes = %d, want %d", created.DiskBytes, int64(2<<30))
+	}
+}
+
 func TestCLIRmDeletesSandbox(t *testing.T) {
 	var deleted string
 	mux := http.NewServeMux()

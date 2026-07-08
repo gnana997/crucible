@@ -45,6 +45,7 @@ Two shapes, chosen by the `--` separator:
 | `-p, --publish` (repeatable) | publish a port `[HOST_IP:]HOST:GUEST[/tcp]` |
 | `--net-allow` (repeatable) | allowlisted hostname; enables egress |
 | `--pull` | `missing` (default) / `always` / `never` |
+| `--disk` | grow the writable rootfs to this size, e.g. `2G` / `512M` (default: template headroom) |
 | `--rm` | tail logs in the foreground; remove the sandbox on detach (Ctrl-C) |
 | `--vcpus`, `--memory`, `--timeout` | sizing / deadline (`--timeout 0` = long-lived) |
 
@@ -90,7 +91,7 @@ crucible rm sbx_abc        # tear the box down
 
 | Command | Description |
 |---|---|
-| `create [--vcpus --memory --timeout --profile --net-allow]` | create a sandbox; prints its id |
+| `create [--vcpus --memory --timeout --profile --image --pull --disk --net-allow -p]` | create a sandbox; prints its id (`--disk 2G` grows the writable rootfs) |
 | `ls` | list live sandboxes (table: id, profile, vcpus, mem, net, age) |
 | `inspect <id>` | full sandbox JSON |
 | `rm <id>...` | destroy one or more sandboxes |

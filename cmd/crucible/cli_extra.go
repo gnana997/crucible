@@ -123,6 +123,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 		netAllow               []string
 		publish                []string
 		pull                   string
+		disk                   string
 		keep, rm               bool
 	)
 	cmd := &cobra.Command{
@@ -152,9 +153,14 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 				if len(args) != 1 {
 					return fmt.Errorf("run <image> takes exactly one image; use `run -- <command>` to run a command")
 				}
+				diskBytes, err := parseDiskSize(disk)
+				if err != nil {
+					return err
+				}
 				return runImage(cmd, o, args[0], runImageOpts{
 					vcpus: vcpus, memory: memory, timeout: timeout,
 					netAllow: netAllow, publish: publish, pull: pull, rm: rm,
+					diskBytes: diskBytes,
 				})
 			}
 			return runCommand(cmd, o, args, runCommandOpts{
@@ -170,6 +176,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 	// image mode
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a port [HOST_IP:]HOST:GUEST[/tcp] (repeatable; image mode)")
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing|always|never (image mode)")
+	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G (image mode)")
 	cmd.Flags().BoolVar(&rm, "rm", false, "tail logs in the foreground and remove the sandbox on detach (image mode)")
 	// command mode
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile, e.g. python-3.12 (command mode)")
@@ -215,6 +222,7 @@ type runImageOpts struct {
 	vcpus, memory, timeout int
 	netAllow, publish      []string
 	pull                   string
+	diskBytes              int64
 	rm                     bool
 }
 
@@ -233,7 +241,7 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 	}
 	req := api.CreateSandboxRequest{
 		VCPUs: opts.vcpus, MemoryMiB: opts.memory, TimeoutSec: opts.timeout,
-		Image: &api.ImageRef{OCI: ref}, Pull: effPull,
+		Image: &api.ImageRef{OCI: ref}, Pull: effPull, DiskBytes: opts.diskBytes,
 	}
 	if len(opts.netAllow) > 0 {
 		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: opts.netAllow}

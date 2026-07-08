@@ -500,6 +500,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		TokenID:        tokenID,
 		Service:        req.Service,
 		Publish:        publish,
+		DiskBytes:      req.DiskBytes,
 	})
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {

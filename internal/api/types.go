@@ -70,6 +70,14 @@ type CreateSandboxRequest struct {
 	// "never" fails if the image isn't already converted. Ignored when
 	// Image is unset.
 	Pull string `json:"pull,omitempty"`
+
+	// DiskBytes, when > 0, grows this sandbox's writable rootfs to at
+	// least this many bytes. The daemon grows the per-sandbox clone
+	// (truncate + resize2fs) after cloning the template — the cached
+	// image/profile ext4 is never touched. Zero keeps the template's
+	// built-in headroom. Ignored (a no-op) when the requested size is
+	// not larger than the clone already is.
+	DiskBytes int64 `json:"disk_bytes,omitempty"`
 }
 
 // PortMapping publishes one host port to one guest port.

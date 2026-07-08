@@ -236,6 +236,13 @@ type CreateConfig struct {
 	// forward to, and a configured PortPublisher. A bind failure fails
 	// the whole Create.
 	Publish []PortMapping
+
+	// DiskBytes, when > 0, grows this sandbox's rootfs clone to at least
+	// this size (truncate + resize2fs) after cloning the template and
+	// before boot. The shared template is never modified. A no-op when
+	// the clone is already at least this large. Requires resize2fs on
+	// the host.
+	DiskBytes int64
 }
 
 // NetworkConfig declares the per-sandbox network intent. Exactly
@@ -654,6 +661,13 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	sbxRootfs := filepath.Join(workdir, perSandboxRootfsName)
 	if err := fsutil.Clone(rootfsTemplate, sbxRootfs); err != nil {
 		return nil, fmt.Errorf("sandbox: clone rootfs template: %w", err)
+	}
+
+	// Optional per-sandbox disk override: grow only this clone, never the
+	// shared template. A no-op when DiskBytes is unset or already covered by
+	// the clone's headroom.
+	if err := growRootfs(ctx, sbxRootfs, req.DiskBytes); err != nil {
+		return nil, err
 	}
 
 	// Network setup (optional). Must happen before runner.Start

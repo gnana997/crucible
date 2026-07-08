@@ -33,6 +33,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		profile                string
 		image                  string
 		pull                   string
+		disk                   string
 		netAllow               []string
 		publish                []string
 	)
@@ -44,7 +45,11 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 			if image != "" && profile != "" {
 				return fmt.Errorf("--image and --profile are mutually exclusive")
 			}
-			req := api.CreateSandboxRequest{VCPUs: vcpus, MemoryMiB: memory, TimeoutSec: timeout, Profile: profile}
+			diskBytes, err := parseDiskSize(disk)
+			if err != nil {
+				return err
+			}
+			req := api.CreateSandboxRequest{VCPUs: vcpus, MemoryMiB: memory, TimeoutSec: timeout, Profile: profile, DiskBytes: diskBytes}
 			if image != "" {
 				ref, effPull, err := resolveCreateImage(cmd.Context(), o.client(), image, pull, cmd.ErrOrStderr())
 				if err != nil {
@@ -80,9 +85,42 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile (e.g. python-3.12)")
 	cmd.Flags().StringVar(&image, "image", "", "boot from an image: a converted digest/ref, a local docker tag (auto-imported), or a registry ref (auto-pulled)")
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing (default), always, or never")
+	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G or 512M (default: template headroom)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	return cmd
+}
+
+// parseDiskSize parses a human disk size into bytes. A bare number is bytes;
+// a K/M/G/T suffix is binary (1024-based), matching how operators size disks
+// ("2G" = 2 GiB). Case-insensitive; an optional trailing "B"/"iB" is allowed.
+// The empty string is 0 (unset — keep the template's headroom).
+func parseDiskSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	up := strings.ToUpper(s)
+	up = strings.TrimSuffix(up, "IB")
+	up = strings.TrimSuffix(up, "B")
+	mult := int64(1)
+	if n := len(up); n > 0 {
+		switch up[n-1] {
+		case 'K':
+			mult, up = 1<<10, up[:n-1]
+		case 'M':
+			mult, up = 1<<20, up[:n-1]
+		case 'G':
+			mult, up = 1<<30, up[:n-1]
+		case 'T':
+			mult, up = 1<<40, up[:n-1]
+		}
+	}
+	v, err := strconv.ParseInt(strings.TrimSpace(up), 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("invalid --disk %q (want e.g. 2G, 512M, or a byte count)", s)
+	}
+	return v * mult, nil
 }
 
 // parsePublish parses a docker-style port spec:
