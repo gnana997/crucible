@@ -330,6 +330,9 @@ Required flags:
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
+		// Host port publish rides on the network layer (it forwards to
+		// the guest IP), so enable it exactly when networking is on.
+		mgrCfg.PortPublisher = daemon.NewPortPublisher(logger)
 	}
 	mgr, err := sandbox.NewManager(mgrCfg)
 	if err != nil {

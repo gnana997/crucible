@@ -100,6 +100,14 @@ func BuildBaseScript(egressIface string, dnsAnycast netip.Addr) string {
 	// the anycast and dropping everything else.
 	fmt.Fprintf(&b, "\tchain %s {\n", nftInputChain)
 	fmt.Fprintf(&b, "\t\ttype filter hook input priority 0; policy accept;\n")
+	// Accept replies to host-initiated connections into a guest — the
+	// port-publish forwarder dials guestIP:port from root netns, so the
+	// guest's SYN-ACK and all reply traffic arrive here on vh-* and would
+	// otherwise be dropped by the catch-all below. This does NOT let a
+	// guest reach host-local services: a guest-initiated connection's
+	// first packet is ct state NEW and still hits the drop, so conntrack
+	// never records an established entry for it.
+	fmt.Fprintf(&b, "\t\tct state established,related accept\n")
 	fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr %s udp dport 53 accept\n",
 		nftGuestSourcesSet, dnsAnycast)
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n", vethHostPrefix+"*")

@@ -64,6 +64,20 @@ func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
 	if acceptIdx < 0 || dropIdx < 0 || acceptIdx >= dropIdx {
 		t.Errorf("input chain rule order wrong: accept(%d) drop(%d)", acceptIdx, dropIdx)
 	}
+
+	// The input chain must accept established/related traffic before the
+	// catch-all drop — that's the return path for the port-publish
+	// forwarder's host-initiated connections into a guest. Without it,
+	// the guest's SYN-ACK arrives on vh-* and is dropped. Anchor on the
+	// input chain specifically (the forward chain has its own copy).
+	inputIdx := strings.Index(got, "chain input {")
+	inputCtIdx := strings.Index(got[inputIdx:], "ct state established,related accept")
+	if inputIdx < 0 || inputCtIdx < 0 {
+		t.Fatal("input chain missing established/related accept (port-publish return path)")
+	}
+	if inputIdx+inputCtIdx >= dropIdx {
+		t.Errorf("input established-accept(%d) must precede vh-* drop(%d)", inputIdx+inputCtIdx, dropIdx)
+	}
 }
 
 func TestBuildSandboxScript(t *testing.T) {

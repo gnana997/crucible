@@ -163,8 +163,13 @@ type Sandbox struct {
 	// to echo back in sandboxResponse.
 	Network *NetworkHandle
 
+	// Published are the host→guest port mappings applied at create,
+	// echoed back in sandboxResponse. Nil when nothing was published.
+	Published []PortMapping
+
 	handle     runner.Handle
 	execClient *agentapi.Client // cached; nil when VSockPath is empty
+	publish    PublishHandle    // active forwarders; nil when nothing published
 
 	// done is closed by Manager.Delete once this sandbox is removed
 	// from the map. Used by the lifetime-timeout goroutine to exit
@@ -224,6 +229,12 @@ type CreateConfig struct {
 	// the entrypoint is supervised and launched. Requires WaitForAgent
 	// (the spec push needs a live agent) and a vsock channel.
 	Service *agentwire.ServiceSpec
+
+	// Publish maps host ports to guest ports (host port publish). Needs
+	// a networked sandbox (Network non-nil) so the guest has an IP to
+	// forward to, and a configured PortPublisher. A bind failure fails
+	// the whole Create.
+	Publish []PortMapping
 }
 
 // NetworkConfig declares the per-sandbox network intent. Exactly
@@ -289,6 +300,11 @@ type ManagerConfig struct {
 	// it; when the field itself is nil here, any request with
 	// Network set is rejected at Create time.
 	Network NetworkProvisioner
+
+	// PortPublisher, when non-nil, enables host port publishing
+	// (CreateConfig.Publish). Nil rejects any create that requests
+	// published ports.
+	PortPublisher PortPublisher
 
 	// ForkConcurrency caps how many forks Fork boots simultaneously.
 	// Each concurrent fork copies a multi-GB rootfs and boots a VM, so
@@ -391,6 +407,30 @@ func (m *Manager) quotasFor(vcpus, memMiB int) runner.Quotas {
 type NetworkProvisioner interface {
 	Setup(ctx context.Context, req NetworkSetupRequest) (*NetworkHandle, error)
 	Teardown(ctx context.Context, h *NetworkHandle) error
+}
+
+// PortMapping is one host→guest port forward — the sandbox-layer view,
+// decoupled from internal/api (same reason NetworkAllowlist is an
+// interface here: keep the import graph clean).
+type PortMapping struct {
+	HostIP    string
+	HostPort  int
+	GuestPort int
+	Protocol  string
+}
+
+// PortPublisher publishes host ports to a sandbox's guest and returns a
+// handle closed on Delete. The daemon implements it over
+// internal/portpublish; nil means publishing is unavailable, so any
+// CreateConfig with Publish set is rejected at Create.
+type PortPublisher interface {
+	Publish(ctx context.Context, sandboxID, guestIP string, ports []PortMapping) (PublishHandle, error)
+}
+
+// PublishHandle is an opaque reference to a sandbox's active
+// forwarders; Close stops them and drains in-flight connections.
+type PublishHandle interface {
+	Close()
 }
 
 // NetworkSetupRequest is the argument to NetworkProvisioner.Setup.
@@ -708,6 +748,29 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 			_ = handle.Shutdown(context.Background())
 			return nil, fmt.Errorf("sandbox: start service: %w", err)
 		}
+	}
+
+	// Host port publish: start the forwarders after the service is up so
+	// early connections reach a live server. A bind failure (host port
+	// in use) is fatal — the whole create rolls back. Last fallible
+	// step, so its own rollback (Publish closes any listeners it opened)
+	// plus handle.Shutdown here is sufficient.
+	if len(req.Publish) > 0 {
+		if netHandle == nil || netHandle.GuestIP == "" {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: publish requires a networked sandbox (a guest IP to forward to)", ErrInvalidConfig)
+		}
+		if m.cfg.PortPublisher == nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: port publishing is not enabled on this daemon", ErrInvalidConfig)
+		}
+		ph, err := m.cfg.PortPublisher.Publish(ctx, s.ID, netHandle.GuestIP, req.Publish)
+		if err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: publish ports: %w", err)
+		}
+		s.publish = ph
+		s.Published = req.Publish
 	}
 
 	m.registerSandbox(s)
@@ -1449,6 +1512,13 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	// Signal any lifetime-timer goroutine to exit before we block on
 	// shutdown. Safe to call more than once; doneOnce guards the close.
 	s.doneOnce.Do(func() { close(s.done) })
+
+	// Stop the host port forwarders first: close the listeners (freeing
+	// the host ports) and drain in-flight connections before the VM goes
+	// away. In-memory, so no persistence to reconcile.
+	if s.publish != nil {
+		s.publish.Close()
+	}
 
 	shutdownErr := s.handle.Shutdown(ctx)
 

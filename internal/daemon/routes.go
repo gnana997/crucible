@@ -95,6 +95,42 @@ func validateNetwork(r *api.NetworkRequest) (*network.Allowlist, int, error) {
 	return al, 0, nil
 }
 
+// validatePublish checks the port mappings and returns the sandbox-layer
+// form. Rules: ports in 1..65535; protocol tcp only (udp/others rejected
+// for now); no duplicate host bind (same host IP + host port) within one
+// request.
+func validatePublish(mappings []api.PortMapping) ([]sandbox.PortMapping, error) {
+	out := make([]sandbox.PortMapping, 0, len(mappings))
+	seen := make(map[string]bool, len(mappings))
+	for _, m := range mappings {
+		proto := m.Protocol
+		if proto == "" {
+			proto = "tcp"
+		}
+		if proto != "tcp" {
+			return nil, fmt.Errorf("publish: protocol %q not supported (tcp only)", proto)
+		}
+		if m.HostPort < 1 || m.HostPort > 65535 {
+			return nil, fmt.Errorf("publish: host_port %d out of range (1..65535)", m.HostPort)
+		}
+		if m.GuestPort < 1 || m.GuestPort > 65535 {
+			return nil, fmt.Errorf("publish: guest_port %d out of range (1..65535)", m.GuestPort)
+		}
+		key := m.HostIP + ":" + strconv.Itoa(m.HostPort)
+		if seen[key] {
+			return nil, fmt.Errorf("publish: host port %s mapped more than once", key)
+		}
+		seen[key] = true
+		out = append(out, sandbox.PortMapping{
+			HostIP:    m.HostIP,
+			HostPort:  m.HostPort,
+			GuestPort: m.GuestPort,
+			Protocol:  proto,
+		})
+	}
+	return out, nil
+}
+
 // ociInitBootArgs is the kernel command line for a converted OCI image:
 // the runtime defaults plus init=<injected agent>, so the guest boots
 // crucible-agent as PID 1 instead of the (absent) /sbin/init.
@@ -236,6 +272,14 @@ func sandboxResponseFrom(sb *sandbox.Sandbox) api.SandboxResponse {
 			resp.Network.Allowlist = sb.Network.Allowlist.Patterns()
 		}
 	}
+	for _, p := range sb.Published {
+		resp.Published = append(resp.Published, api.PortMapping{
+			HostIP:    p.HostIP,
+			HostPort:  p.HostPort,
+			GuestPort: p.GuestPort,
+			Protocol:  p.Protocol,
+		})
+	}
 	return resp
 }
 
@@ -318,6 +362,28 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Port publish. Validate the mappings, then ensure the sandbox has a
+	// NIC to forward to: if the request asked for no network, synthesize
+	// an egress-denied one (empty allowlist) — an exposed service that
+	// can be reached but can't phone home is the safer default.
+	var publish []sandbox.PortMapping
+	if len(req.Publish) > 0 {
+		pm, err := validatePublish(req.Publish)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		publish = pm
+		if netCfg == nil {
+			denyAll, nerr := network.New(nil) // empty allowlist = deny all egress
+			if nerr != nil {
+				writeError(w, http.StatusInternalServerError, nerr)
+				return
+			}
+			netCfg = &sandbox.NetworkConfig{Allowlist: denyAll}
+		}
+	}
+
 	// Service validation (experimental create-with-service): a bad spec
 	// fails here with a 400 rather than mid-create against the agent.
 	if req.Service != nil {
@@ -367,6 +433,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		Network:        netCfg,
 		TokenID:        tokenID,
 		Service:        req.Service,
+		Publish:        publish,
 	})
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {

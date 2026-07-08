@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -32,6 +33,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		profile                string
 		image                  string
 		netAllow               []string
+		publish                []string
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -47,6 +49,13 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 			}
 			if len(netAllow) > 0 {
 				req.Network = &api.NetworkRequest{Enabled: true, Allowlist: netAllow}
+			}
+			for _, p := range publish {
+				pm, err := parsePublish(p)
+				if err != nil {
+					return err
+				}
+				req.Publish = append(req.Publish, pm)
 			}
 			sb, err := o.client().CreateSandbox(cmd.Context(), req)
 			if err != nil {
@@ -65,7 +74,42 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile (e.g. python-3.12)")
 	cmd.Flags().StringVar(&image, "image", "", "boot from a converted OCI image (digest or ref from `crucible image ls`)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
+	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	return cmd
+}
+
+// parsePublish parses a docker-style port spec:
+//
+//	HOST:GUEST              8080:80
+//	HOST_IP:HOST:GUEST      127.0.0.1:8080:80
+//	…with an optional /tcp suffix (tcp is the default).
+func parsePublish(spec string) (api.PortMapping, error) {
+	var pm api.PortMapping
+	body, proto, hasProto := strings.Cut(spec, "/")
+	pm.Protocol = "tcp"
+	if hasProto {
+		pm.Protocol = proto
+	}
+	parts := strings.Split(body, ":")
+	var hostStr, guestStr string
+	switch len(parts) {
+	case 2:
+		hostStr, guestStr = parts[0], parts[1]
+	case 3:
+		pm.HostIP, hostStr, guestStr = parts[0], parts[1], parts[2]
+	default:
+		return pm, fmt.Errorf("--publish %q: want [HOST_IP:]HOST:GUEST[/tcp]", spec)
+	}
+	hp, err := strconv.Atoi(hostStr)
+	if err != nil {
+		return pm, fmt.Errorf("--publish %q: bad host port %q", spec, hostStr)
+	}
+	gp, err := strconv.Atoi(guestStr)
+	if err != nil {
+		return pm, fmt.Errorf("--publish %q: bad guest port %q", spec, guestStr)
+	}
+	pm.HostPort, pm.GuestPort = hp, gp
+	return pm, nil
 }
 
 func newSandboxLsCmd(o *globalOpts) *cobra.Command {

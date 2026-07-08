@@ -55,6 +55,28 @@ type CreateSandboxRequest struct {
 	// before it is declared stable. Pair with timeout_s = 0 for a
 	// service that outlives the default sandbox lifetime.
 	Service *agentwire.ServiceSpec `json:"service,omitempty"`
+
+	// Publish maps host ports to guest ports so a service inside the
+	// sandbox is reachable from the host (and, by default, the LAN) —
+	// the moral equivalent of `docker run -p`. Publishing requires the
+	// sandbox to have a NIC; when Network is absent it is created with
+	// an empty egress allowlist (ingress-published, egress-denied).
+	Publish []PortMapping `json:"publish,omitempty"`
+}
+
+// PortMapping publishes one host port to one guest port.
+type PortMapping struct {
+	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable
+	// from the LAN); "127.0.0.1" pins it to localhost-only.
+	HostIP string `json:"host_ip,omitempty"`
+
+	// HostPort is the port on the host; GuestPort is the port inside the
+	// sandbox the connection is forwarded to. Both 1..65535.
+	HostPort  int `json:"host_port"`
+	GuestPort int `json:"guest_port"`
+
+	// Protocol is "tcp" (the default and, for now, only supported value).
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // NetworkRequest is the per-sandbox network policy on the wire.
@@ -92,6 +114,9 @@ type SandboxResponse struct {
 	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
 
 	Network *NetworkResponse `json:"network,omitempty"`
+
+	// Published echoes the applied host→guest port mappings.
+	Published []PortMapping `json:"published,omitempty"`
 }
 
 // NetworkResponse is the applied network policy echoed back after Create.
