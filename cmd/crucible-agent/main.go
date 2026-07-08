@@ -80,6 +80,7 @@ func run(logger *slog.Logger) int {
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("POST /exec", execHandler)
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
+	mux.HandleFunc("POST /network/configure", handleNetworkConfigure)
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
 	(&serviceAPI{sup: sup}).register(mux)
 

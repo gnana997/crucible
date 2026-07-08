@@ -43,6 +43,7 @@ func imageResponseFrom(rec *oci.ImageRecord) api.ImageResponse {
 	if rec.RunConfig != nil {
 		resp.Entrypoint = rec.RunConfig.Entrypoint
 		resp.Cmd = rec.RunConfig.Cmd
+		resp.ExposedPorts = rec.RunConfig.ExposedPorts
 	}
 	return resp
 }

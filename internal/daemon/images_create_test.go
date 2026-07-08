@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -53,13 +54,20 @@ func newImageCreateServer(t *testing.T, store ImageStore) (*httptest.Server, *se
 
 func TestCreateFromOCIImageBootsWithInitAgent(t *testing.T) {
 	// A converted image on disk (any readable file — the stub runner
-	// doesn't boot it) resolvable by ref.
+	// doesn't boot it) resolvable by ref, with a runtime contract.
 	imgRootfs := filepath.Join(t.TempDir(), "converted.ext4")
 	if err := os.WriteFile(imgRootfs, []byte("converted-image"), 0o640); err != nil {
 		t.Fatal(err)
 	}
 	store := newFakeImageStore()
-	store.seed("sha256:"+strings.Repeat("c", 64), imgRootfs)
+	rec := store.seed("sha256:"+strings.Repeat("c", 64), imgRootfs)
+	rec.RunConfig = &oci.RunConfig{
+		Entrypoint: []string{"/docker-entrypoint.sh"},
+		Cmd:        []string{"nginx"},
+		Env:        []string{"NGINX=1"},
+		User:       "nginx",
+		StopSignal: "SIGQUIT",
+	}
 
 	ts, runner := newImageCreateServer(t, store)
 
@@ -81,13 +89,32 @@ func TestCreateFromOCIImageBootsWithInitAgent(t *testing.T) {
 	// The runner booted with init=/crucible/crucible-agent so the guest
 	// runs the agent as PID 1.
 	runner.mu.Lock()
-	defer runner.mu.Unlock()
-	if len(runner.calls) == 0 {
-		t.Fatal("runner.Start was never called")
+	bootArgs := ""
+	if len(runner.calls) > 0 {
+		bootArgs = runner.calls[len(runner.calls)-1].BootArgs
 	}
-	bootArgs := runner.calls[len(runner.calls)-1].BootArgs
+	runner.mu.Unlock()
 	if !strings.Contains(bootArgs, "init=/crucible/crucible-agent") {
 		t.Errorf("boot args = %q, want init=/crucible/crucible-agent", bootArgs)
+	}
+
+	// The image's entrypoint was pushed to the guest agent as the
+	// service spec (docker-run fidelity): image Entrypoint+Cmd, user,
+	// stop signal, exact env.
+	runner.agent.mu.Lock()
+	spec := runner.agent.spec
+	runner.agent.mu.Unlock()
+	if spec == nil {
+		t.Fatal("no service spec pushed to the agent")
+	}
+	if len(spec.Cmd) != 2 || spec.Cmd[0] != "/docker-entrypoint.sh" || spec.Cmd[1] != "nginx" {
+		t.Errorf("service cmd = %v, want the image entrypoint+cmd", spec.Cmd)
+	}
+	if spec.User != "nginx" || spec.StopSignal != "SIGQUIT" || !spec.EnvExact {
+		t.Errorf("service fidelity fields: user=%q stop=%q exact=%v", spec.User, spec.StopSignal, spec.EnvExact)
+	}
+	if spec.Env["NGINX"] != "1" {
+		t.Errorf("service env = %v, want NGINX=1", spec.Env)
 	}
 }
 
@@ -105,7 +132,11 @@ func TestCreateFromOCIImageUnknownRef404(t *testing.T) {
 	}
 }
 
-func TestCreateFromOCIImageRejectsNetwork(t *testing.T) {
+func TestCreateFromOCIImageWithNetworkIsAccepted(t *testing.T) {
+	// m2 lifted the old "no networking for OCI images" rejection: an
+	// image sandbox with a valid allowlist is now accepted at the
+	// validation layer (the daemon here has no network provisioner, so
+	// it fails later at provisioning — but with 500, not the old 400).
 	imgRootfs := filepath.Join(t.TempDir(), "converted.ext4")
 	if err := os.WriteFile(imgRootfs, []byte("x"), 0o640); err != nil {
 		t.Fatal(err)
@@ -120,7 +151,10 @@ func TestCreateFromOCIImageRejectsNetwork(t *testing.T) {
 		t.Fatalf("POST: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("image+network = %d, want 400", resp.StatusCode)
+	// Not a 400 (no longer rejected as unsupported). The test manager
+	// has no network provisioner, so this daemon config can't fulfill
+	// it — a 500, the same as any networked create without networking.
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Fatalf("image+network rejected with 400; m2 should accept it")
 	}
 }

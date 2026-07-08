@@ -7,7 +7,11 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
@@ -102,42 +106,114 @@ type imageErr struct {
 	err    error
 }
 
-// resolveImage turns a request's ImageRef into a rootfs override + boot
-// args. No image → ("", "", nil). An OCI ref resolves against the image
-// store. A path override is still unimplemented. Exactly one of
+// resolveImage turns a request's ImageRef into a store record + boot
+// args. No image → (nil, "", nil). An OCI ref resolves against the
+// image store. A path override is still unimplemented. Exactly one of
 // Path/OCI must be set.
-func (s *Server) resolveImage(ref *api.ImageRef) (rootfs, bootArgs string, ierr *imageErr) {
+func (s *Server) resolveImage(ref *api.ImageRef) (rec *oci.ImageRecord, bootArgs string, ierr *imageErr) {
 	if ref == nil {
-		return "", "", nil
+		return nil, "", nil
 	}
 	pathSet := ref.Path != ""
 	ociSet := ref.OCI != ""
 	switch {
 	case pathSet && ociSet:
-		return "", "", &imageErr{http.StatusBadRequest, errors.New("image.path and image.oci are mutually exclusive")}
+		return nil, "", &imageErr{http.StatusBadRequest, errors.New("image.path and image.oci are mutually exclusive")}
 	case !pathSet && !ociSet:
-		return "", "", &imageErr{http.StatusBadRequest, errors.New("image must set either path or oci")}
+		return nil, "", &imageErr{http.StatusBadRequest, errors.New("image must set either path or oci")}
 	case pathSet:
-		return "", "", &imageErr{http.StatusNotImplemented, errors.New("image.path per-sandbox override not implemented (use image.oci or a profile)")}
+		return nil, "", &imageErr{http.StatusNotImplemented, errors.New("image.path per-sandbox override not implemented (use image.oci or a profile)")}
 	}
 	// OCI reference.
 	if s.cfg.Images == nil {
-		return "", "", &imageErr{http.StatusNotImplemented, errors.New("image support is not enabled on this daemon (set --image-dir)")}
+		return nil, "", &imageErr{http.StatusNotImplemented, errors.New("image support is not enabled on this daemon (set --image-dir)")}
 	}
 	rec, err := s.cfg.Images.Get(ref.OCI)
 	if err != nil {
 		if errors.Is(err, oci.ErrImageNotFound) {
-			return "", "", &imageErr{http.StatusNotFound, fmt.Errorf("image %q not found; pull it first", ref.OCI)}
+			return nil, "", &imageErr{http.StatusNotFound, fmt.Errorf("image %q not found; pull it first", ref.OCI)}
 		}
 		if errors.Is(err, oci.ErrAmbiguousImage) {
-			return "", "", &imageErr{http.StatusConflict, err}
+			return nil, "", &imageErr{http.StatusConflict, err}
 		}
-		return "", "", &imageErr{http.StatusInternalServerError, err}
+		return nil, "", &imageErr{http.StatusInternalServerError, err}
 	}
 	if rec.RootfsPath == "" {
-		return "", "", &imageErr{http.StatusInternalServerError, errors.New("image record has no rootfs path")}
+		return nil, "", &imageErr{http.StatusInternalServerError, errors.New("image record has no rootfs path")}
 	}
-	return rec.RootfsPath, ociInitBootArgs, nil
+	return rec, ociInitBootArgs, nil
+}
+
+// effectiveServiceSpec computes the service the sandbox runs from a
+// converted image's runtime contract, merged with an optional request
+// override using docker-run semantics:
+//   - command: image Entrypoint+Cmd by default; a non-empty override
+//     Cmd replaces it entirely (like a trailing command / --entrypoint).
+//   - env: image Env overlaid by override Env; the result is the exact
+//     process environment (EnvExact), no agent-environ leakage.
+//   - user / cwd / stop-signal: image value, override wins when set.
+//   - restart / stop-grace / log-buffer: from the override (not an
+//     image concept).
+//
+// Returns nil when there is nothing to run (no entrypoint/cmd and no
+// override) — a bare sandbox to exec into.
+func effectiveServiceSpec(rc *oci.RunConfig, override *agentwire.ServiceSpec) *agentwire.ServiceSpec {
+	spec := &agentwire.ServiceSpec{EnvExact: true}
+	envMap := map[string]string{}
+	if rc != nil {
+		spec.Cmd = append(append([]string{}, rc.Entrypoint...), rc.Cmd...)
+		spec.Cwd = rc.WorkingDir
+		spec.User = rc.User
+		spec.StopSignal = normalizeStopSignal(rc.StopSignal)
+		for _, e := range rc.Env {
+			k, v, _ := strings.Cut(e, "=")
+			envMap[k] = v
+		}
+	}
+	if override != nil {
+		if len(override.Cmd) > 0 {
+			spec.Cmd = override.Cmd
+		}
+		if override.Cwd != "" {
+			spec.Cwd = override.Cwd
+		}
+		if override.User != "" {
+			spec.User = override.User
+		}
+		if override.StopSignal != "" {
+			spec.StopSignal = override.StopSignal
+		}
+		for k, v := range override.Env {
+			envMap[k] = v
+		}
+		spec.Restart = override.Restart
+		spec.StopGraceSec = override.StopGraceSec
+		spec.LogBufferBytes = override.LogBufferBytes
+	}
+	if len(spec.Cmd) == 0 {
+		return nil
+	}
+	if len(envMap) > 0 {
+		spec.Env = envMap
+	}
+	return spec
+}
+
+// normalizeStopSignal turns a numeric OCI StopSignal ("9") into its
+// name ("SIGKILL") so the wire always carries a name the agent and
+// validation understand; names pass through unchanged.
+func normalizeStopSignal(s string) string {
+	if s == "" {
+		return ""
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return s
+	}
+	if name := unix.SignalName(syscall.Signal(n)); name != "" {
+		return name
+	}
+	return s
 }
 
 func sandboxResponseFrom(sb *sandbox.Sandbox) api.SandboxResponse {
@@ -206,22 +282,25 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	// Image resolution. A per-sandbox path override is still 501; an OCI
 	// reference resolves against the image store to a converted rootfs
 	// the sandbox boots with the guest agent as PID 1. Both/neither is a
-	// 400. Returns the rootfs path + boot args, or "" when no image.
-	rootfsOverride, imgBootArgs, ierr := s.resolveImage(req.Image)
+	// 400. Returns the store record + boot args, or nil when no image.
+	imgRec, imgBootArgs, ierr := s.resolveImage(req.Image)
 	if ierr != nil {
 		writeError(w, ierr.status, ierr.err)
 		return
 	}
-	if rootfsOverride != "" {
-		// Networking for image sandboxes lands in the next milestone
-		// (guest-side netlink config); reject it now rather than boot a
-		// guest that can't configure its NIC.
-		if req.Network != nil && req.Network.Enabled {
-			writeError(w, http.StatusBadRequest,
-				errors.New("networking for OCI-image sandboxes is not supported yet"))
-			return
-		}
+	var rootfsOverride string
+	staticNetwork := false
+	if imgRec != nil {
+		rootfsOverride = imgRec.RootfsPath
 		req.BootArgs = imgBootArgs
+		// OCI guests have no DHCP client, so their network is pushed
+		// over vsock (netlink) rather than DHCP'd.
+		staticNetwork = true
+		// Run the image's own entrypoint: the effective service spec is
+		// the image's OCI config merged with any request override
+		// (docker-run semantics). Nil when the image has no
+		// entrypoint/cmd and none was supplied — a bare sandbox.
+		req.Service = effectiveServiceSpec(imgRec.RunConfig, req.Service)
 	}
 
 	// Network validation — parses the allowlist into a matcher or
@@ -284,6 +363,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		TimeoutSec:     req.TimeoutSec,
 		Profile:        req.Profile,
 		RootfsOverride: rootfsOverride,
+		StaticNetwork:  staticNetwork,
 		Network:        netCfg,
 		TokenID:        tokenID,
 		Service:        req.Service,

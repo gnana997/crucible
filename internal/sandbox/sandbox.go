@@ -147,6 +147,11 @@ type Sandbox struct {
 	VSockPath string // host UDS for Firecracker's hybrid vsock; empty for test stubs
 	CreatedAt time.Time
 
+	// StaticNetwork is true for OCI-image guests: they have no DHCP
+	// client, so the daemon pushes the network config over vsock at
+	// create and re-pushes on fork (instead of the DHCP link-bounce).
+	StaticNetwork bool
+
 	// SourceSnapshotID is the snapshot this sandbox was forked from; empty for
 	// a directly-created (non-forked) sandbox. It carries the fork lineage so a
 	// client can reconstruct the fork tree (snapshot.SourceID → sandbox →
@@ -187,6 +192,11 @@ type CreateConfig struct {
 	// The daemon resolves it (and sets BootArgs to init the guest
 	// agent); Profile and RootfsOverride are mutually exclusive.
 	RootfsOverride string
+
+	// StaticNetwork tells the Manager to push the network config to the
+	// guest over vsock (netlink) rather than rely on an in-guest DHCP
+	// client. Set by the daemon for OCI-image sandboxes.
+	StaticNetwork bool
 
 	// TimeoutSec, if > 0, is the sandbox's maximum lifetime in seconds.
 	// A background goroutine deletes the sandbox once the timeout fires.
@@ -414,6 +424,13 @@ type NetworkHandle struct {
 	// Gateway is the host-side veth IP (guest's default route).
 	Gateway string
 
+	// PrefixBits is the guest address's network prefix length (30 for
+	// the /30 allocations). DNSServer is the resolver the guest should
+	// use (the DNS-proxy anycast). Both feed the static network config
+	// the daemon pushes to OCI guests, which can't self-configure.
+	PrefixBits int
+	DNSServer  string
+
 	// Allowlist is the matcher used at setup time. Retained on
 	// the handle because snapshots copy it onto Snapshot.Network
 	// so forks can re-register an identical policy without the
@@ -441,6 +458,11 @@ type Snapshot struct {
 	MemPath    string // memory.file
 	RootfsPath string // rootfs.ext4 (frozen clone at snapshot time)
 	CreatedAt  time.Time
+
+	// StaticNetwork carries the source's boot mode so forks refresh
+	// their network the right way — a static netlink push for OCI
+	// guests, the DHCP link-bounce for profile guests.
+	StaticNetwork bool
 
 	// Network captures the source sandbox's network intent so
 	// forks can be provisioned with matching network state.
@@ -630,17 +652,18 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	}
 
 	s := &Sandbox{
-		ID:        id,
-		VCPUs:     vcpus,
-		MemoryMiB: memMiB,
-		Workdir:   workdir,
-		Profile:   req.Profile,
-		TokenID:   req.TokenID,
-		VSockPath: handle.VSockPath(),
-		CreatedAt: time.Now().UTC(),
-		Network:   netHandle,
-		handle:    handle,
-		done:      make(chan struct{}),
+		ID:            id,
+		VCPUs:         vcpus,
+		MemoryMiB:     memMiB,
+		Workdir:       workdir,
+		Profile:       req.Profile,
+		TokenID:       req.TokenID,
+		StaticNetwork: req.StaticNetwork,
+		VSockPath:     handle.VSockPath(),
+		CreatedAt:     time.Now().UTC(),
+		Network:       netHandle,
+		handle:        handle,
+		done:          make(chan struct{}),
 	}
 	if s.VSockPath != "" {
 		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)
@@ -650,6 +673,21 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		if err := m.waitForAgent(ctx, s.execClient); err != nil {
 			_ = handle.Shutdown(context.Background())
 			return nil, fmt.Errorf("sandbox: agent not ready: %w", err)
+		}
+	}
+
+	// Static network push: an OCI-image guest has no DHCP client, so the
+	// daemon sends the address it allocated and the agent programs eth0
+	// via netlink. Before the service starts (which may need network).
+	// Fatal — an unreachable guest is a failed create.
+	if req.StaticNetwork && netHandle != nil {
+		if s.execClient == nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: static network requires an agent channel (no vsock)", ErrInvalidConfig)
+		}
+		if err := s.execClient.ConfigureNetwork(ctx, staticNetConfig(s.ID, netHandle)); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: configure network: %w", err)
 		}
 	}
 
@@ -955,15 +993,16 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	}
 
 	snap := &Snapshot{
-		ID:         snapID,
-		SourceID:   src.ID,
-		VCPUs:      src.VCPUs,
-		MemoryMiB:  src.MemoryMiB,
-		Dir:        snapDir,
-		StatePath:  snapState,
-		MemPath:    snapMem,
-		RootfsPath: snapRootfs,
-		CreatedAt:  time.Now().UTC(),
+		ID:            snapID,
+		SourceID:      src.ID,
+		VCPUs:         src.VCPUs,
+		MemoryMiB:     src.MemoryMiB,
+		Dir:           snapDir,
+		StatePath:     snapState,
+		MemPath:       snapMem,
+		RootfsPath:    snapRootfs,
+		StaticNetwork: src.StaticNetwork,
+		CreatedAt:     time.Now().UTC(),
 	}
 	// Record the source's network intent so forks reconstruct a
 	// matching config. Matchers are immutable, so sharing the
@@ -1239,6 +1278,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (
 		Workdir:          workdir,
 		TokenID:          tokenID,
 		SourceSnapshotID: snap.ID,
+		StaticNetwork:    snap.StaticNetwork,
 		VSockPath:        handle.VSockPath(),
 		CreatedAt:        time.Now().UTC(),
 		Network:          netHandle,
@@ -1280,19 +1320,23 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (
 		return nil, fmt.Errorf("identity refresh: %w", err)
 	}
 
-	// If the fork has network, ask the guest to bounce eth0 so
-	// systemd-networkd runs a fresh DHCP cycle and picks up the
-	// fork's per-netns-assigned IP. The guest's kernel restored
-	// from a snapshot where eth0 holds the source's IP; without
-	// this, the fork is dark until systemd-networkd's next
-	// renewal cycle. Failures here are non-fatal — the fork
-	// still boots, it just has a slower first DHCP.
+	// Re-apply the fork's network onto its new per-netns /30. The
+	// restored guest holds the source's eth0 config from snapshot time.
+	// OCI guests (StaticNetwork) get a fresh netlink push — they have no
+	// DHCP client to self-heal, so this is fatal. Profile guests get the
+	// DHCP link-bounce, which is non-fatal (they recover on the next
+	// renewal cycle).
 	if netHandle != nil && s.execClient != nil {
 		refreshCtx, cancel := context.WithTimeout(ctx, networkRefreshTimeout)
-		if err := s.execClient.RefreshNetwork(refreshCtx); err != nil {
-			// Log-and-continue: the guest recovers on its own
-			// within one DHCP renewal cycle (~30s given our 60s
-			// lease).
+		if s.StaticNetwork {
+			if err := s.execClient.ConfigureNetwork(refreshCtx, staticNetConfig(s.ID, netHandle)); err != nil {
+				cancel()
+				_ = handle.Shutdown(context.Background())
+				return nil, fmt.Errorf("fork %s: configure network: %w", id, err)
+			}
+		} else if err := s.execClient.RefreshNetwork(refreshCtx); err != nil {
+			// Log-and-continue: the guest recovers on its own within one
+			// DHCP renewal cycle (~30s given our 60s lease).
 			_ = err
 		}
 		cancel()
@@ -1305,6 +1349,22 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (
 
 	success = true
 	return s, nil
+}
+
+// staticNetConfig builds the network config the daemon pushes to an
+// OCI guest (which has no DHCP client) from the allocated handle. Used
+// at create and re-used on fork with the fork's fresh handle.
+func staticNetConfig(sandboxID string, h *NetworkHandle) agentwire.NetworkConfigRequest {
+	req := agentwire.NetworkConfigRequest{
+		Address:   h.GuestIP,
+		PrefixLen: h.PrefixBits,
+		Gateway:   h.Gateway,
+		Hostname:  sandboxID,
+	}
+	if h.DNSServer != "" {
+		req.DNS = []string{h.DNSServer}
+	}
+	return req
 }
 
 // networkRefreshTimeout bounds the post-resume RefreshNetwork RPC.

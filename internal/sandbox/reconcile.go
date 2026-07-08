@@ -115,15 +115,16 @@ func snapshotFilesPresent(r snapshotRecord) bool {
 // would need the allowlist re-specified.
 func (m *Manager) snapshotFromRecord(r snapshotRecord) *Snapshot {
 	snap := &Snapshot{
-		ID:         r.ID,
-		SourceID:   r.SourceID,
-		VCPUs:      r.VCPUs,
-		MemoryMiB:  r.MemoryMiB,
-		Dir:        r.Dir,
-		StatePath:  r.StatePath,
-		MemPath:    r.MemPath,
-		RootfsPath: r.RootfsPath,
-		CreatedAt:  r.CreatedAt,
+		ID:            r.ID,
+		SourceID:      r.SourceID,
+		VCPUs:         r.VCPUs,
+		MemoryMiB:     r.MemoryMiB,
+		Dir:           r.Dir,
+		StatePath:     r.StatePath,
+		MemPath:       r.MemPath,
+		RootfsPath:    r.RootfsPath,
+		StaticNetwork: r.StaticNetwork,
+		CreatedAt:     r.CreatedAt,
 	}
 	if len(r.NetworkPatterns) > 0 && m.cfg.ReloadAllowlist != nil {
 		al, err := m.cfg.ReloadAllowlist(r.NetworkPatterns)

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -202,13 +203,20 @@ func handleIdentityRefresh(w http.ResponseWriter, r *http.Request) {
 		)
 		return
 	}
+	// Rotating machine-id matters only for guests that have one. Minimal
+	// OCI images (distroless, scratch) may lack /etc entirely; a missing
+	// parent dir means there's no machine-id to leak between forks, so
+	// skip rather than fail the fork. Other write errors are still fatal.
 	if err := replaceFile(machineIDPath, []byte(id+"\n"), 0o444); err != nil {
-		slog.Error("machine-id rewrite failed", "path", machineIDPath, "err", err)
-		http.Error(w,
-			fmt.Sprintf("identity refresh failed (machine-id): %v", err),
-			http.StatusInternalServerError,
-		)
-		return
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Error("machine-id rewrite failed", "path", machineIDPath, "err", err)
+			http.Error(w,
+				fmt.Sprintf("identity refresh failed (machine-id): %v", err),
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		slog.Warn("machine-id path absent; skipping rotation", "path", machineIDPath)
 	}
 	// Ubuntu's /var/lib/dbus/machine-id is normally a symlink to
 	// /etc/machine-id — already covered by the rewrite above. Rewrite
@@ -233,12 +241,17 @@ func handleIdentityRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := os.WriteFile(hostnamePath, []byte(req.SandboxID+"\n"), 0o644); err != nil {
-		slog.Error("hostname file rewrite failed", "path", hostnamePath, "err", err)
-		http.Error(w,
-			fmt.Sprintf("identity refresh failed (hostname file): %v", err),
-			http.StatusInternalServerError,
-		)
-		return
+		// The kernel hostname (sethostname above) already took; the
+		// /etc/hostname file is cosmetic and absent in minimal images.
+		if !errors.Is(err, os.ErrNotExist) {
+			slog.Error("hostname file rewrite failed", "path", hostnamePath, "err", err)
+			http.Error(w,
+				fmt.Sprintf("identity refresh failed (hostname file): %v", err),
+				http.StatusInternalServerError,
+			)
+			return
+		}
+		slog.Warn("hostname file path absent; kernel hostname still set", "path", hostnamePath)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(forkIDPath), 0o755); err != nil {

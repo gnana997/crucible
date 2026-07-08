@@ -43,7 +43,9 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 	ctx, cancel := commandContext(req.Context(), er.TimeoutSec)
 	defer cancel()
 
-	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd,
+	// One-shot exec keeps today's semantics (agent env, root); Docker-
+	// exec-style user/env fidelity is deferred past P1a (decision D2-8).
+	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil,
 		fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr))
 	if err != nil {
 		writeExitFrame(fw, agentwire.ExecResult{

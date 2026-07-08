@@ -514,3 +514,42 @@ func TestRefreshIdentityDialFailure(t *testing.T) {
 		t.Errorf("err = %v, want to mention 'identity refresh'", err)
 	}
 }
+
+func TestConfigureNetworkHappy(t *testing.T) {
+	var got agentwire.NetworkConfigRequest
+	var hits atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /network/configure", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	req := agentwire.NetworkConfigRequest{Address: "10.20.0.14", PrefixLen: 30, Gateway: "10.20.0.13", DNS: []string{"10.20.255.254"}, Hostname: "sbx_x"}
+	if err := c.ConfigureNetwork(context.Background(), req); err != nil {
+		t.Fatalf("ConfigureNetwork: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", hits.Load())
+	}
+	if got.Address != "10.20.0.14" || got.PrefixLen != 30 || got.Hostname != "sbx_x" {
+		t.Errorf("server received %+v", got)
+	}
+}
+
+func TestConfigureNetworkServerError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /network/configure", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "link eth0 not found", http.StatusInternalServerError)
+	})
+	sock := startMockHybridServer(t, mux)
+
+	c := NewClient(sock, 52)
+	err := c.ConfigureNetwork(context.Background(), agentwire.NetworkConfigRequest{Address: "1.2.3.4", PrefixLen: 30})
+	if err == nil || !strings.Contains(err.Error(), "link eth0 not found") {
+		t.Errorf("err = %v, want server body", err)
+	}
+}

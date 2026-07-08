@@ -114,7 +114,7 @@ func (r *reaper) reapAll() {
 // given writers by goroutines the handle owns. The child runs in its
 // own process group (Setpgid) so one signal reaches it and every
 // descendant.
-func (r *reaper) spawn(argv, env []string, dir string, stdout, stderr io.Writer) (*reapedProc, error) {
+func (r *reaper) spawn(argv, env []string, dir string, cred *syscall.Credential, stdout, stderr io.Writer) (*reapedProc, error) {
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("reaper: empty argv")
 	}
@@ -132,7 +132,7 @@ func (r *reaper) spawn(argv, env []string, dir string, stdout, stderr io.Writer)
 		Dir:   dir,
 		Env:   env,
 		Files: []*os.File{nil, outW, errW}, // no stdin for now (B5)
-		Sys:   &syscall.SysProcAttr{Setpgid: true},
+		Sys:   &syscall.SysProcAttr{Setpgid: true, Credential: cred},
 	}
 
 	// Hold mu across StartProcess + registration so the reaper can't
@@ -241,7 +241,11 @@ type initRunner struct {
 }
 
 func (ir initRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
-	rp, err := ir.reaper.spawn(spec.Cmd, buildEnv(spec.Env), spec.Cwd, stdout, stderr)
+	env, cred, err := resolveLaunch(spec)
+	if err != nil {
+		return nil, err
+	}
+	rp, err := ir.reaper.spawn(spec.Cmd, env, spec.Cwd, cred, stdout, stderr)
 	if err != nil {
 		return nil, err
 	}

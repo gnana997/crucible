@@ -47,13 +47,15 @@ func (a *networkAdapter) Setup(ctx context.Context, req sandbox.NetworkSetupRequ
 	}
 
 	return &sandbox.NetworkHandle{
-		NetnsPath: inner.NetnsPath,
-		TapName:   inner.TapName,
-		GuestMAC:  formatMAC(inner.GuestMAC),
-		GuestIP:   inner.Lease.GuestIP.String(),
-		Gateway:   inner.Lease.Gateway.String(),
-		Allowlist: al,
-		Impl:      inner,
+		NetnsPath:  inner.NetnsPath,
+		TapName:    inner.TapName,
+		GuestMAC:   formatMAC(inner.GuestMAC),
+		GuestIP:    inner.Lease.GuestIP.String(),
+		Gateway:    inner.Lease.Gateway.String(),
+		PrefixBits: inner.Lease.Prefix.Bits(),
+		DNSServer:  network.DefaultDNSAnycast.String(),
+		Allowlist:  al,
+		Impl:       inner,
 	}, nil
 }
 

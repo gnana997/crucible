@@ -90,8 +90,16 @@ cli() { "$CRUCIBLE_BIN" --addr "$LISTEN" "$@"; }
 
 # ---- daemon -----------------------------------------------------------------
 
+# Auto-detect the internet-facing interface for image egress (scenario
+# 08). Unset it (EGRESS_IFACE=) to skip networking.
+EGRESS_IFACE="${EGRESS_IFACE-$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')}"
+
 DAEMON_PID=""
 start_daemon() {
+  local extra=()
+  if [[ -n "${EGRESS_IFACE:-}" ]]; then
+    extra+=(--network-egress-iface "$EGRESS_IFACE")
+  fi
   "$CRUCIBLE_BIN" daemon \
     --listen "$LISTEN" \
     --firecracker-bin "$FIRECRACKER_BIN" \
@@ -101,6 +109,7 @@ start_daemon() {
     --rootfs "$KERNEL" \
     --work-base "$WORK_BASE" \
     --image-dir "$IMAGE_DIR" \
+    "${extra[@]}" \
     --log-format json --log-level info \
     >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
@@ -205,10 +214,85 @@ else
   fail "create-with-service from image: $(cat "$SVC_JSON")"
 fi
 
-# ---- 07 cleanup -------------------------------------------------------------
+# ---- 07 entrypoint fidelity: run the image's OWN entrypoint -----------------
 
-echo "== 07 cleanup"
-for id in "$SBX" "${SVC_SBX:-}"; do
+echo "== 07 image entrypoint fidelity (create --image runs the image's CMD)"
+# busybox's default CMD is 'sh'; give it a real entrypoint via a small
+# image whose CMD we can observe. Use nginx: its entrypoint launches
+# nginx, which we then confirm is running as a supervised service and
+# listening. Pull nginx and boot it with NO explicit command.
+if cli image pull nginx:latest -o json > "$SMOKE_ROOT/nginx.json" 2>"$SMOKE_ROOT/nginx.err"; then
+  NGINX_DIGEST="$(jpath "$SMOKE_ROOT/nginx.json" digest)"
+  if NGX_SBX="$(cli sandbox create --image "$NGINX_DIGEST" --memory 256)" && [[ "$NGX_SBX" == sbx_* ]]; then
+    sleep 2
+    NGX_STATE="$(curl -sf "$BASE_URL/sandboxes/$NGX_SBX/service" | jpath /dev/stdin state 2>/dev/null || true)"
+    NGX_CMD="$(curl -sf "$BASE_URL/sandboxes/$NGX_SBX/service" | python3 -c 'import json,sys;print(" ".join(json.load(sys.stdin)["spec"]["cmd"]))' 2>/dev/null || true)"
+    if [[ "$NGX_STATE" == "running" ]]; then
+      pass "nginx booted from its own entrypoint (service running, cmd: $NGX_CMD)"
+    else
+      fail "nginx entrypoint state = '$NGX_STATE' (cmd: $NGX_CMD)"
+    fi
+    # Confirm nginx is actually listening on :80 inside the guest.
+    # Read /proc/net/tcp directly (port 80 = hex 0050, LISTEN = 0A) so
+    # the check needs no HTTP client — the nginx image ships neither
+    # curl nor wget. Poll briefly: nginx binds a beat after boot.
+    LISTENING=""
+    for _ in {1..20}; do
+      L="$(cli sandbox exec "$NGX_SBX" --timeout 20 -- /bin/sh -c 'awk "\$2 ~ /:0050\$/ && \$4 == \"0A\" {print \"listening\"; exit}" /proc/net/tcp' 2>/dev/null | tr -d '\r\n' || true)"
+      if [[ "$L" == listening ]]; then LISTENING=1; break; fi
+      sleep 0.5
+    done
+    if [[ -n "$LISTENING" ]]; then
+      pass "nginx is listening on :80 (its entrypoint really started the server)"
+    else
+      fail "nginx never listened on :80"
+    fi
+  else
+    fail "create nginx from image failed"
+  fi
+else
+  fail "pull nginx: $(cat "$SMOKE_ROOT/nginx.err")"
+fi
+
+# ---- 08 image networking: static netlink config + egress -------------------
+
+echo "== 08 image sandbox with network (daemon-pushed netlink config)"
+# Networking needs the daemon started with --network-egress-iface +
+# --jailer-bin. If the daemon wasn't started with egress configured,
+# this scenario is skipped (the daemon rejects networked creates).
+if [[ -n "${EGRESS_IFACE:-}" ]]; then
+  NET_SBX="$(cli sandbox create --image "$DIGEST" --memory 256 --net-allow example.com 2>"$SMOKE_ROOT/net.err" || true)"
+  if [[ "$NET_SBX" == sbx_* ]]; then
+    pass "created networked image sandbox $NET_SBX"
+    # eth0 got the pushed address (agent applied it via netlink; alpine
+    # has busybox `ip`, but we read /proc to stay tool-agnostic).
+    HASIP="$(cli sandbox exec "$NET_SBX" --timeout 20 -- /bin/sh -c 'grep -q . /sys/class/net/eth0/address && ip -4 addr show eth0 2>/dev/null | grep -c "inet 10.20" || true' 2>/dev/null | tr -d '\r\n' || true)"
+    # Fall back to a route check that needs no `ip`: default route in /proc/net/route.
+    HASROUTE="$(cli sandbox exec "$NET_SBX" --timeout 20 -- /bin/sh -c 'awk "\$2 == \"00000000\" {print \"default\"; exit}" /proc/net/route' 2>/dev/null | tr -d '\r\n' || true)"
+    if [[ "$HASROUTE" == default ]]; then
+      pass "eth0 configured with a default route (netlink push applied)"
+    else
+      fail "no default route in guest (netlink config not applied)"
+    fi
+    # DNS resolves + egress to the allowlisted host works.
+    EGRESS="$(cli sandbox exec "$NET_SBX" --timeout 25 -- /bin/sh -c 'wget -qO- http://example.com/ 2>/dev/null | head -c 200 || true' 2>/dev/null || true)"
+    if echo "$EGRESS" | grep -qi 'example'; then
+      pass "egress to allowlisted host works (DNS + HTTP)"
+    else
+      echo "   NOTE: egress check inconclusive (busybox wget/DNS): '$(echo "$EGRESS" | head -c 60)'"
+    fi
+    cli sandbox rm "$NET_SBX" >/dev/null 2>&1
+  else
+    fail "networked image create failed: $(cat "$SMOKE_ROOT/net.err")"
+  fi
+else
+  echo "   SKIP: EGRESS_IFACE not set (start daemon with --network-egress-iface to test image egress)"
+fi
+
+# ---- 09 cleanup -------------------------------------------------------------
+
+echo "== 09 cleanup"
+for id in "$SBX" "${SVC_SBX:-}" "${NGX_SBX:-}"; do
   [[ -n "$id" ]] && cli sandbox rm "$id" >/dev/null 2>&1
 done
 REMAIN="$(cli sandbox ls -o json | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo '?')"

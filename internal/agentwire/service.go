@@ -3,6 +3,7 @@ package agentwire
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Service lifecycle states, as reported in ServiceStatus.State. The
@@ -86,11 +87,30 @@ type ServiceSpec struct {
 	// the guest). Must be non-empty.
 	Cmd []string `json:"cmd"`
 
-	// Env is added to the agent's environment, same as ExecRequest.Env.
+	// Env is the environment. In the default (profile) mode it is added
+	// to the agent's environment; with EnvExact it is the complete
+	// environment (see EnvExact).
 	Env map[string]string `json:"env,omitempty"`
 
 	// Cwd is the working directory. Empty means inherit from the agent.
+	// With EnvExact the agent creates it if absent (Docker WORKDIR
+	// semantics).
 	Cwd string `json:"cwd,omitempty"`
+
+	// User is the OCI user the process runs as: "", "user", "uid",
+	// "user:group", "uid:gid", "uid:group", or "user:gid". Empty runs
+	// as the agent's user (root). Resolved against the guest's
+	// /etc/passwd + /etc/group at launch — the daemon computes it from
+	// the image config but never resolves it (only the guest has those
+	// files).
+	User string `json:"user,omitempty"`
+
+	// EnvExact selects Docker-faithful environment handling for OCI
+	// images: the process gets exactly Env (no agent-environ merge),
+	// plus Docker's default PATH when Env sets none and HOME from the
+	// resolved user. False (the default, profile services) keeps the
+	// merge-with-agent-environ behavior.
+	EnvExact bool `json:"env_exact,omitempty"`
 
 	// StopSignal is the signal name sent to the process group on stop,
 	// e.g. "SIGTERM" or "SIGINT". Empty means DefaultStopSignal. The
@@ -137,6 +157,9 @@ func (s *ServiceSpec) Validate() error {
 	if s.Cmd[0] == "" {
 		return errors.New("service: cmd[0] must not be empty")
 	}
+	if err := validateUser(s.User); err != nil {
+		return err
+	}
 	if s.StopGraceSec < 0 {
 		return errors.New("service: stop_grace_s must be >= 0")
 	}
@@ -157,6 +180,25 @@ func (s *ServiceSpec) Validate() error {
 	}
 	if s.LogBufferBytes > MaxLogBufferBytes {
 		return fmt.Errorf("service: log_buffer_bytes exceeds the %d-byte cap", MaxLogBufferBytes)
+	}
+	return nil
+}
+
+// validateUser checks the OCI user string's shape (at most one colon,
+// non-empty parts). Resolution against passwd/group is the guest's job.
+func validateUser(u string) error {
+	if u == "" {
+		return nil
+	}
+	user, group, hasColon := strings.Cut(u, ":")
+	if user == "" {
+		return errors.New("service: user must not be empty before ':'")
+	}
+	if hasColon && group == "" {
+		return errors.New("service: group must not be empty after ':'")
+	}
+	if strings.Contains(group, ":") {
+		return errors.New("service: user must have at most one ':'")
 	}
 	return nil
 }
@@ -212,6 +254,36 @@ type ServiceStatus struct {
 	LogFirstSeq     uint64 `json:"log_first_seq,omitempty"`
 	LogNextSeq      uint64 `json:"log_next_seq,omitempty"`
 	LogDroppedBytes uint64 `json:"log_dropped_bytes,omitempty"`
+}
+
+// NetworkConfigRequest is the JSON body of POST /network/configure: a
+// complete static network configuration the host pushes to a guest that
+// can't self-configure (OCI images have no DHCP client). The agent
+// applies it with netlink — no `ip` binary needed — and writes
+// resolv.conf/hosts/hostname. Applied at create and re-applied on fork
+// (a fork's new /30 changes the address), so it is idempotent: the
+// agent flushes eth0's existing IPv4 addresses and default route first.
+type NetworkConfigRequest struct {
+	// Interface is the guest NIC to configure. Empty means "eth0".
+	Interface string `json:"interface,omitempty"`
+
+	// Address is the guest's IPv4 address (no prefix), e.g.
+	// "10.20.0.14". PrefixLen is its network prefix length (30 for a
+	// /30).
+	Address   string `json:"address"`
+	PrefixLen int    `json:"prefix_len"`
+
+	// Gateway is the default route's next hop (the host-side veth),
+	// e.g. "10.20.0.13".
+	Gateway string `json:"gateway"`
+
+	// DNS is the resolver(s) written to /etc/resolv.conf — the shared
+	// DNS-proxy anycast address for crucible.
+	DNS []string `json:"dns,omitempty"`
+
+	// Hostname is set on the kernel and written to /etc/hostname and
+	// /etc/hosts.
+	Hostname string `json:"hostname,omitempty"`
 }
 
 // ServiceStopRequest is the optional JSON body of POST /service/stop.

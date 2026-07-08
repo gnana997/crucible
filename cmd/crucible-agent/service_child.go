@@ -111,8 +111,12 @@ type execChild struct {
 }
 
 func (execRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
+	env, cred, err := resolveLaunch(spec)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command(spec.Cmd[0], spec.Cmd[1:]...)
-	cmd.Env = buildEnv(spec.Env)
+	cmd.Env = env
 	if spec.Cwd != "" {
 		cmd.Dir = spec.Cwd
 	}
@@ -120,8 +124,9 @@ func (execRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (
 	cmd.Stderr = stderr
 	// Own process group so one signal reaches the entrypoint and every
 	// descendant; WaitDelay so a grandchild that inherited our pipes
-	// can't wedge wait() after the entrypoint is gone.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// can't wedge wait() after the entrypoint is gone. Credential (nil
+	// for profile services) drops the OCI entrypoint to its image user.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: cred}
 	cmd.WaitDelay = execWaitDelay
 
 	c := &execChild{

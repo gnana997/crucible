@@ -119,6 +119,39 @@ func (c *Client) RefreshNetwork(ctx context.Context) error {
 	return nil
 }
 
+// ConfigureNetwork pushes a complete static network configuration to
+// the guest agent (POST /network/configure). Used for OCI-image guests,
+// which have no DHCP client: the daemon sends the address it allocated
+// and the agent programs eth0 via netlink. Called at create and again
+// after a fork resumes (the fork's new /30 changes the address).
+//
+// Unlike RefreshNetwork (the DHCP link-bounce), this carries the whole
+// config, so it is what makes an image guest reachable at all — a
+// failure means the guest has no network, which the caller treats as
+// fatal to the create/fork.
+func (c *Client) ConfigureNetwork(ctx context.Context, req agentwire.NetworkConfigRequest) error {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/network/configure", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("agentapi: network configure: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBody))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agentapi: network configure returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // ErrIdentityRefreshUnsupported reports that the guest agent predates
 // the /identity/refresh endpoint (HTTP 404) — the rootfs was built
 // with an older crucible-agent. Callers must treat this as fatal:

@@ -83,6 +83,7 @@ type snapshotRecord struct {
 	RootfsPath      string    `json:"rootfs_path"`
 	CreatedAt       time.Time `json:"created_at"`
 	NetworkPatterns []string  `json:"network_patterns,omitempty"`
+	StaticNetwork   bool      `json:"static_network,omitempty"`
 }
 
 // store is an append-only JSON-lines journal with a fsync per write.
@@ -321,15 +322,16 @@ func sandboxRecordOf(s *Sandbox) sandboxRecord {
 // snapshotRecordOf projects a live Snapshot to its persisted form.
 func snapshotRecordOf(snap *Snapshot) snapshotRecord {
 	r := snapshotRecord{
-		ID:         snap.ID,
-		SourceID:   snap.SourceID,
-		VCPUs:      snap.VCPUs,
-		MemoryMiB:  snap.MemoryMiB,
-		Dir:        snap.Dir,
-		StatePath:  snap.StatePath,
-		MemPath:    snap.MemPath,
-		RootfsPath: snap.RootfsPath,
-		CreatedAt:  snap.CreatedAt,
+		ID:            snap.ID,
+		SourceID:      snap.SourceID,
+		VCPUs:         snap.VCPUs,
+		MemoryMiB:     snap.MemoryMiB,
+		Dir:           snap.Dir,
+		StatePath:     snap.StatePath,
+		MemPath:       snap.MemPath,
+		RootfsPath:    snap.RootfsPath,
+		CreatedAt:     snap.CreatedAt,
+		StaticNetwork: snap.StaticNetwork,
 	}
 	if snap.Network != nil && snap.Network.Allowlist != nil {
 		r.NetworkPatterns = snap.Network.Allowlist.Patterns()

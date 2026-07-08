@@ -157,10 +157,13 @@ type ImageResponse struct {
 	ConvertedAt  int64  `json:"converted_at_unix_ms,omitempty"`
 
 	// Entrypoint and Cmd echo the image's runtime contract so a client
-	// can see what a sandbox created from this image would run (once
-	// image boot lands in D2).
+	// can see what a sandbox created from this image would run.
 	Entrypoint []string `json:"entrypoint,omitempty"`
 	Cmd        []string `json:"cmd,omitempty"`
+
+	// ExposedPorts are the image's declared ports ("8080/tcp"), a hint
+	// for future ingress defaults.
+	ExposedPorts []string `json:"exposed_ports,omitempty"`
 }
 
 // ImageListResponse wraps the image list.

@@ -31,7 +31,7 @@ func newTestReaper(t *testing.T) *reaper {
 
 func TestReaperSpawnExitCode(t *testing.T) {
 	r := newTestReaper(t)
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "exit 7"}, nil, "", &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "exit 7"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestReaperSpawnExitCode(t *testing.T) {
 func TestReaperSpawnCapturesOutput(t *testing.T) {
 	r := newTestReaper(t)
 	var out, errB bytes.Buffer
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "echo to-out; echo to-err 1>&2"}, nil, "", &out, &errB)
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "echo to-out; echo to-err 1>&2"}, nil, "", nil, &out, &errB)
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestReaperSpawnCapturesOutput(t *testing.T) {
 
 func TestReaperSignalDeath(t *testing.T) {
 	r := newTestReaper(t)
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "kill -9 $$"}, nil, "", &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "kill -9 $$"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestReaperSignalDeath(t *testing.T) {
 func TestReaperSignalGroupStops(t *testing.T) {
 	r := newTestReaper(t)
 	// A process that ignores nothing but loops; we kill its group.
-	rp, err := r.spawn([]string{"/bin/sh", "-c", "while :; do sleep 0.05; done"}, nil, "", &bytes.Buffer{}, &bytes.Buffer{})
+	rp, err := r.spawn([]string{"/bin/sh", "-c", "while :; do sleep 0.05; done"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestReaperEnvAndDir(t *testing.T) {
 	var out bytes.Buffer
 	rp, err := r.spawn(
 		[]string{"/bin/sh", "-c", `printf '%s %s' "$CRUCIBLE_X" "$PWD"`},
-		[]string{"CRUCIBLE_X=hello", "PATH=/bin:/usr/bin"}, dir, &out, &bytes.Buffer{})
+		[]string{"CRUCIBLE_X=hello", "PATH=/bin:/usr/bin"}, dir, nil, &out, &bytes.Buffer{})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestReaperConcurrentSpawns(t *testing.T) {
 		wg.Add(1)
 		go func(code int) {
 			defer wg.Done()
-			rp, err := r.spawn([]string{"/bin/sh", "-c", "exit " + strconv.Itoa(code)}, nil, "", &bytes.Buffer{}, &bytes.Buffer{})
+			rp, err := r.spawn([]string{"/bin/sh", "-c", "exit " + strconv.Itoa(code)}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
 			if err != nil {
 				errs <- err
 				return
@@ -139,7 +139,7 @@ func TestReaperFastExitNoLostWakeup(t *testing.T) {
 	// on — the pending-map path. Run many to make the race likely.
 	r := newTestReaper(t)
 	for i := 0; i < 30; i++ {
-		rp, err := r.spawn([]string{"/bin/true"}, nil, "", &bytes.Buffer{}, &bytes.Buffer{})
+		rp, err := r.spawn([]string{"/bin/true"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{})
 		if err != nil {
 			t.Fatalf("spawn: %v", err)
 		}
@@ -158,7 +158,7 @@ func TestReaperFastExitNoLostWakeup(t *testing.T) {
 
 func TestReaperStartFailure(t *testing.T) {
 	r := newTestReaper(t)
-	if _, err := r.spawn([]string{"/nonexistent/binary"}, nil, "", &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+	if _, err := r.spawn([]string{"/nonexistent/binary"}, nil, "", nil, &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
 		t.Fatal("spawn of a missing binary succeeded")
 	}
 }
