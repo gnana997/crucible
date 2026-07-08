@@ -12,6 +12,7 @@ import (
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/network"
+	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
@@ -33,6 +34,15 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
+	// Supervised-service API (experimental): proxies to the guest
+	// agent's supervisor. Mutations are gated as `exec` operations,
+	// reads as `read` — see operationFor.
+	mux.HandleFunc("PUT /sandboxes/{id}/service", s.handleConfigureService)
+	mux.HandleFunc("POST /sandboxes/{id}/service/start", s.handleServiceStart)
+	mux.HandleFunc("POST /sandboxes/{id}/service/stop", s.handleServiceStop)
+	mux.HandleFunc("POST /sandboxes/{id}/service/restart", s.handleServiceRestart)
+	mux.HandleFunc("GET /sandboxes/{id}/service", s.handleServiceStatus)
+	mux.HandleFunc("GET /sandboxes/{id}/service/logs", s.handleServiceLogs)
 	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
 	mux.HandleFunc("GET /snapshots", s.handleListSnapshots)
 	mux.HandleFunc("GET /snapshots/{id}", s.handleGetSnapshot)
@@ -176,6 +186,15 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Service validation (experimental create-with-service): a bad spec
+	// fails here with a 400 rather than mid-create against the agent.
+	if req.Service != nil {
+		if err := validateServiceSpec(req.Service); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+
 	// Scoped-token ceilings — every violation reported at once. max_sandboxes is
 	// counted per token (CountByToken), so one token can't consume another's
 	// budget (best-effort: the count races a concurrent create).
@@ -195,6 +214,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, err)
 			return
 		}
+		// Bundling a service into create configures what runs in the
+		// guest — exec-grade power. A create-only token must not smuggle
+		// an entrypoint past the operation gate.
+		if req.Service != nil && !pol.Allows(policy.OpExec) {
+			writeError(w, http.StatusForbidden,
+				errors.New("this token is not permitted to exec (required for create with a service)"))
+			return
+		}
 	}
 
 	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
@@ -205,6 +232,7 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		Profile:    req.Profile,
 		Network:    netCfg,
 		TokenID:    tokenID,
+		Service:    req.Service,
 	})
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {

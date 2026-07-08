@@ -60,11 +60,23 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		return policy.OpRead, true
 	case http.MethodDelete:
 		return policy.OpDelete, true
+	case http.MethodPut:
+		// PUT /sandboxes/{id}/service configures what runs in the guest —
+		// exec-grade power.
+		if strings.HasSuffix(path, "/service") {
+			return policy.OpExec, true
+		}
 	case http.MethodPost:
 		switch {
 		case path == "/sandboxes":
 			return policy.OpCreate, true
 		case strings.HasSuffix(path, "/exec"):
+			return policy.OpExec, true
+		// Service lifecycle mutations control the guest's entrypoint —
+		// gated like exec.
+		case strings.HasSuffix(path, "/service/start"),
+			strings.HasSuffix(path, "/service/stop"),
+			strings.HasSuffix(path, "/service/restart"):
 			return policy.OpExec, true
 		case strings.HasSuffix(path, "/snapshot"):
 			return policy.OpSnapshot, true

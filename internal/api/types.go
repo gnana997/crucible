@@ -1,15 +1,21 @@
 // Package api holds the crucible daemon's REST wire types — the request
 // and response shapes exchanged over HTTP. They are pure data with no
-// behavior and no dependencies beyond the standard library, so both the
-// daemon (server) and internal/client (and, later, the TUI, an MCP
-// server, and the SDK) can share one source of truth for the contract.
+// behavior and no dependencies beyond the standard library and
+// internal/agentwire (itself pure wire data, shared for the exec and
+// service contracts), so both the daemon (server) and internal/client
+// (and, later, the TUI, an MCP server, and the SDK) can share one
+// source of truth for the contract.
 //
 // Validation logic lives in the daemon, not here: keeping these types
 // dependency-free is what lets a client import them without pulling in
 // the server's guts.
 package api
 
-import "time"
+import (
+	"time"
+
+	"github.com/gnana997/crucible/internal/agentwire"
+)
 
 // CreateSandboxRequest is the JSON body for POST /sandboxes. All fields
 // are optional; the daemon fills in defaults for zero values.
@@ -40,6 +46,15 @@ type CreateSandboxRequest struct {
 	// of hostnames the guest can reach. Nil means no network
 	// (default-deny).
 	Network *NetworkRequest `json:"network,omitempty"`
+
+	// Service, when non-nil, configures and starts a supervised
+	// long-lived entrypoint in the guest right after the agent is ready
+	// — the sandbox arrives with the service already running, or the
+	// create fails. EXPERIMENTAL: the field shape (agentwire.ServiceSpec,
+	// same package that carries the exec contract) may still change
+	// before it is declared stable. Pair with timeout_s = 0 for a
+	// service that outlives the default sandbox lifetime.
+	Service *agentwire.ServiceSpec `json:"service,omitempty"`
 }
 
 // NetworkRequest is the per-sandbox network policy on the wire.

@@ -49,6 +49,11 @@ func TestOperationGateDeniesUnlistedVerbs(t *testing.T) {
 		{"DELETE", "/sandboxes/sbx_0000000000000"},
 		{"POST", "/snapshots/snap_0000000000000/fork"},
 		{"POST", "/sandboxes/sbx_0000000000000/snapshot"},
+		// Service mutations are exec-grade: denied to a read-only token.
+		{"PUT", "/sandboxes/sbx_0000000000000/service"},
+		{"POST", "/sandboxes/sbx_0000000000000/service/start"},
+		{"POST", "/sandboxes/sbx_0000000000000/service/stop"},
+		{"POST", "/sandboxes/sbx_0000000000000/service/restart"},
 	} {
 		if code, body := call(t, srv, tc.method, tc.path, tok, "{}"); code != 403 {
 			t.Errorf("read-only token: %s %s = %d (%s), want 403", tc.method, tc.path, code, body)

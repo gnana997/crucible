@@ -60,7 +60,13 @@ cp "$DOCKERFILE" "$ctx/Dockerfile"
 
 img="crucible-profile:$PROFILE"
 echo "--> docker build ($img)"
-DOCKER_BUILDKIT=1 docker build --build-arg "BASE=$BASE" -t "$img" "$ctx"
+# --network=host: RUN steps share the host netns, so apt resolves DNS
+# through the host's resolver (e.g. systemd-resolved's 127.0.0.53 stub).
+# Docker's default bridge falls back to 8.8.8.8 when the host resolv.conf
+# only lists a localhost stub, which breaks on networks that block
+# direct outbound DNS (VPNs, filtering routers). This is a local build
+# script producing a rootfs — build-time network isolation buys nothing.
+DOCKER_BUILDKIT=1 docker build --network=host --build-arg "BASE=$BASE" -t "$img" "$ctx"
 
 echo "--> exporting container filesystem"
 cid="$(docker create "$img")"

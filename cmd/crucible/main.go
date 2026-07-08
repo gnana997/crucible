@@ -100,6 +100,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newVersionCmd(),
 		newDaemonCmd(),
 		newSandboxCmd(opts),
+		newServiceCmd(opts),
 		newSnapshotCmd(opts),
 		newForkCmd(opts),
 		newProfileCmd(opts),

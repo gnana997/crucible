@@ -47,11 +47,18 @@ func run(logger *slog.Logger) int {
 	}
 	logger.Info("crucible-agent listening", "vsock_port", agentwire.AgentVSockPort)
 
+	// A previous agent instance (crashed, relaunched by systemd) may have
+	// orphaned a supervised service; kill it before accepting commands so
+	// two entrypoints never run at once.
+	reconcileStaleService(servicePidFile, logger)
+	sup := newSupervisor(execRunner{}, realClock{}, logger, servicePidFile)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.HandleFunc("POST /exec", handleExec)
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
+	(&serviceAPI{sup: sup}).register(mux)
 
 	// No Read/Write timeouts on the server: exec responses can stream for
 	// as long as the command takes. Per-request deadlines come from
@@ -91,6 +98,12 @@ func run(logger *slog.Logger) int {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("shutdown did not complete cleanly", "err", err)
+	}
+	// Stop the supervised service gracefully (StopSignal + grace, then
+	// SIGKILL) before the agent goes away. Blocks until the process is
+	// gone, bounded by the spec's grace + the wait backstop.
+	if _, err := sup.Shutdown(); err != nil {
+		logger.Warn("service shutdown failed", "err", err)
 	}
 	logger.Info("crucible-agent stopped")
 	return 0

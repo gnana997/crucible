@@ -200,6 +200,13 @@ type CreateConfig struct {
 	// per-token quotas (scoped-token max_sandboxes) can count it. Empty for
 	// unauthenticated (loopback) creates.
 	TokenID string
+
+	// Service, when non-nil, is pushed to the guest agent and started
+	// after the agent readiness gate. A service that fails to configure
+	// or start fails the whole Create (rollback), so a 201 always means
+	// the entrypoint is supervised and launched. Requires WaitForAgent
+	// (the spec push needs a live agent) and a vsock channel.
+	Service *agentwire.ServiceSpec
 }
 
 // NetworkConfig declares the per-sandbox network intent. Exactly
@@ -632,6 +639,25 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		if err := m.waitForAgent(ctx, s.execClient); err != nil {
 			_ = handle.Shutdown(context.Background())
 			return nil, fmt.Errorf("sandbox: agent not ready: %w", err)
+		}
+	}
+
+	// Optional supervised service: push the spec and start it before the
+	// sandbox is registered, so a successful Create always returns with
+	// the entrypoint launched. Failures roll the whole create back —
+	// half-created "sandbox up, service broken" states help nobody.
+	if req.Service != nil {
+		if s.execClient == nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: service requires an agent channel (no vsock)", ErrInvalidConfig)
+		}
+		if _, err := s.execClient.ConfigureService(ctx, req.Service); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: configure service: %w", err)
+		}
+		if _, err := s.execClient.StartService(ctx); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: start service: %w", err)
 		}
 	}
 
