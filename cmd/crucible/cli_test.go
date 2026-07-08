@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
@@ -119,5 +122,130 @@ func TestCLIRunKeepSkipsDelete(t *testing.T) {
 	}
 	if deleted != "" {
 		t.Errorf("deleted = %q; --keep should skip deletion", deleted)
+	}
+}
+
+// unresolvableImage is an image ref no local Docker will have, so
+// resolveCreateImage passes it through unchanged (no docker-save attempt) —
+// keeps these CLI tests deterministic regardless of the host's Docker state.
+const unresolvableImage = "crucible.invalid/no-such-image:latest"
+
+// TestCLIRunImageCreatesLongLived: `run <image> -p ...` boots the image,
+// echoes the sandbox id, applies the publish mapping, and does NOT delete
+// (image runs are long-lived by default).
+func TestCLIRunImageCreatesLongLived(t *testing.T) {
+	var created api.CreateSandboxRequest
+	var deleted string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&created)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_img", Published: created.Publish})
+	})
+	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = r.PathValue("id")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"--addr", ts.URL, "run", unresolvableImage, "-p", "8080:80"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errb.String())
+	}
+	if created.Image == nil || created.Image.OCI != unresolvableImage {
+		t.Errorf("create Image = %+v; want OCI=%q", created.Image, unresolvableImage)
+	}
+	if len(created.Publish) != 1 || created.Publish[0].HostPort != 8080 || created.Publish[0].GuestPort != 80 {
+		t.Errorf("create Publish = %+v; want 8080->80", created.Publish)
+	}
+	if !strings.Contains(out.String(), "sbx_img") {
+		t.Errorf("stdout = %q; want the sandbox id", out.String())
+	}
+	if deleted != "" {
+		t.Errorf("deleted = %q; a plain image run is long-lived (no delete)", deleted)
+	}
+}
+
+// TestRunImageRmDeletesOnDetach drives the --rm path directly (the run()
+// entry uses a non-cancellable context): it tails logs, and when the context
+// is cancelled it removes the sandbox.
+func TestRunImageRmDeletesOnDetach(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var deleted string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_rm"})
+	})
+	mux.HandleFunc("GET /sandboxes/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		cancel() // detach as soon as we start tailing
+		_ = json.NewEncoder(w).Encode(api.LogsResponse{})
+	})
+	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = r.PathValue("id")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	o := &globalOpts{addr: ts.URL, output: "table"}
+	c := &cobra.Command{}
+	c.SetContext(ctx)
+	var out, errb bytes.Buffer
+	c.SetOut(&out)
+	c.SetErr(&errb)
+
+	if err := runImage(c, o, unresolvableImage, runImageOpts{rm: true}); err != nil {
+		t.Fatalf("runImage --rm: %v", err)
+	}
+	if deleted != "sbx_rm" {
+		t.Errorf("deleted = %q; --rm should remove the sandbox on detach", deleted)
+	}
+}
+
+func TestCLIStopGracefullyStopsService(t *testing.T) {
+	var stopped string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes/{id}/service/stop", func(w http.ResponseWriter, r *http.Request) {
+		stopped = r.PathValue("id")
+		_ = json.NewEncoder(w).Encode(agentwire.ServiceStatus{})
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"--addr", ts.URL, "stop", "sbx_1"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errb.String())
+	}
+	if stopped != "sbx_1" {
+		t.Errorf("stopped = %q; want sbx_1", stopped)
+	}
+	if !strings.Contains(out.String(), "sbx_1") {
+		t.Errorf("stdout = %q; want the stopped id", out.String())
+	}
+}
+
+func TestCLIRmDeletesSandbox(t *testing.T) {
+	var deleted string
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
+		deleted = r.PathValue("id")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"--addr", ts.URL, "rm", "sbx_1"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, errb.String())
+	}
+	if deleted != "sbx_1" {
+		t.Errorf("deleted = %q; want sbx_1", deleted)
 	}
 }

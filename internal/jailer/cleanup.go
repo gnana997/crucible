@@ -161,6 +161,84 @@ func cmdlineMatchesID(raw []byte, id string) bool {
 	return false
 }
 
+// cmdlineArg returns the token immediately following flag in a NUL-separated
+// /proc/<pid>/cmdline, and whether it was present. Used to read the "--id"
+// and "--chroot-base-dir" values jailer records in its own argv (see
+// BuildArgs). Pure + allocation-light so it's unit-testable without /proc.
+func cmdlineArg(raw []byte, flag string) (string, bool) {
+	f := []byte(flag)
+	toks := bytes.Split(raw, []byte{0})
+	// A NUL-terminated cmdline always splits to a trailing empty token; drop
+	// it so a flag in final position reads as having no value (not "").
+	if n := len(toks); n > 0 && len(toks[n-1]) == 0 {
+		toks = toks[:n-1]
+	}
+	for i := 0; i+1 < len(toks); i++ {
+		if bytes.Equal(toks[i], f) {
+			return string(toks[i+1]), true
+		}
+	}
+	return "", false
+}
+
+// liveOrphanIDs scans /proc for jailer processes started under chrootBase
+// (their argv carries "--chroot-base-dir <chrootBase>") and returns the
+// distinct, valid "--id" tokens found. Scoping to chrootBase is what keeps
+// the sweep from ever touching another daemon's VMs — or unrelated jailer/
+// firecracker processes — on the same host.
+func liveOrphanIDs(chrootBase string) []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue // not a PID entry
+		}
+		raw, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue // process exited, or unreadable — skip
+		}
+		if base, ok := cmdlineArg(raw, "--chroot-base-dir"); !ok || base != chrootBase {
+			continue
+		}
+		id, ok := cmdlineArg(raw, "--id")
+		if !ok || !validIDPattern.MatchString(id) {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// KillLiveOrphans SIGKILLs every jailer+firecracker process group left under
+// chrootBase by a previous daemon run and returns the reaped jailer IDs.
+//
+// It complements ReapOrphans, which is driven by leftover chroot
+// directories: ReapOrphans cannot see a live VM whose chroot dir is already
+// gone, but this PID-driven sweep can (it matches the jailer's own argv).
+// killJailed reaches the firecracker child too via the shared "--id" token.
+//
+// The daemon calls this once at startup, before any sandbox is created — so
+// every match is by definition an orphan from a prior run (sandbox state is
+// in-memory and does not survive a restart).
+func KillLiveOrphans(chrootBase string) []string {
+	ids := liveOrphanIDs(chrootBase)
+	reaped := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if killJailed(id) {
+			reaped = append(reaped, id)
+		}
+	}
+	return reaped
+}
+
 // KillByID SIGKILLs the jailer + firecracker processes for the VM with the
 // given jailer ID and waits, bounded, for them to exit. Returns true once the
 // process set has drained (false if something is still alive after the

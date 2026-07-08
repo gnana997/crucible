@@ -34,9 +34,27 @@ SBX=$(crucible sandbox create --profile python-3.12)
 
 ## Commands
 
-### `crucible run [flags] -- <command>...`
+### `crucible run`
 
-One-shot: create a sandbox, run a command in it (streaming stdout/stderr), then delete it. **The command's exit code becomes crucible's exit code.**
+Two shapes, chosen by the `--` separator:
+
+**Image mode — `crucible run <image> [flags]`** (the docker-parity headline). Boots an OCI image as a sandbox: its entrypoint runs as the service. Prints the sandbox id (stdout). **Long-lived by default — it is *not* auto-killed;** stop it with `crucible stop <id>` or remove it with `crucible rm <id>`. The image is acquired the same way as `sandbox create --image` (a locally-built Docker tag is imported client-side; otherwise the daemon resolves it from its store or a registry under `--pull`).
+
+| Flag | Meaning |
+|---|---|
+| `-p, --publish` (repeatable) | publish a port `[HOST_IP:]HOST:GUEST[/tcp]` |
+| `--net-allow` (repeatable) | allowlisted hostname; enables egress |
+| `--pull` | `missing` (default) / `always` / `never` |
+| `--rm` | tail logs in the foreground; remove the sandbox on detach (Ctrl-C) |
+| `--vcpus`, `--memory`, `--timeout` | sizing / deadline (`--timeout 0` = long-lived) |
+
+```bash
+crucible run nginx:alpine -p 8080:80          # boot, publish, leave running
+crucible build -t myapp . && crucible run myapp -p 3000:3000
+crucible run alpine:latest --rm               # foreground; removed on Ctrl-C
+```
+
+**Command mode — `crucible run [flags] -- <command>...`**. One-shot: create a throwaway sandbox (a `--profile`, or the daemon default), run one command (streaming stdout/stderr), then delete it. **The command's exit code becomes crucible's exit code.**
 
 | Flag | Meaning |
 |---|---|
@@ -48,6 +66,24 @@ One-shot: create a sandbox, run a command in it (streaming stdout/stderr), then 
 ```bash
 crucible run --profile python-3.12 -- python -c 'print(2**10)'
 crucible run --net-allow pypi.org --net-allow '*.pythonhosted.org' -- pip download requests
+```
+
+### `crucible build [-t <tag>] [-f <Dockerfile>] <context>`
+
+Build a Dockerfile locally (`docker build`) and load the result into crucible's image store in one verb; prints the converted image digest for `crucible run` / `sandbox create --image`. Docker is a **client-side** convenience — the daemon never needs it.
+
+```bash
+crucible build -t myapp .                 # prints sha256:… (in the store)
+crucible run "$(crucible build .)" -p 8080:80
+```
+
+### `crucible stop <id>...` and `crucible rm <id>...`
+
+`stop` gracefully stops a sandbox's entrypoint (image StopSignal → grace → SIGKILL) while **keeping** the sandbox — the ops "pull the plug on the workload" action. `rm` (alias `delete`) **removes** the sandbox (hard kill), the same as `sandbox rm`. Both are top-level for docker-parity muscle memory.
+
+```bash
+crucible stop sbx_abc      # halt the workload, keep the box
+crucible rm sbx_abc        # tear the box down
 ```
 
 ### `crucible sandbox`

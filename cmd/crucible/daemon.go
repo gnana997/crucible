@@ -233,6 +233,13 @@ Required flags:
 		// crashed or was killed without clean shutdown. Sandboxes are
 		// in-memory only, so every dir under <chroot-base>/firecracker/
 		// at startup is by definition an orphan.
+		// First kill any live VMM processes left running by a previous daemon
+		// that was killed without clean shutdown (e.g. kill -9). This PID-driven
+		// sweep is scoped to our chroot-base and catches even a VM whose chroot
+		// dir is already gone — which the directory-driven ReapOrphans cannot see.
+		if killed := jailer.KillLiveOrphans(*chrootBase); len(killed) > 0 {
+			logger.Info("killed live orphan VMs from previous run", "count", len(killed), "ids", killed)
+		}
 		if reaped, err := jailer.ReapOrphans(*chrootBase, *fcBin); err != nil {
 			logger.Warn("orphan reap failed (continuing)", "err", err)
 		} else if len(reaped) > 0 {

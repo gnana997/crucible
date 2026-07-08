@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 )
@@ -77,6 +78,41 @@ func TestExecInteractiveRoundTrip(t *testing.T) {
 	}
 	if auth := <-gotAuth; auth != "Bearer secret-key" {
 		t.Errorf("Authorization = %q, want %q", auth, "Bearer secret-key")
+	}
+}
+
+// TestExecInteractiveCancelUnblocks: a cancelled context (Ctrl-C) must end an
+// idle interactive session promptly — the read loop can't watch ctx directly,
+// so ExecInteractive closes the conn on cancel to unblock it.
+func TestExecInteractiveCancelUnblocks(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n")
+		// Idle "shell": drain stdin, never send a frame back.
+		_, _ = io.Copy(io.Discard, buf.Reader)
+	}))
+	defer ts.Close()
+	c := New(ts.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(100 * time.Millisecond); cancel() }()
+
+	returned := make(chan error, 1)
+	go func() {
+		_, err := c.ExecInteractive(ctx, "sbx_x",
+			agentwire.ExecRequest{Cmd: []string{"/bin/sh"}}, strings.NewReader(""), io.Discard, io.Discard)
+		returned <- err
+	}()
+
+	select {
+	case <-returned:
+		// Returned promptly after cancel — the desired behavior.
+	case <-time.After(3 * time.Second):
+		t.Fatal("ExecInteractive did not return after context cancel (Ctrl-C would hang)")
 	}
 }
 

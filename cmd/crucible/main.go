@@ -4,11 +4,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -22,10 +25,18 @@ func main() {
 // run builds the command tree and executes it, translating errors into a
 // process exit code. A command may carry a specific exit code (e.g. exec
 // propagating the guest command's status) via exitCodeError.
+//
+// The command context is cancelled on SIGINT/SIGTERM so long-running client
+// commands (`run --rm`, `logs -f`, interactive `shell`/`exec -i`) shut down
+// gracefully on Ctrl-C — cancelling their context (which lets deferred
+// cleanup like `run --rm`'s DeleteSandbox run) rather than being hard-killed
+// by the default signal disposition (which would skip that cleanup).
 func run(args []string, stdout, stderr io.Writer) int {
 	root := newRootCmd(stdout, stderr)
 	root.SetArgs(args)
-	if err := root.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := root.ExecuteContext(ctx); err != nil {
 		var ec exitCodeError
 		if errors.As(err, &ec) {
 			return ec.code
@@ -104,10 +115,13 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newServiceCmd(opts),
 		newLogsCmd(opts),
 		newImageCmd(opts),
+		newBuildCmd(opts),
 		newSnapshotCmd(opts),
 		newForkCmd(opts),
 		newProfileCmd(opts),
 		newRunCmd(opts),
+		newStopCmd(opts),
+		newRmCmd(opts),
 		newMcpCmd(opts),
 		newPolicyCmd(opts),
 		newTuiCmd(opts),

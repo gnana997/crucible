@@ -265,6 +265,20 @@ func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agen
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Close the conn if ctx is cancelled (Ctrl-C) so the read loop below
+	// unblocks and returns promptly; the daemon sees the conn drop and kills
+	// the guest process. The done channel stops this watcher on the normal
+	// (uncancelled) exit so it never leaks.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return result, err

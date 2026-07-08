@@ -2,9 +2,13 @@ package jailer
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // seedOrphan creates a minimal chroot layout mimicking one a previous
@@ -117,6 +121,90 @@ func TestCmdlineMatchesIDRequiresDashIDAdjacency(t *testing.T) {
 				t.Errorf("cmdlineMatchesID(%q, %q) = %v, want %v", c.raw, c.id, got, c.want)
 			}
 		})
+	}
+}
+
+// TestCmdlineArgExtraction covers the flag-value reader that scopes the
+// live-orphan sweep: it must return the token after a flag, distinguish a
+// present-but-empty value, and report absent flags.
+func TestCmdlineArgExtraction(t *testing.T) {
+	nul := func(toks ...string) []byte {
+		var b []byte
+		for _, tk := range toks {
+			b = append(b, []byte(tk)...)
+			b = append(b, 0)
+		}
+		return b
+	}
+	raw := nul("/usr/bin/jailer", "--id", "sbx-abc", "--exec-file", "/fc",
+		"--chroot-base-dir", "/srv/jailer", "--cgroup-version", "2")
+
+	if v, ok := cmdlineArg(raw, "--id"); !ok || v != "sbx-abc" {
+		t.Errorf("--id = (%q, %v), want (sbx-abc, true)", v, ok)
+	}
+	if v, ok := cmdlineArg(raw, "--chroot-base-dir"); !ok || v != "/srv/jailer" {
+		t.Errorf("--chroot-base-dir = (%q, %v), want (/srv/jailer, true)", v, ok)
+	}
+	if _, ok := cmdlineArg(raw, "--netns"); ok {
+		t.Error("--netns should be absent")
+	}
+	// A trailing flag with no following token is treated as absent (there is
+	// no value after it), which is the safe read.
+	if _, ok := cmdlineArg(nul("jailer", "--id"), "--id"); ok {
+		t.Error("--id with no following token should read as absent")
+	}
+}
+
+// TestKillLiveOrphansScopedByChrootBase drives the live-orphan sweep against
+// a real process whose argv carries jailer's scoping tokens: the sweep must
+// find and kill it, must be scoped to its chroot-base (a different base
+// finds nothing), and must leave nothing behind.
+func TestKillLiveOrphansScopedByChrootBase(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("live-orphan sweep reads /proc; linux only")
+	}
+	base := t.TempDir()
+	const id = "sbx-liveorphantest"
+	if !validIDPattern.MatchString(id) {
+		t.Fatalf("test id %q is not a valid jailer id", id)
+	}
+
+	// `sh -c "sleep 3600" sh --chroot-base-dir <base> --id <id>` keeps the
+	// shell alive (waiting on sleep) with jailer's scoping tokens in its own
+	// cmdline; the trailing args land in $0.. and are ignored by the script.
+	cmd := exec.Command("/bin/sh", "-c", "sleep 3600", "sh",
+		"--chroot-base-dir", base, "--id", id)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start decoy: %v", err)
+	}
+	pgid := cmd.Process.Pid
+	defer func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }() // reap the sleep child too
+
+	// Wait for the kernel to publish the decoy's cmdline.
+	deadline := time.Now().Add(3 * time.Second)
+	for len(liveOrphanIDs(base)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("decoy never appeared in liveOrphanIDs")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Scoping: a different chroot-base must not see it.
+	if got := liveOrphanIDs(t.TempDir()); len(got) != 0 {
+		t.Errorf("liveOrphanIDs(other base) = %v, want empty (scoping leak)", got)
+	}
+
+	if got := liveOrphanIDs(base); len(got) != 1 || got[0] != id {
+		t.Fatalf("liveOrphanIDs(base) = %v, want [%s]", got, id)
+	}
+
+	reaped := KillLiveOrphans(base)
+	if len(reaped) != 1 || reaped[0] != id {
+		t.Fatalf("KillLiveOrphans = %v, want [%s]", reaped, id)
+	}
+	if got := liveOrphanIDs(base); len(got) != 0 {
+		t.Errorf("orphan still present after KillLiveOrphans: %v", got)
 	}
 }
 
