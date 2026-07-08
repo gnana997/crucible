@@ -139,6 +139,35 @@ type ProfilesResponse struct {
 	Profiles []string `json:"profiles"`
 }
 
+// PullImageRequest is the JSON body of POST /images.
+type PullImageRequest struct {
+	// Ref is the image reference to pull (e.g. "nginx:latest",
+	// "ghcr.io/org/app:v1"). Required.
+	Ref string `json:"ref"`
+}
+
+// ImageResponse describes one converted image in the store.
+type ImageResponse struct {
+	Digest       string `json:"digest"`
+	SourceRef    string `json:"source_ref,omitempty"`
+	SizeBytes    int64  `json:"size_bytes"`
+	ContentBytes int64  `json:"content_bytes"`
+	Entries      int    `json:"entries"`
+	ConvertMode  string `json:"convert_mode,omitempty"`
+	ConvertedAt  int64  `json:"converted_at_unix_ms,omitempty"`
+
+	// Entrypoint and Cmd echo the image's runtime contract so a client
+	// can see what a sandbox created from this image would run (once
+	// image boot lands in D2).
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	Cmd        []string `json:"cmd,omitempty"`
+}
+
+// ImageListResponse wraps the image list.
+type ImageListResponse struct {
+	Images []ImageResponse `json:"images"`
+}
+
 // ErrorResponse is the body of any non-2xx response.
 type ErrorResponse struct {
 	Error string `json:"error"`

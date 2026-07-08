@@ -19,10 +19,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gnana997/crucible/internal/agentbin"
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/network"
+	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
@@ -96,6 +98,13 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		tokenFile = fs.String("token-file", defaultTokenFile, "API-key store; when it holds keys, requests require Authorization: Bearer")
 		tlsCert   = fs.String("tls-cert", "", "TLS certificate (PEM); required to bind a non-loopback --listen")
 		tlsKey    = fs.String("tls-key", "", "TLS private key (PEM); required with --tls-cert")
+		// OCI image cache. When --image-dir is set, the daemon serves
+		// /images (pull, import, ls, rm). Must live outside --work-base.
+		// The injected guest agent comes from --agent-bin, else the
+		// embedded copy (make build); without either, image support is
+		// refused at startup.
+		imageDir = fs.String("image-dir", "", "directory for the converted OCI image cache; enables /images when set (must be outside --work-base)")
+		agentBin = fs.String("agent-bin", "", "path to the crucible-agent binary injected into converted images (overrides the embedded copy)")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -342,6 +351,18 @@ Required flags:
 	// reconcile.
 	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
 
+	// OCI image store (optional). Enabled by --image-dir; the injected
+	// agent comes from --agent-bin or the embedded copy.
+	var imageStore daemon.ImageStore
+	if *imageDir != "" {
+		store, serr := buildImageStore(context.Background(), *imageDir, *workBase, *agentBin, logger)
+		if serr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: --image-dir: %v\n", serr)
+			return 2
+		}
+		imageStore = store
+	}
+
 	srv, err := daemon.New(daemon.Config{
 		Manager:    mgr,
 		Addr:       *addr,
@@ -350,6 +371,7 @@ Required flags:
 		TokenStore: tokens,
 		TLSCert:    *tlsCert,
 		TLSKey:     *tlsKey,
+		Images:     imageStore,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)
@@ -391,6 +413,58 @@ Required flags:
 	logger.Info("crucible stopped")
 	_ = stdout // reserved for future non-log output
 	return 0
+}
+
+// buildImageStore constructs the OCI image store: resolve the agent to
+// inject (--agent-bin, else the embedded copy), probe the host mkfs for
+// tarball support, and open the content-addressed cache. imageDir must
+// not sit inside workBase — the sandbox reconcile sweep would reap it.
+func buildImageStore(ctx context.Context, imageDir, workBase, agentBin string, logger *slog.Logger) (*oci.Store, error) {
+	absImg, err := filepath.Abs(imageDir)
+	if err != nil {
+		return nil, err
+	}
+	absWork, err := filepath.Abs(workBase)
+	if err != nil {
+		return nil, err
+	}
+	if absImg == absWork || strings.HasPrefix(absImg+string(os.PathSeparator), absWork+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("must not be inside --work-base %q (the reconcile sweep would delete the image cache)", workBase)
+	}
+
+	agent, err := resolveAgentBinary(agentBin)
+	if err != nil {
+		return nil, err
+	}
+
+	mode := oci.ModeStaging
+	if oci.ProbeTarballSupport(ctx) {
+		mode = oci.ModePipe
+	} else {
+		logger.Warn("mkfs.ext4 lacks tarball support; using staging mode for image conversion (upgrade e2fsprogs to >=1.47.1 for the faster, more isolated path)")
+	}
+	return oci.New(oci.StoreConfig{Dir: absImg, Agent: agent, Mode: mode, Logger: logger})
+}
+
+// resolveAgentBinary loads the agent to inject into images: the
+// --agent-bin file if set, else the embedded copy. Errors when neither
+// is available so image support fails loudly rather than baking a
+// zero-byte agent.
+func resolveAgentBinary(agentBin string) ([]byte, error) {
+	if agentBin != "" {
+		data, err := os.ReadFile(agentBin)
+		if err != nil {
+			return nil, fmt.Errorf("read --agent-bin: %w", err)
+		}
+		if len(data) == 0 {
+			return nil, fmt.Errorf("--agent-bin %q is empty", agentBin)
+		}
+		return data, nil
+	}
+	if len(agentbin.Binary) > 0 {
+		return agentbin.Binary, nil
+	}
+	return nil, errors.New("no agent binary: this build has no embedded agent (build with `make build`) — set --agent-bin")
 }
 
 // discoverProfiles scans dir for `<name>.ext4` images and returns a

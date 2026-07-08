@@ -29,3 +29,4 @@ coverage.txt
 
 # benchmark run artifact
 bench-results*.json
+internal/agentbin/crucible-agent

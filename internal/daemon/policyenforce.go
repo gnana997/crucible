@@ -70,6 +70,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		switch {
 		case path == "/sandboxes":
 			return policy.OpCreate, true
+		// Image pull/import provision a bootable rootfs — create-grade.
+		case path == "/images" || path == "/images/import":
+			return policy.OpCreate, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
 		// Service lifecycle mutations control the guest's entrypoint —

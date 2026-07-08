@@ -74,6 +74,10 @@ type Config struct {
 	// when binding a non-loopback address (the caller enforces that).
 	TLSCert string
 	TLSKey  string
+
+	// Images, when non-nil, enables the /images routes (OCI pull,
+	// import, list, delete). Nil makes those routes answer 501.
+	Images ImageStore
 }
 
 const (

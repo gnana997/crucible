@@ -1,5 +1,6 @@
 BINARY   := crucible
 AGENT    := bin/crucible-agent
+EMBEDDED_AGENT := internal/agentbin/crucible-agent
 PKG      := ./...
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X github.com/gnana997/crucible/internal/version.version=$(VERSION)
@@ -29,8 +30,14 @@ help:
 	@echo "  tidy     - go mod tidy"
 	@echo "  clean    - remove built binaries"
 
-build:
-	go build -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/crucible
+# build embeds the freshly-built guest agent into the daemon (via the
+# `embedagent` tag) so converted OCI images boot a version-matched
+# agent. The agent is copied into the agentbin package first because
+# go:embed can't reach outside its own directory. Plain `go build ./...`
+# (no tag) uses the stub and needs no embedded binary.
+build: agent
+	cp $(AGENT) $(EMBEDDED_AGENT)
+	go build -tags embedagent -ldflags '$(LDFLAGS)' -o $(BINARY) ./cmd/crucible
 
 # Benchmark harness (drives a running daemon through internal/client).
 bench:
@@ -88,4 +95,4 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f $(BINARY) $(AGENT)
+	rm -f $(BINARY) $(AGENT) $(EMBEDDED_AGENT)
