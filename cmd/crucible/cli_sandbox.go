@@ -32,6 +32,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		vcpus, memory, timeout int
 		profile                string
 		image                  string
+		pull                   string
 		netAllow               []string
 		publish                []string
 	)
@@ -45,7 +46,12 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 			}
 			req := api.CreateSandboxRequest{VCPUs: vcpus, MemoryMiB: memory, TimeoutSec: timeout, Profile: profile}
 			if image != "" {
-				req.Image = &api.ImageRef{OCI: image}
+				ref, effPull, err := resolveCreateImage(cmd.Context(), o.client(), image, pull, cmd.ErrOrStderr())
+				if err != nil {
+					return err
+				}
+				req.Image = &api.ImageRef{OCI: ref}
+				req.Pull = effPull
 			}
 			if len(netAllow) > 0 {
 				req.Network = &api.NetworkRequest{Enabled: true, Allowlist: netAllow}
@@ -72,7 +78,8 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "max lifetime in seconds (0 = none)")
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile (e.g. python-3.12)")
-	cmd.Flags().StringVar(&image, "image", "", "boot from a converted OCI image (digest or ref from `crucible image ls`)")
+	cmd.Flags().StringVar(&image, "image", "", "boot from an image: a converted digest/ref, a local docker tag (auto-imported), or a registry ref (auto-pulled)")
+	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing (default), always, or never")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	return cmd

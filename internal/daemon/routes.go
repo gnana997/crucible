@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -142,11 +143,53 @@ type imageErr struct {
 	err    error
 }
 
+// Pull policy values for CreateSandboxRequest.Pull, mirroring
+// `docker run --pull`. Empty is treated as pullMissing.
+const (
+	pullMissing = "missing"
+	pullAlways  = "always"
+	pullNever   = "never"
+)
+
+// validatePull normalizes and checks a pull policy at the request
+// boundary. Empty defaults to "missing" (acquire on a store miss).
+func validatePull(p string) (string, error) {
+	switch p {
+	case "", pullMissing:
+		return pullMissing, nil
+	case pullAlways, pullNever:
+		return p, nil
+	default:
+		return "", fmt.Errorf("invalid pull policy %q (want missing|always|never)", p)
+	}
+}
+
+// acquireImage resolves an OCI ref to a store record under the given
+// pull policy (docker-run semantics): "missing" acquires on a store
+// miss, "always" re-pulls unconditionally, "never" never touches the
+// network. Get's not-found/ambiguous errors and any pull/convert
+// failure propagate for resolveImage to map to a status code.
+func (s *Server) acquireImage(ctx context.Context, ref, pull string) (*oci.ImageRecord, error) {
+	switch pull {
+	case pullAlways:
+		return s.cfg.Images.Pull(ctx, ref)
+	case pullNever:
+		return s.cfg.Images.Get(ref)
+	default: // pullMissing (and the empty value, normalized by validatePull)
+		rec, err := s.cfg.Images.Get(ref)
+		if errors.Is(err, oci.ErrImageNotFound) {
+			return s.cfg.Images.Pull(ctx, ref)
+		}
+		return rec, err
+	}
+}
+
 // resolveImage turns a request's ImageRef into a store record + boot
-// args. No image → (nil, "", nil). An OCI ref resolves against the
-// image store. A path override is still unimplemented. Exactly one of
-// Path/OCI must be set.
-func (s *Server) resolveImage(ref *api.ImageRef) (rec *oci.ImageRecord, bootArgs string, ierr *imageErr) {
+// args, acquiring the image on a store miss per the pull policy so that
+// `create --image nginx:alpine` Just Works like `docker run`. No image
+// → (nil, "", nil). A path override is still unimplemented. Exactly one
+// of Path/OCI must be set.
+func (s *Server) resolveImage(ctx context.Context, ref *api.ImageRef, pull string) (rec *oci.ImageRecord, bootArgs string, ierr *imageErr) {
 	if ref == nil {
 		return nil, "", nil
 	}
@@ -164,15 +207,21 @@ func (s *Server) resolveImage(ref *api.ImageRef) (rec *oci.ImageRecord, bootArgs
 	if s.cfg.Images == nil {
 		return nil, "", &imageErr{http.StatusNotImplemented, errors.New("image support is not enabled on this daemon (set --image-dir)")}
 	}
-	rec, err := s.cfg.Images.Get(ref.OCI)
+	rec, err := s.acquireImage(ctx, ref.OCI, pull)
 	if err != nil {
-		if errors.Is(err, oci.ErrImageNotFound) {
-			return nil, "", &imageErr{http.StatusNotFound, fmt.Errorf("image %q not found; pull it first", ref.OCI)}
-		}
-		if errors.Is(err, oci.ErrAmbiguousImage) {
+		switch {
+		case errors.Is(err, oci.ErrImageNotFound):
+			// Only reachable under pull=never (missing/always would have
+			// pulled). Point the operator at the one-command fix.
+			return nil, "", &imageErr{http.StatusNotFound,
+				fmt.Errorf("image %q not in the store and --pull=never; pull it first or use --pull missing", ref.OCI)}
+		case errors.Is(err, oci.ErrAmbiguousImage):
 			return nil, "", &imageErr{http.StatusConflict, err}
+		default:
+			// Pull/convert failure (unknown ref, registry unreachable,
+			// mkfs error) — gateway class, mirroring imageError.
+			return nil, "", &imageErr{http.StatusBadGateway, err}
 		}
-		return nil, "", &imageErr{http.StatusInternalServerError, err}
 	}
 	if rec.RootfsPath == "" {
 		return nil, "", &imageErr{http.StatusInternalServerError, errors.New("image record has no rootfs path")}
@@ -323,11 +372,24 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	pull, err := validatePull(req.Pull)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// Image resolution can pull + convert a multi-hundred-MB image
+	// (minutes) when the ref isn't cached, so clear the one-shot write
+	// deadline the same way the pull/snapshot handlers do; r.Context()
+	// still bounds the work.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	// Image resolution. A per-sandbox path override is still 501; an OCI
-	// reference resolves against the image store to a converted rootfs
-	// the sandbox boots with the guest agent as PID 1. Both/neither is a
-	// 400. Returns the store record + boot args, or nil when no image.
-	imgRec, imgBootArgs, ierr := s.resolveImage(req.Image)
+	// reference resolves against the image store — acquiring it on a miss
+	// per the pull policy — to a converted rootfs the sandbox boots with
+	// the guest agent as PID 1. Both/neither is a 400. Returns the store
+	// record + boot args, or nil when no image.
+	imgRec, imgBootArgs, ierr := s.resolveImage(r.Context(), req.Image, pull)
 	if ierr != nil {
 		writeError(w, ierr.status, ierr.err)
 		return

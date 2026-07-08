@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -118,17 +119,106 @@ func TestCreateFromOCIImageBootsWithInitAgent(t *testing.T) {
 	}
 }
 
-func TestCreateFromOCIImageUnknownRef404(t *testing.T) {
+func TestCreateFromOCIImagePullNeverMiss404(t *testing.T) {
+	// With --pull never, a store miss is a 404 and the daemon never
+	// touches the network (Pull is not called).
 	store := newFakeImageStore()
 	ts, _ := newImageCreateServer(t, store)
-	body := bytes.NewBufferString(`{"image":{"oci":"sha256:missing"}}`)
+	body := bytes.NewBufferString(`{"image":{"oci":"sha256:missing"},"pull":"never"}`)
 	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("create with unknown image = %d, want 404", resp.StatusCode)
+		t.Fatalf("create --pull never on a miss = %d, want 404", resp.StatusCode)
+	}
+	if store.lastPull != "" {
+		t.Errorf("pull=never still pulled %q", store.lastPull)
+	}
+}
+
+func TestCreateFromOCIImagePullsOnMiss(t *testing.T) {
+	// The default (missing) policy acquires an uncached image: a bare
+	// `create --image nginx:latest` pulls + converts, then boots. This is
+	// the one-command headline.
+	imgRootfs := filepath.Join(t.TempDir(), "pulled.ext4")
+	if err := os.WriteFile(imgRootfs, []byte("pulled-image"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeImageStore()
+	store.pullRootfs = imgRootfs // pulled record carries a usable rootfs
+	ts, _ := newImageCreateServer(t, store)
+
+	body := bytes.NewBufferString(`{"image":{"oci":"nginx:latest"}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create on a miss = %d, want 201 (should pull): %s", resp.StatusCode, b)
+	}
+	if store.lastPull != "nginx:latest" {
+		t.Errorf("store saw pull %q, want nginx:latest", store.lastPull)
+	}
+}
+
+func TestCreateFromOCIImageAlwaysRepulls(t *testing.T) {
+	// --pull always re-acquires even when the ref is already converted.
+	imgRootfs := filepath.Join(t.TempDir(), "img.ext4")
+	if err := os.WriteFile(imgRootfs, []byte("x"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	store := newFakeImageStore()
+	store.seed("nginx:latest", imgRootfs) // a store hit exists…
+	store.pullRootfs = imgRootfs
+	ts, _ := newImageCreateServer(t, store)
+
+	body := bytes.NewBufferString(`{"image":{"oci":"nginx:latest"},"pull":"always"}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create --pull always = %d, want 201: %s", resp.StatusCode, b)
+	}
+	if store.lastPull != "nginx:latest" {
+		t.Errorf("--pull always did not re-pull (lastPull=%q)", store.lastPull)
+	}
+}
+
+func TestCreateFromOCIImagePullFailure502(t *testing.T) {
+	// A pull/convert failure (unknown ref, registry down) surfaces as a
+	// gateway error, not a crash or a misleading 404.
+	store := newFakeImageStore()
+	store.pullErr = errors.New("registry: manifest unknown")
+	ts, _ := newImageCreateServer(t, store)
+	body := bytes.NewBufferString(`{"image":{"oci":"nope:latest"}}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("create with pull failure = %d, want 502", resp.StatusCode)
+	}
+}
+
+func TestCreateInvalidPullPolicy400(t *testing.T) {
+	store := newFakeImageStore()
+	ts, _ := newImageCreateServer(t, store)
+	body := bytes.NewBufferString(`{"image":{"oci":"nginx:latest"},"pull":"sometimes"}`)
+	resp, err := http.Post(ts.URL+"/sandboxes", "application/json", body)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid pull policy = %d, want 400", resp.StatusCode)
 	}
 }
 

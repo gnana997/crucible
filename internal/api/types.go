@@ -62,6 +62,14 @@ type CreateSandboxRequest struct {
 	// sandbox to have a NIC; when Network is absent it is created with
 	// an empty egress allowlist (ingress-published, egress-denied).
 	Publish []PortMapping `json:"publish,omitempty"`
+
+	// Pull controls image acquisition when Image.OCI is set, mirroring
+	// `docker run --pull`: "missing" (default, and the empty value)
+	// converts + caches the image on a store miss so a bare `--image
+	// nginx:alpine` Just Works; "always" re-pulls even on a store hit;
+	// "never" fails if the image isn't already converted. Ignored when
+	// Image is unset.
+	Pull string `json:"pull,omitempty"`
 }
 
 // PortMapping publishes one host port to one guest port.

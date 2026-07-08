@@ -43,11 +43,12 @@ func newBareManager(t *testing.T) *sandbox.Manager {
 
 // fakeImageStore is a hermetic ImageStore — no registry, no mkfs.
 type fakeImageStore struct {
-	mu       sync.Mutex
-	images   map[string]*oci.ImageRecord
-	pullErr  error
-	lastPull string
-	imported []byte
+	mu         sync.Mutex
+	images     map[string]*oci.ImageRecord
+	pullErr    error
+	pullRootfs string // RootfsPath stamped on a pulled record (create needs it)
+	lastPull   string
+	imported   []byte
 }
 
 func newFakeImageStore() *fakeImageStore {
@@ -66,6 +67,7 @@ func (f *fakeImageStore) Pull(_ context.Context, ref string) (*oci.ImageRecord, 
 		SourceRef:   ref,
 		SizeBytes:   512 << 20,
 		ConvertMode: "pipe",
+		RootfsPath:  f.pullRootfs,
 		RunConfig:   &oci.RunConfig{Entrypoint: []string{"/app"}, Cmd: []string{"--serve"}},
 	}
 	f.images[rec.Digest] = rec
