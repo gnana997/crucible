@@ -101,6 +101,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newDaemonCmd(),
 		newSandboxCmd(opts),
 		newServiceCmd(opts),
+		newLogsCmd(opts),
 		newImageCmd(opts),
 		newSnapshotCmd(opts),
 		newForkCmd(opts),

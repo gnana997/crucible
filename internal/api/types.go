@@ -172,6 +172,24 @@ type ProfilesResponse struct {
 	Profiles []string `json:"profiles"`
 }
 
+// LogRecord is one durable log line returned by GET /sandboxes/{id}/logs.
+// Source is "service" (the entrypoint's output) or "exec" (an exec
+// invocation); Stream is "stdout", "stderr", or "event" (a synthesized
+// line such as an exec start/exit or a log-ring gap).
+type LogRecord struct {
+	TimeMs int64  `json:"time_ms"`
+	Source string `json:"source"`
+	Stream string `json:"stream"`
+	Text   string `json:"text"`
+}
+
+// LogsResponse is the JSON body of GET /sandboxes/{id}/logs. NextOffset is
+// the byte cursor to pass as `since` on the next read to follow the log.
+type LogsResponse struct {
+	Records    []LogRecord `json:"records"`
+	NextOffset int64       `json:"next_offset"`
+}
+
 // PullImageRequest is the JSON body of POST /images.
 type PullImageRequest struct {
 	// Ref is the image reference to pull (e.g. "nginx:latest",

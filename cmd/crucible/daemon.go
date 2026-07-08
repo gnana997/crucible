@@ -22,6 +22,7 @@ import (
 	"github.com/gnana997/crucible/internal/agentbin"
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/jailer"
+	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
@@ -105,6 +106,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// refused at startup.
 		imageDir = fs.String("image-dir", "", "directory for the converted OCI image cache; enables /images when set (must be outside --work-base)")
 		agentBin = fs.String("agent-bin", "", "path to the crucible-agent binary injected into converted images (overrides the embedded copy)")
+		// Durable per-sandbox logs. Persists service output + exec activity
+		// so `crucible logs` works and survives the sandbox. Kept outside
+		// --work-base so the reconcile sweep can't reap it. Empty disables it.
+		logDir = fs.String("log-dir", "/var/lib/crucible/logs", "directory for durable per-sandbox logs (service output + exec activity); empty disables `crucible logs`")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -366,6 +371,19 @@ Required flags:
 		imageStore = store
 	}
 
+	// Durable log store (optional). Failure to create the dir degrades to
+	// no durable logs rather than refusing to start — logs are best-effort.
+	var logStore *logstore.Store
+	if *logDir != "" {
+		ls, lerr := logstore.New(*logDir)
+		if lerr != nil {
+			logger.Warn("durable logs disabled", "log_dir", *logDir, "err", lerr)
+		} else {
+			logStore = ls
+			logger.Info("durable logs enabled", "log_dir", *logDir)
+		}
+	}
+
 	srv, err := daemon.New(daemon.Config{
 		Manager:    mgr,
 		Addr:       *addr,
@@ -375,6 +393,7 @@ Required flags:
 		TLSCert:    *tlsCert,
 		TLSKey:     *tlsKey,
 		Images:     imageStore,
+		LogStore:   logStore,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)
@@ -413,6 +432,9 @@ Required flags:
 		logger.Warn("http shutdown did not complete cleanly", "err", err)
 	}
 	mgr.Shutdown(drainCtx)
+	if logStore != nil {
+		_ = logStore.Close()
+	}
 	logger.Info("crucible stopped")
 	_ = stdout // reserved for future non-log output
 	return 0

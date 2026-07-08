@@ -16,6 +16,7 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/policy"
@@ -50,6 +51,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /sandboxes/{id}/service/restart", s.handleServiceRestart)
 	mux.HandleFunc("GET /sandboxes/{id}/service", s.handleServiceStatus)
 	mux.HandleFunc("GET /sandboxes/{id}/service/logs", s.handleServiceLogs)
+	// Durable per-sandbox logs (service output + exec activity). 501 when
+	// Config.LogStore is nil.
+	mux.HandleFunc("GET /sandboxes/{id}/logs", s.handleSandboxLogs)
 	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
 	mux.HandleFunc("GET /snapshots", s.handleListSnapshots)
 	mux.HandleFunc("GET /snapshots/{id}", s.handleGetSnapshot)
@@ -505,6 +509,12 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	// A service-bearing sandbox gets a background drain of its output into
+	// the durable log store (so `crucible logs` works, and survives the
+	// sandbox). Self-terminates when the sandbox is deleted.
+	if req.Service != nil && s.cfg.LogStore != nil {
+		s.startServiceDrain(sb.ID)
+	}
 	writeJSON(w, http.StatusCreated, sandboxResponseFrom(sb))
 }
 
@@ -617,8 +627,19 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	// command exits. rc is the controller created above.
 	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, rc: rc})
 
-	stdoutStream := fw.Stream(agentwire.FrameStdout)
-	stderrStream := fw.Stream(agentwire.FrameStderr)
+	stdoutStream, stderrStream := fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr)
+
+	// Durable exec-activity capture: bracket the run with start/exit
+	// events and tee its output into the log store, so `crucible logs
+	// --source exec` shows what ran and what it produced.
+	if s.cfg.LogStore != nil {
+		s.appendLog(id, logstore.Record{
+			TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamEvent,
+			Text: "exec: " + strings.Join(req.Cmd, " "),
+		})
+		stdoutStream = io.MultiWriter(stdoutStream, execLogWriter{s: s, id: id, stream: logstore.StreamStdout})
+		stderrStream = io.MultiWriter(stderrStream, execLogWriter{s: s, id: id, stream: logstore.StreamStderr})
+	}
 
 	result, err := s.cfg.Manager.Exec(r.Context(), id, req, stdoutStream, stderrStream)
 	if err != nil {
@@ -626,6 +647,12 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		// etc.). Synthesize an exit frame so the client still sees a
 		// well-formed stream.
 		result = agentwire.ExecResult{ExitCode: -1, Error: err.Error()}
+	}
+	if s.cfg.LogStore != nil {
+		s.appendLog(id, logstore.Record{
+			TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamEvent,
+			Text: fmt.Sprintf("exit %d", result.ExitCode),
+		})
 	}
 
 	payload, jerr := json.Marshal(result)

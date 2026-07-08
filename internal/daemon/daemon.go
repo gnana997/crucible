@@ -25,8 +25,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
@@ -41,6 +43,13 @@ import (
 type Server struct {
 	cfg  Config
 	http *http.Server
+
+	// bgCtx bounds background goroutines (the per-sandbox log drains).
+	// Shutdown cancels it and then waits on bgWG so no drain outlives
+	// the server.
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 }
 
 // Config wires a Server to its dependencies.
@@ -78,6 +87,12 @@ type Config struct {
 	// Images, when non-nil, enables the /images routes (OCI pull,
 	// import, list, delete). Nil makes those routes answer 501.
 	Images ImageStore
+
+	// LogStore, when non-nil, enables durable per-sandbox logs: a
+	// background drain of each service's output into the store, exec
+	// activity capture, and the GET /sandboxes/{id}/logs route. Nil
+	// makes that route answer 501 and skips the drain/capture.
+	LogStore *logstore.Store
 }
 
 const (
@@ -110,6 +125,7 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{cfg: cfg}
+	s.bgCtx, s.bgCancel = context.WithCancel(context.Background())
 	s.http = &http.Server{
 		Addr:         cfg.Addr,
 		Handler:      s.logRequests(s.auth(s.enforcePolicy(s.routes()))),
@@ -182,5 +198,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err := s.http.Shutdown(ctx); err != nil {
 		return fmt.Errorf("daemon: http shutdown: %w", err)
 	}
+	// Stop the background log drains and wait for them to exit.
+	if s.bgCancel != nil {
+		s.bgCancel()
+	}
+	s.bgWG.Wait()
 	return nil
 }
