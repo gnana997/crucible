@@ -111,11 +111,11 @@ type execChild struct {
 }
 
 func (execRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
-	env, cred, err := resolveLaunch(spec)
+	argv, env, cred, err := resolveLaunch(spec)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(spec.Cmd[0], spec.Cmd[1:]...)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	if spec.Cwd != "" {
 		cmd.Dir = spec.Cwd

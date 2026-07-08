@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/vishvananda/netlink"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +41,28 @@ var pseudoMounts = []mountSpec{
 	{source: "tmpfs", target: "/dev/shm", fstype: "tmpfs", flags: unix.MS_NOSUID | unix.MS_NODEV, data: "mode=1777"},
 	{source: "tmpfs", target: "/run", fstype: "tmpfs", flags: unix.MS_NOSUID | unix.MS_NODEV, data: "mode=0755"},
 	{source: "cgroup2", target: "/sys/fs/cgroup", fstype: "cgroup2", flags: unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC, optional: true},
+}
+
+// bringUpLoopback brings the guest's loopback interface up (and ensures
+// 127.0.0.1/8 is assigned). A normal Linux init does this; as PID 1 in
+// an OCI guest we must too, or apps that bind or dial 127.0.0.1 —
+// health checks, sidecars talking to their own service — fail. The
+// address is usually pre-assigned by the kernel, so AddrReplace is
+// defensive; both steps are best-effort (logged, not fatal) so a quirk
+// here never panics the VM.
+func bringUpLoopback(log *slog.Logger) {
+	lo, err := netlink.LinkByName("lo")
+	if err != nil {
+		log.Warn("init: loopback not found", "err", err)
+		return
+	}
+	if err := netlink.LinkSetUp(lo); err != nil {
+		log.Warn("init: loopback up failed", "err", err)
+		return
+	}
+	if addr, err := netlink.ParseAddr("127.0.0.1/8"); err == nil {
+		_ = netlink.AddrReplace(lo, addr)
+	}
 }
 
 // mountPseudoFilesystems establishes the standard mounts an init needs.

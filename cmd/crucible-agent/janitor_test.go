@@ -5,6 +5,8 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -181,6 +183,49 @@ func TestInitRunnerSupervisesRealService(t *testing.T) {
 	if st.LastExit == nil || st.LastExit.ExitCode != 0 {
 		t.Errorf("LastExit = %+v, want clean trap exit", st.LastExit)
 	}
+}
+
+// TestInitRunnerBareCommandResolvesOnPath is the regression for the m4
+// finding: a bare-name entrypoint (httpd-foreground, memcached, …) must
+// launch via PATH resolution, because os.StartProcess does no search.
+func TestInitRunnerBareCommandResolvesOnPath(t *testing.T) {
+	// A tiny "server" script placed on a custom PATH, invoked by bare
+	// name — exactly the failing compat case.
+	bindir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(bindir, "myserver")
+	body := "#!/bin/sh\ntouch " + marker + "\nsleep 60\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newTestReaper(t)
+	s := newSupervisor(initRunner{reaper: r}, realClock{}, testLogger(), "")
+	t.Cleanup(func() { _, _ = s.Shutdown() })
+
+	spec := &agentwire.ServiceSpec{
+		Cmd: []string{"myserver"}, // bare name, not a path
+		// A realistic image PATH: the binary's dir plus the standard
+		// ones (the script itself needs touch/sleep).
+		Env:      map[string]string{"PATH": bindir + ":/usr/bin:/bin"},
+		EnvExact: true,
+	}
+	mustConfigureStart(t, s, spec)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bare-command service never ran (PATH resolution failed)")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := s.Stop(0); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	waitForState(t, s, agentwire.ServiceStateStopped)
 }
 
 func TestInitRunnerRestartPolicy(t *testing.T) {

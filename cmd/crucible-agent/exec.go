@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -146,8 +147,27 @@ func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *pro
 // the floor; request env overrides and adds. Keeping PATH/HOME/TERM
 // from the agent means common tools (python3, /bin/sh) resolve without
 // callers needing to re-specify PATH on every exec.
+//
+// When neither the agent's environ nor the request sets PATH — the case
+// for a PID-1 agent, whose kernel-provided env has none — a default is
+// added so bare commands resolve consistently regardless of the guest
+// shell's compiled-in default (busybox's excludes /usr/local/bin, so
+// `docker exec`-style tools there would otherwise not be found). Matches
+// what `docker exec` supplies.
 func buildEnv(override map[string]string) []string {
-	return mergeEnv(os.Environ(), override)
+	return ensureDefaultPath(mergeEnv(os.Environ(), override))
+}
+
+// ensureDefaultPath appends PATH=dockerDefaultPath to env when it has no
+// PATH entry. A no-op when PATH is already present (profile agents,
+// which inherit systemd's PATH, and any request that sets one).
+func ensureDefaultPath(env []string) []string {
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			return env
+		}
+	}
+	return append(env, "PATH="+dockerDefaultPath)
 }
 
 // mergeEnv is buildEnv's testable core: take a base slice of KEY=VAL

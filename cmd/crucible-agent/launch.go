@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -19,31 +20,96 @@ import (
 // same way they do under `docker run`.
 const dockerDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
-// resolveLaunch computes the child process's environment and, for OCI
-// services (EnvExact), its user credential and working directory from
-// the spec. It reads the guest's own /etc/passwd + /etc/group, which is
-// the only place the image's users exist. For profile services it
-// preserves the historical merge-with-agent-environ behavior and sets
-// no credential.
-func resolveLaunch(spec *agentwire.ServiceSpec) (env []string, cred *syscall.Credential, err error) {
+// resolveLaunch computes the child process's argv (with an absolute
+// executable), environment, and — for OCI services (EnvExact) — its
+// user credential and working directory. It reads the guest's own
+// /etc/passwd + /etc/group, which is the only place the image's users
+// exist. For profile services it preserves the historical
+// merge-with-agent-environ behavior and sets no credential.
+//
+// The executable is resolved against the effective PATH here because
+// os.StartProcess (the init-mode spawn) does no PATH search, and Docker
+// resolves a bare ENTRYPOINT/CMD[0] against the image's PATH.
+func resolveLaunch(spec *agentwire.ServiceSpec) (argv []string, env []string, cred *syscall.Credential, err error) {
 	var home string
 	if spec.User != "" {
 		cred, home, err = resolveUser(spec.User)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve user %q: %w", spec.User, err)
+			return nil, nil, nil, fmt.Errorf("resolve user %q: %w", spec.User, err)
 		}
 	}
 	env = buildServiceEnv(spec, home)
 
 	// Docker creates WORKDIR if it doesn't exist. Only for OCI services
 	// (EnvExact) so profile behavior — where a missing cwd is an error —
-	// is unchanged.
+	// is unchanged. Done before executable resolution so a relative
+	// entrypoint resolves against a present cwd.
 	if spec.EnvExact && spec.Cwd != "" {
 		if err := os.MkdirAll(spec.Cwd, 0o755); err != nil {
-			return nil, nil, fmt.Errorf("create working dir %q: %w", spec.Cwd, err)
+			return nil, nil, nil, fmt.Errorf("create working dir %q: %w", spec.Cwd, err)
 		}
 	}
-	return env, cred, nil
+
+	exe, err := lookExecutable(spec.Cmd[0], pathFromEnv(env), spec.Cwd)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	argv = append([]string{exe}, spec.Cmd[1:]...)
+	return argv, env, cred, nil
+}
+
+// lookExecutable resolves cmd[0] to an absolute path the way Docker
+// does: a name containing a slash is a path (absolute as-is, relative
+// resolved against cwd); a bare name is searched on PATH. An empty
+// PATH falls back to Docker's default so a bare name still resolves in
+// a guest whose environment sets none.
+func lookExecutable(name, pathEnv, cwd string) (string, error) {
+	if name == "" {
+		return "", fmt.Errorf("empty executable")
+	}
+	if strings.Contains(name, "/") {
+		if filepath.IsAbs(name) {
+			return name, nil
+		}
+		if cwd != "" {
+			return filepath.Join(cwd, name), nil
+		}
+		return name, nil // relative, no cwd — exec resolves it against the agent's cwd
+	}
+	if pathEnv == "" {
+		pathEnv = dockerDefaultPath
+	}
+	for _, dir := range filepath.SplitList(pathEnv) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		if isExecutableFile(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("executable %q not found in PATH", name)
+}
+
+// isExecutableFile reports whether path is a regular file with any
+// execute bit set. The kernel enforces the real exec permission (as the
+// target user) at exec time; this is just the PATH search predicate.
+func isExecutableFile(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	return fi.Mode().Perm()&0o111 != 0
+}
+
+// pathFromEnv extracts the PATH value from a KEY=VALUE env slice.
+func pathFromEnv(env []string) string {
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, "PATH="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // buildServiceEnv composes the child's environment. Profile services

@@ -116,7 +116,7 @@ func TestResolveLaunchCreatesWorkdir(t *testing.T) {
 		Cwd:      dir,
 		EnvExact: true,
 	}
-	if _, _, err := resolveLaunch(spec); err != nil {
+	if _, _, _, err := resolveLaunch(spec); err != nil {
 		t.Fatalf("resolveLaunch: %v", err)
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
@@ -127,11 +127,73 @@ func TestResolveLaunchCreatesWorkdir(t *testing.T) {
 func TestResolveLaunchProfileDoesNotCreateWorkdir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "should-not-exist")
 	spec := &agentwire.ServiceSpec{Cmd: []string{"/bin/true"}, Cwd: dir} // EnvExact false
-	if _, _, err := resolveLaunch(spec); err != nil {
+	if _, _, _, err := resolveLaunch(spec); err != nil {
 		t.Fatalf("resolveLaunch: %v", err)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("profile mode created the working dir: %v", err)
+	}
+}
+
+func TestLookExecutable(t *testing.T) {
+	// A bare name resolves against PATH.
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "myserver")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := lookExecutable("myserver", dir+":/nowhere", "")
+	if err != nil || got != bin {
+		t.Errorf("lookExecutable(bare) = %q, %v; want %q", got, err, bin)
+	}
+
+	// A non-executable file is skipped.
+	nonexec := filepath.Join(dir, "data")
+	_ = os.WriteFile(nonexec, []byte("x"), 0o644)
+	if _, err := lookExecutable("data", dir, ""); err == nil {
+		t.Error("lookExecutable resolved a non-executable file")
+	}
+
+	// Absolute paths pass through untouched.
+	if got, _ := lookExecutable("/usr/local/bin/caddy", "/ignored", ""); got != "/usr/local/bin/caddy" {
+		t.Errorf("absolute path = %q, want unchanged", got)
+	}
+
+	// Relative-with-slash resolves against cwd.
+	if got, _ := lookExecutable("./run.sh", "", "/app"); got != "/app/run.sh" {
+		t.Errorf("relative path = %q, want /app/run.sh", got)
+	}
+
+	// A bare name not on PATH errors.
+	if _, err := lookExecutable("definitely-not-here", "/nowhere", ""); err == nil {
+		t.Error("missing bare name did not error")
+	}
+
+	// Empty PATH falls back to the Docker default (finds /bin/sh).
+	if got, err := lookExecutable("sh", "", ""); err != nil || got == "" {
+		t.Errorf("empty PATH fallback failed: %q %v", got, err)
+	}
+}
+
+func TestResolveLaunchResolvesBareCommandOnPath(t *testing.T) {
+	// A bare-command OCI entrypoint (the httpd/redis/memcached case)
+	// must resolve to an absolute path via the image's PATH.
+	dir := t.TempDir()
+	server := filepath.Join(dir, "httpd-foreground")
+	if err := os.WriteFile(server, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := &agentwire.ServiceSpec{
+		Cmd:      []string{"httpd-foreground"},
+		Env:      map[string]string{"PATH": dir},
+		EnvExact: true,
+	}
+	argv, _, _, err := resolveLaunch(spec)
+	if err != nil {
+		t.Fatalf("resolveLaunch: %v", err)
+	}
+	if argv[0] != server {
+		t.Errorf("argv[0] = %q, want the resolved absolute path %q", argv[0], server)
 	}
 }
 

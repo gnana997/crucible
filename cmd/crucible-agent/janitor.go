@@ -241,11 +241,11 @@ type initRunner struct {
 }
 
 func (ir initRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
-	env, cred, err := resolveLaunch(spec)
+	argv, env, cred, err := resolveLaunch(spec)
 	if err != nil {
 		return nil, err
 	}
-	rp, err := ir.reaper.spawn(spec.Cmd, env, spec.Cwd, cred, stdout, stderr)
+	rp, err := ir.reaper.spawn(argv, env, spec.Cwd, cred, stdout, stderr)
 	if err != nil {
 		return nil, err
 	}

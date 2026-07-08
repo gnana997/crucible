@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/gnana997/crucible/internal/agentwire"
@@ -133,6 +135,59 @@ func TestInitExecEnvAndCwd(t *testing.T) {
 	if out != "val "+dir {
 		t.Errorf("out = %q, want %q", out, "val "+dir)
 	}
+}
+
+func TestEnsureDefaultPath(t *testing.T) {
+	// No PATH → default added.
+	got := ensureDefaultPath([]string{"HOME=/"})
+	if !containsEnv(got, "PATH="+dockerDefaultPath) {
+		t.Errorf("default PATH not added: %v", got)
+	}
+	// Existing PATH → untouched.
+	got = ensureDefaultPath([]string{"PATH=/only/here", "HOME=/"})
+	if !containsEnv(got, "PATH=/only/here") || containsEnv(got, dockerDefaultPath) {
+		t.Errorf("existing PATH overwritten: %v", got)
+	}
+}
+
+func containsEnv(env []string, want string) bool {
+	for _, e := range env {
+		if e == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestInitExecResolvesViaDefaultPath is the node-exec regression: a
+// guest whose environment sets no PATH (a PID-1 agent) must still
+// resolve a command that lives only on the Docker default PATH's
+// /usr/local/bin — the busybox-shell case that lost `node`. Here the
+// agent's own environ has no PATH (we clear it), and the check runs a
+// binary reachable only via ensureDefaultPath.
+func TestInitExecResolvesViaDefaultPath(t *testing.T) {
+	// Simulate a PID-1 agent whose kernel-provided env has NO PATH entry
+	// (unset, not empty — that is what makes a shell fall back to its
+	// builtin default, and busybox's excludes /usr/local/bin).
+	if old, had := os.LookupEnv("PATH"); had {
+		_ = os.Unsetenv("PATH")
+		t.Cleanup(func() { _ = os.Setenv("PATH", old) })
+	}
+	env := buildEnv(nil)
+	if !containsEnv(env, "PATH="+dockerDefaultPath) {
+		t.Fatalf("buildEnv did not supply a default PATH: %v", env)
+	}
+	// And that default includes /usr/local/bin (where node/python live).
+	if !strings.Contains(dockerDefaultPath, "/usr/local/bin") {
+		t.Errorf("dockerDefaultPath lacks /usr/local/bin: %q", dockerDefaultPath)
+	}
+}
+
+func TestBringUpLoopbackBestEffort(t *testing.T) {
+	// bringUpLoopback must never panic and must tolerate lacking
+	// permission (non-root test process can't set lo up — the call is
+	// best-effort and only logs). Just exercise the path.
+	bringUpLoopback(testLogger())
 }
 
 func TestMountSpecOrdering(t *testing.T) {

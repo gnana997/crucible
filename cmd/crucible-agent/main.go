@@ -40,6 +40,26 @@ func main() {
 
 // run holds main's body so deferred cleanup runs before os.Exit.
 func run(logger *slog.Logger) int {
+	// Boot position: PID 1 inside a converted OCI image (init mode) vs a
+	// systemd-launched service inside a profile rootfs. The two differ in
+	// exactly two places — who reaps orphans (the reaper vs systemd) and
+	// the pseudo-filesystem setup — so both are decided here and the rest
+	// of the agent is oblivious.
+	initMode := isInit()
+
+	// In init mode the pseudo-filesystems MUST be mounted before the vsock
+	// listener: opening it reads /dev/vsock for the guest context id, and
+	// a scratch image (no /dev directory) never got the kernel's devtmpfs
+	// auto-mount, so /dev/vsock only exists once we mount devtmpfs here.
+	if initMode {
+		logger.Info("crucible-agent running as PID 1 (init mode)")
+		if err := mountPseudoFilesystems(logger); err != nil {
+			logger.Error("init: mount pseudo-filesystems failed", "err", err)
+			return 1
+		}
+		bringUpLoopback(logger)
+	}
+
 	ln, err := listenVSock(agentwire.AgentVSockPort)
 	if err != nil {
 		logger.Error("vsock listen failed", "err", err)
@@ -47,21 +67,11 @@ func run(logger *slog.Logger) int {
 	}
 	logger.Info("crucible-agent listening", "vsock_port", agentwire.AgentVSockPort)
 
-	// Boot position: PID 1 inside a converted OCI image (init mode) vs a
-	// systemd-launched service inside a profile rootfs. The two differ in
-	// exactly two places — who reaps orphans (the reaper vs systemd) and
-	// the pseudo-filesystem setup — so both are decided here and the rest
-	// of the agent is oblivious.
 	var (
 		svcRunner   childRunner = execRunner{}
 		execHandler             = handleExec
 	)
-	if isInit() {
-		logger.Info("crucible-agent running as PID 1 (init mode)")
-		if err := mountPseudoFilesystems(logger); err != nil {
-			logger.Error("init: mount pseudo-filesystems failed", "err", err)
-			return 1
-		}
+	if initMode {
 		rp := newReaper(logger)
 		rp.start()
 		defer rp.stop()
