@@ -6,6 +6,75 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.3.2] — 2026-07-09
+
+**The "drop your code in and run it" release.** Push local files straight into a
+running sandbox with no image build and no Dockerfile, read bounded file content
+back, watch a sandbox's logs live in the TUI, and stand the whole thing up on
+Linux with a single command that provisions everything (including the guest
+kernel) and starts the service. The launch line: it's the safe `docker run` for
+untrusted or agent-written code, now with a first-class way to get code *in*.
+
+### Added
+
+- **`crucible cp <src> <id>:<dest>`** — push a local file or directory into a
+  running sandbox as a tar stream over HTTP; the guest agent extracts it into
+  the sandbox rootfs, rejecting path escapes (`..`, absolute paths, and symlinks
+  that would leave the destination). No image build, no Dockerfile.
+- **MCP `write_files` and `read_file`.** `write_files` drops content into a
+  sandbox (exec-gated); `read_file` reads **bounded** file content back (UTF-8,
+  base64 for binary, with a `truncated` flag), read-gated. crucible deliberately
+  returns file content only and does not extract archives onto the host. Brings
+  the MCP surface to **15 tools**. See [docs/mcp.md](docs/mcp.md).
+- **TUI live logs view** (`l`): tail a sandbox's **durable** logs (service output
+  + exec activity) live in a scrolling pane, each line timestamped with `stderr`
+  highlighted, auto-following the tail unless you scroll up. The "docker + k9s"
+  view; because the logs are durable they survive the sandbox itself.
+- **One-command Linux install.** `install.sh --with-deps --enable` now provisions
+  the **guest kernel** too (mirrored, pinned, and checksum-verified, with a
+  firecracker-CI fallback), so `curl … | sudo bash -s -- --with-deps --enable`
+  boots a working daemon end to end with nothing left to do by hand.
+- **Mirrored guest kernel as a release asset.** The pinned `vmlinux-x86_64`
+  (plus its `.sha256`) is published with each release for supply-chain
+  independence from upstream object storage.
+- Demos (`demo/*.tape` + GIFs) for `build`, `run`, `cp`, and a combined
+  build → run → curl → TUI → logs hero; docs for `crucible cp`, `crucible shell`,
+  the MCP file tools, and the TUI logs view. Smoke: `scripts/smoke_cp.sh`.
+
+### Changed
+
+- **`crucible run` long-lived hints** are aligned into a readable block instead
+  of one run-on line, matching the CLI's other output.
+- **Install robustness:** the rerun one-liner is correct when piped
+  (`curl | sudo bash`), checkout-vs-download detection ensures a reinstall runs
+  the release binary rather than a local dev build, and egress auto-wiring keys
+  off the actual `CRUCIBLE_FLAGS=` line rather than matching template comments.
+
+## [0.3.1] — 2026-07-09
+
+**Cross-platform client + frictionless install.** The CLI, TUI, and MCP server
+are thin HTTP clients over the daemon's REST API, so they now build and ship for
+macOS and Windows and drive a remote Linux daemon. A reworked installer turns
+setup into a one-liner for both the full daemon and a client-only install.
+
+### Added
+
+- **Cross-platform client binaries.** macOS and Windows client artifacts are
+  built in CI and published with each release; the daemon itself stays
+  Linux-only (it needs KVM + Firecracker).
+- **`install.sh --client`** — install just the client (no root, no VM), pointed
+  at a remote daemon with `--addr`/`--token`, with client-mode detection and
+  interactive prompts for a smooth first run.
+- **Release acceptance smokes** — an end-to-end acceptance smoke plus a full
+  smoke runner for validating a release build.
+
+### Changed
+
+- **Installer hardening:** cross-platform install instructions, a warning when
+  `e2fsprogs` tools are missing, and an updated config example for OCI images.
+- Internal: the egress allowlist moved to a leaf package so the client
+  cross-compiles without pulling in Linux-only daemon code.
+
 ## [0.3.0] — 2026-07-09
 
 **The "safe `docker run` for untrusted code" release.** Boot an unmodified OCI
@@ -276,6 +345,8 @@ Initial release — the core single-host Firecracker microVM sandbox runtime.
   `-o json`), native language rootfs profiles (base/python/node/go), a
   Prometheus `/metrics` endpoint, and an install script + systemd unit.
 
+[0.3.2]: https://github.com/gnana997/crucible/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/gnana997/crucible/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gnana997/crucible/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/gnana997/crucible/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/gnana997/crucible/compare/v0.1.2...v0.1.3
