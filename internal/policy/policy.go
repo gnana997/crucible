@@ -17,7 +17,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/gnana997/crucible/internal/network"
+	"github.com/gnana997/crucible/internal/netallow"
 )
 
 // Operation is a daemon-level verb a token may be allowed to perform. It maps to
@@ -115,7 +115,7 @@ func (p Policy) Validate() error {
 	if p.NetAllowMax != nil && len(*p.NetAllowMax) > 0 {
 		// Reuse the network layer's validator so policy patterns can never drift
 		// from what the allowlist accepts (rejects bare "*", bad labels, etc.).
-		if _, err := network.New(*p.NetAllowMax); err != nil {
+		if _, err := netallow.New(*p.NetAllowMax); err != nil {
 			errs = append(errs, fmt.Errorf("net_allow_max: %w", err))
 		}
 	}

@@ -1,3 +1,10 @@
+//go:build linux
+
+// The daemon needs KVM + Firecracker + jailer, so its implementation is
+// Linux-only. This file is the *sole* importer of the Linux-only daemon
+// packages (sandbox/runner/jailer/network/oci/fsutil/…); gating it here is
+// what lets the client (CLI/TUI/`mcp serve`) cross-compile to macOS and
+// Windows. The non-Linux build gets the stub runDaemon in daemon_stub.go.
 package main
 
 import (

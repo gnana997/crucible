@@ -11,13 +11,24 @@ BASE_ROOTFS ?=
 OUT_ROOTFS  ?= assets/rootfs.ext4
 ROOTFS_SIZE ?= 1G
 
-.PHONY: all build bench agent rootfs profile test race vet fmt lint tidy clean hooks help
+# Cross-platform client build. The daemon subcommand is Linux-only (it needs
+# KVM/Firecracker) and stubs out elsewhere, so the CLI + `mcp serve` build for
+# macOS/Windows too. Override CLIENT_GOOS/CLIENT_GOARCH; default to the host.
+DIST          ?= dist
+CLIENT_GOOS   ?= $(shell go env GOOS)
+CLIENT_GOARCH ?= $(shell go env GOARCH)
+CLIENT_EXT    := $(if $(filter windows,$(CLIENT_GOOS)),.exe,)
+CLIENT_PLATFORMS ?= darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64
+
+.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help
 
 all: fmt vet test build
 
 help:
 	@echo "targets:"
 	@echo "  build    - build the crucible daemon binary"
+	@echo "  client   - cross-build the client CLI (CLIENT_GOOS/CLIENT_GOARCH; default host)"
+	@echo "  client-all - cross-build the client for every CLIENT_PLATFORMS target"
 	@echo "  agent    - build the guest agent (linux/amd64, static)"
 	@echo "  rootfs   - bake agent into an ext4 rootfs (needs BASE_ROOTFS=...)"
 	@echo "  profile  - build a native language rootfs profile (needs PROFILE=..., docker)"
@@ -43,6 +54,22 @@ build: agent
 bench:
 	mkdir -p bin
 	go build -ldflags '$(LDFLAGS)' -o bin/crucible-bench ./cmd/crucible-bench
+
+# Cross-build the client CLI (CLI + `mcp serve`) for one target. No embedagent
+# tag: the embedded agent is only used by the daemon's image conversion, which
+# doesn't exist off-Linux.
+#   make client CLIENT_GOOS=darwin CLIENT_GOARCH=arm64
+client:
+	@mkdir -p $(DIST)
+	@echo "building client $(CLIENT_GOOS)/$(CLIENT_GOARCH) -> $(DIST)/$(BINARY)_$(CLIENT_GOOS)_$(CLIENT_GOARCH)$(CLIENT_EXT)"
+	GOOS=$(CLIENT_GOOS) GOARCH=$(CLIENT_GOARCH) CGO_ENABLED=0 \
+	    go build -ldflags '$(LDFLAGS)' -o $(DIST)/$(BINARY)_$(CLIENT_GOOS)_$(CLIENT_GOARCH)$(CLIENT_EXT) ./cmd/crucible
+
+# Cross-build the client for every target in CLIENT_PLATFORMS.
+client-all:
+	@for p in $(CLIENT_PLATFORMS); do \
+	    $(MAKE) --no-print-directory client CLIENT_GOOS=$${p%/*} CLIENT_GOARCH=$${p#*/} || exit 1; \
+	done
 
 # The guest agent always runs inside a Linux microVM, so we pin the
 # target triple and build statically to avoid libc surprises inside
@@ -96,3 +123,4 @@ tidy:
 
 clean:
 	rm -f $(BINARY) $(AGENT) $(EMBEDDED_AGENT)
+	rm -rf $(DIST)

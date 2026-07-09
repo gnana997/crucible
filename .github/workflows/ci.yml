@@ -55,3 +55,51 @@ jobs:
         with:
           version: v2.12.2   # v2 config (.golangci.yml `version: "2"`) needs action v7+; pinned to match local
           args: --timeout=5m
+
+  # The client (CLI + `mcp serve`) must keep cross-compiling: the daemon is
+  # Linux-only and stubs out elsewhere (cmd/crucible/daemon_stub.go). This
+  # catches a stray Linux-only import sneaking into a client path. Cheap
+  # cross-compile on ubuntu — no per-OS runner needed.
+  cross-build:
+    name: cross-build client (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin/arm64, darwin/amd64, windows/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Cross-build ${{ matrix.target }}
+        run: |
+          t="${{ matrix.target }}"
+          GOOS="${t%/*}" GOARCH="${t#*/}" go build -o /dev/null ./cmd/crucible
+
+  # Native macOS run: prove the client actually works on a Mac, the daemon
+  # stub fires with a helpful message, and the pure-Go client/MCP packages
+  # (the code a Mac user exercises) pass their tests on darwin.
+  client-macos:
+    name: client (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Build client + verify daemon stub
+        run: |
+          go build -o /tmp/crucible ./cmd/crucible
+          /tmp/crucible version
+          out="$(/tmp/crucible daemon 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "Linux only" || { echo "::error::daemon stub message missing"; exit 1; }
+      - name: Pure-Go client/MCP tests on darwin
+        run: |
+          go test -count=1 \
+            ./internal/client/... ./internal/mcpserver/... ./internal/api/... \
+            ./internal/netallow/... ./internal/policy/... ./internal/agentwire/... \
+            ./internal/agentapi/... ./internal/tokenstore/... ./internal/version/...

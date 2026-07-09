@@ -57,6 +57,53 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" dist/*.tar.gz dist/*.sha256 --repo "${GITHUB_REPOSITORY}"
 
+  # Client-only binaries for the platforms that can't host a daemon (they run
+  # the CLI + `mcp serve` against a remote Linux daemon). The linux/amd64 full
+  # binary is shipped by the `binary` job above.
+  clients:
+    needs: create-release
+    runs-on: ubuntu-latest        # cross-compiles; no per-OS runner needed
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [darwin/arm64, darwin/amd64, windows/amd64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # git describe needs tags + history for the version
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: true
+      - name: Build client ${{ matrix.target }}
+        run: |
+          t="${{ matrix.target }}"
+          make client CLIENT_GOOS="${t%/*}" CLIENT_GOARCH="${t#*/}"
+      - name: Package
+        run: |
+          t="${{ matrix.target }}"; os="${t%/*}"; arch="${t#*/}"
+          pkg="crucible_${GITHUB_REF_NAME}_${os}_${arch}"
+          mkdir -p "stage/$pkg"
+          cp LICENSE README.md "stage/$pkg/"
+          if [ "$os" = "windows" ]; then
+            cp "dist/crucible_${os}_${arch}.exe" "stage/$pkg/crucible.exe"
+            ( cd stage && zip -qr "${pkg}.zip" "$pkg" )
+            ( cd stage && sha256sum "${pkg}.zip" > "${pkg}.zip.sha256" )
+          else
+            cp "dist/crucible_${os}_${arch}" "stage/$pkg/crucible"
+            chmod +x "stage/$pkg/crucible"
+            tar -C stage -czf "stage/${pkg}.tar.gz" "$pkg"
+            ( cd stage && sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256" )
+          fi
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            $(ls stage/*.tar.gz stage/*.zip 2>/dev/null) \
+            $(ls stage/*.sha256 2>/dev/null) \
+            --repo "${GITHUB_REPOSITORY}"
+
   profiles:
     needs: create-release
     runs-on: ubuntu-latest
