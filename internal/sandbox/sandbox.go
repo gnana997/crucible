@@ -955,6 +955,20 @@ func (m *Manager) PutFiles(ctx context.Context, id, dest string, tar io.Reader) 
 	return s.execClient.PushFiles(ctx, dest, tar)
 }
 
+// ReadFile reads a single file at path inside the sandbox's guest and returns
+// its bytes (capped at maxBytes). See agentapi.Client.ReadFile. Fails fast with
+// ErrNotFound for unknown IDs.
+func (m *Manager) ReadFile(ctx context.Context, id, path string, maxBytes int) ([]byte, error) {
+	s, err := m.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if s.execClient == nil {
+		return nil, fmt.Errorf("sandbox %s has no agent vsock path", id)
+	}
+	return s.execClient.ReadFile(ctx, path, maxBytes)
+}
+
 // Get returns the sandbox with the given ID, or ErrNotFound.
 func (m *Manager) Get(id string) (*Sandbox, error) {
 	m.mu.RLock()

@@ -145,6 +145,36 @@ func (c *Client) CopyTo(ctx context.Context, sandboxID, dest string, tar io.Read
 	return decodeInto[agentwire.FilesPutResult](resp)
 }
 
+// ReadFile reads a single file at path inside a sandbox
+// (GET /sandboxes/{id}/files?path=…) and returns its bytes, capped at maxBytes.
+// Only file content flows back; nothing is written on the host.
+func (c *Client) ReadFile(ctx context.Context, sandboxID, path string, maxBytes int) ([]byte, error) {
+	u := c.base + "/sandboxes/" + url.PathEscape(sandboxID) + "/files?path=" + url.QueryEscape(path)
+	if maxBytes > 0 {
+		u += "&max_bytes=" + strconv.Itoa(maxBytes)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return nil, errorFrom(resp)
+	}
+	limit := int64(1 << 30)
+	if maxBytes > 0 {
+		limit = int64(maxBytes)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
 // Snapshot captures a sandbox (POST /sandboxes/{id}/snapshot).
 func (c *Client) Snapshot(ctx context.Context, sandboxID string) (api.SnapshotResponse, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/snapshot", nil)

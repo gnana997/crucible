@@ -1,12 +1,17 @@
 package mcpserver
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"path"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -228,6 +233,10 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createSandbox) })
 	add("exec", "Run a command in an existing sandbox and return its captured output.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.exec) })
+	add("write_files", "Write files into a sandbox by content (no image build, no Dockerfile). Paths are absolute inside the guest; parents are created and existing files overwritten.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.writeFiles) })
+	add("read_file", "Read the content of a single file from a sandbox (e.g. a test report or generated file). Returns bounded content; binary is returned base64-encoded.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.readFile) })
 	add("logs", "Read a sandbox's durable logs (entrypoint output and/or exec activity). Logs survive the sandbox, so a crashed workload can still be inspected.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.logs) })
 	add("stop_sandbox", "Gracefully stop a sandbox's entrypoint (StopSignal + grace, then SIGKILL). The sandbox remains; use delete_sandbox to remove it.",
@@ -405,6 +414,117 @@ func (h *handlers) exec(ctx context.Context, _ *mcp.CallToolRequest, in execInpu
 		return nil, execOutput{}, err
 	}
 	return nil, toExecOutput(res, stdout.String(), stderr.String()), nil
+}
+
+// mcpMaxReadBytes caps read_file when the caller omits max_bytes — modest so a
+// file's content doesn't blow up the agent's context window.
+const mcpMaxReadBytes = 1 << 20
+
+type writeFileEntry struct {
+	Path    string `json:"path" jsonschema:"absolute path in the guest, e.g. /work/main.py"`
+	Content string `json:"content" jsonschema:"the file's content (UTF-8 text)"`
+	Mode    string `json:"mode,omitempty" jsonschema:"octal permissions like \"0644\" (default 0644)"`
+}
+
+type writeFilesInput struct {
+	SandboxID string           `json:"sandbox_id" jsonschema:"id of the sandbox to write into"`
+	Files     []writeFileEntry `json:"files" jsonschema:"files to create/overwrite in the guest"`
+}
+
+type writeFilesOutput struct {
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
+}
+
+func (h *handlers) writeFiles(ctx context.Context, _ *mcp.CallToolRequest, in writeFilesInput) (*mcp.CallToolResult, writeFilesOutput, error) {
+	if in.SandboxID == "" {
+		return nil, writeFilesOutput{}, errors.New("sandbox_id is required")
+	}
+	if len(in.Files) == 0 {
+		return nil, writeFilesOutput{}, errors.New("files must not be empty")
+	}
+	// Build a tar whose entries are the requested absolute paths (leading slash
+	// stripped) and push it beneath the guest root, reusing the cp machinery.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, f := range in.Files {
+		if f.Path == "" || !path.IsAbs(f.Path) {
+			return nil, writeFilesOutput{}, fmt.Errorf("file path must be absolute: %q", f.Path)
+		}
+		mode := int64(0o644)
+		if f.Mode != "" {
+			m, err := strconv.ParseInt(f.Mode, 8, 32)
+			if err != nil {
+				return nil, writeFilesOutput{}, fmt.Errorf("invalid mode %q: %w", f.Mode, err)
+			}
+			mode = m
+		}
+		hdr := &tar.Header{
+			Name:     strings.TrimPrefix(path.Clean(f.Path), "/"),
+			Typeflag: tar.TypeReg,
+			Mode:     mode,
+			Size:     int64(len(f.Content)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, writeFilesOutput{}, err
+		}
+		if _, err := tw.Write([]byte(f.Content)); err != nil {
+			return nil, writeFilesOutput{}, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, writeFilesOutput{}, err
+	}
+
+	res, err := h.cfg.Client.CopyTo(ctx, in.SandboxID, "/", &buf)
+	if err != nil {
+		return nil, writeFilesOutput{}, err
+	}
+	return nil, writeFilesOutput{Files: res.Files, Bytes: res.Bytes}, nil
+}
+
+type readFileInput struct {
+	SandboxID string `json:"sandbox_id" jsonschema:"id of the sandbox to read from"`
+	Path      string `json:"path" jsonschema:"absolute path of the file in the guest"`
+	MaxBytes  int    `json:"max_bytes,omitempty" jsonschema:"cap the read in bytes (default 1 MiB)"`
+}
+
+type readFileOutput struct {
+	Path      string `json:"path"`
+	Content   string `json:"content" jsonschema:"file content; base64-encoded when the file is binary (see base64)"`
+	Bytes     int    `json:"bytes"`
+	Base64    bool   `json:"base64" jsonschema:"true when content is base64-encoded binary"`
+	Truncated bool   `json:"truncated" jsonschema:"true when the file was longer than the read cap"`
+}
+
+func (h *handlers) readFile(ctx context.Context, _ *mcp.CallToolRequest, in readFileInput) (*mcp.CallToolResult, readFileOutput, error) {
+	if in.SandboxID == "" {
+		return nil, readFileOutput{}, errors.New("sandbox_id is required")
+	}
+	if in.Path == "" {
+		return nil, readFileOutput{}, errors.New("path is required")
+	}
+	max := in.MaxBytes
+	if max <= 0 {
+		max = mcpMaxReadBytes
+	}
+	// Ask the daemon for one extra byte so we can report truncation accurately.
+	data, err := h.cfg.Client.ReadFile(ctx, in.SandboxID, in.Path, max+1)
+	if err != nil {
+		return nil, readFileOutput{}, err
+	}
+	truncated := len(data) > max
+	if truncated {
+		data = data[:max]
+	}
+	out := readFileOutput{Path: in.Path, Bytes: len(data), Truncated: truncated}
+	if utf8.Valid(data) {
+		out.Content = string(data)
+	} else {
+		out.Content = base64.StdEncoding.EncodeToString(data)
+		out.Base64 = true
+	}
+	return nil, out, nil
 }
 
 func (h *handlers) snapshot(ctx context.Context, _ *mcp.CallToolRequest, in sandboxIDInput) (*mcp.CallToolResult, snapshotOutput, error) {

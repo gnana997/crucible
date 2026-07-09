@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/gnana997/crucible/internal/agentwire"
@@ -22,6 +23,48 @@ import (
 // project into the guest; 1 GiB is generous and bounds a runaway upload. The
 // daemon applies the same cap on its side.
 const maxFilesBody = 1 << 30
+
+// defaultFileReadBytes caps a GET /files single-file read when the caller
+// doesn't set ?max_bytes=. Bounds memory for a "read my result file" pull.
+const defaultFileReadBytes = 10 << 20
+
+// handleFilesGet returns the bytes of a single file at GET /files?path=<f>
+// (optionally capped by ?max_bytes=). This is a content read (guest -> host):
+// only file bytes flow out, nothing is written to the host, so it has no
+// path-traversal surface. Directories are refused (single-file only).
+func handleFilesGet(w http.ResponseWriter, r *http.Request) {
+	p := r.URL.Query().Get("path")
+	if p == "" || !filepath.IsAbs(p) {
+		http.Error(w, "files: an absolute ?path= (file in the guest) is required", http.StatusBadRequest)
+		return
+	}
+	max := defaultFileReadBytes
+	if v := r.URL.Query().Get("max_bytes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			max = n
+		}
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("files: %v", err), http.StatusNotFound)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "files: path is a directory (single-file read only)", http.StatusBadRequest)
+		return
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("files: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	// Read at most max bytes; the caller asked for a bounded read.
+	if _, err := io.Copy(w, io.LimitReader(f, int64(max))); err != nil {
+		slog.Warn("files get: copy failed", "path", p, "err", err)
+	}
+}
 
 // handleFilesPut extracts a tar streamed to PUT /files?path=<dest> into the
 // guest filesystem beneath the (absolute) destination directory. It is a plain

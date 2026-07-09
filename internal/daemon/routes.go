@@ -43,6 +43,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/files", s.handlePutFiles)
+	mux.HandleFunc("GET /sandboxes/{id}/files", s.handleGetFile)
 	// Supervised-service API (experimental): proxies to the guest
 	// agent's supervisor. Mutations are gated as `exec` operations,
 	// reads as `read` — see operationFor.
@@ -709,6 +710,46 @@ func (s *Server) handlePutFiles(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// defaultFileReadBytes caps a GET-files single-file read (the read_file MCP
+// tool) when ?max_bytes= is unset.
+const defaultFileReadBytes = 10 << 20
+
+// handleGetFile returns the bytes of a single guest file (GET
+// /sandboxes/{id}/files?path=<f>&max_bytes=<n>) — a content read, guest -> host.
+// Only file bytes flow out and nothing is written host-side, so there is no
+// traversal surface. Gated as read (GET; see operationFor).
+func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
+		return
+	}
+	p := r.URL.Query().Get("path")
+	if p == "" {
+		writeError(w, http.StatusBadRequest, errors.New("path query param (guest file) is required"))
+		return
+	}
+	maxBytes := defaultFileReadBytes
+	if v := r.URL.Query().Get("max_bytes"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxBytes = n
+		}
+	}
+
+	data, err := s.cfg.Manager.ReadFile(r.Context(), id, p, maxBytes)
+	if err != nil {
+		if errors.Is(err, sandbox.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
 }
 
 // handleExecInteractive bridges a hijacked client connection to a hijacked

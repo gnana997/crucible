@@ -107,6 +107,11 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpCreate}
 	case "exec":
 		return []policy.Operation{policy.OpExec}
+	case "write_files":
+		// Writing files into a sandbox is exec-grade power over the guest.
+		return []policy.Operation{policy.OpExec}
+	case "read_file":
+		return []policy.Operation{policy.OpRead}
 	case "stop_sandbox":
 		// The daemon gates service/stop as an exec-class mutation.
 		return []policy.Operation{policy.OpExec}

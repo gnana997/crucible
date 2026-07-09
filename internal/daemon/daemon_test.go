@@ -559,6 +559,39 @@ func TestPutFilesRouteSandboxNotFound(t *testing.T) {
 	}
 }
 
+func TestGetFileRouteValidatesID(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/sandboxes/not-a-real-id/files?path=/x")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGetFileRouteRequiresPath(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/sandboxes/sbx_0000000000000/files")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestGetFileRouteSandboxNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/sandboxes/sbx_0000000000000/files?path=/x")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestExecSandboxRouteRejectsEmptyCmd(t *testing.T) {
 	ts, _ := newTestServer(t)
 

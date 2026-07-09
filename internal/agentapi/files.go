@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/gnana997/crucible/internal/agentwire"
 )
@@ -40,3 +41,34 @@ func (c *Client) PushFiles(ctx context.Context, dest string, tar io.Reader) (age
 	}
 	return res, nil
 }
+
+// ReadFile reads a single file at path inside the guest via GET /files and
+// returns its bytes, capped at maxBytes. Only content flows out; nothing is
+// written on the caller's side.
+func (c *Client) ReadFile(ctx context.Context, path string, maxBytes int) ([]byte, error) {
+	u := "http://agent/files?path=" + url.QueryEscape(path)
+	if maxBytes > 0 {
+		u += "&max_bytes=" + strconv.Itoa(maxBytes)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("agentapi: files read: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		return nil, fmt.Errorf("agentapi: files read returned %d: %s", resp.StatusCode, string(msg))
+	}
+	limit := int64(defaultReadCap)
+	if maxBytes > 0 {
+		limit = int64(maxBytes)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// defaultReadCap bounds a ReadFile response when the caller passes maxBytes<=0.
+const defaultReadCap = 10 << 20

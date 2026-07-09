@@ -5,6 +5,10 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,6 +88,56 @@ func TestExtractTarInto_RejectsTraversal(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHandleFilesGet(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "out.txt")
+	if err := os.WriteFile(fp, []byte("RESULT-CONTENT"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	do := func(query string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/files?"+query, nil)
+		handleFilesGet(rec, r)
+		return rec
+	}
+
+	t.Run("reads a file", func(t *testing.T) {
+		rec := do("path=" + url.QueryEscape(fp))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+		}
+		if b, _ := io.ReadAll(rec.Body); string(b) != "RESULT-CONTENT" {
+			t.Errorf("body = %q, want RESULT-CONTENT", b)
+		}
+	})
+
+	t.Run("caps at max_bytes", func(t *testing.T) {
+		rec := do("path=" + url.QueryEscape(fp) + "&max_bytes=6")
+		if b, _ := io.ReadAll(rec.Body); string(b) != "RESULT" {
+			t.Errorf("capped body = %q, want RESULT", b)
+		}
+	})
+
+	t.Run("rejects a directory", func(t *testing.T) {
+		if rec := do("path=" + url.QueryEscape(dir)); rec.Code != http.StatusBadRequest {
+			t.Errorf("dir status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("requires an absolute path", func(t *testing.T) {
+		if rec := do("path=relative.txt"); rec.Code != http.StatusBadRequest {
+			t.Errorf("relative status = %d, want 400", rec.Code)
+		}
+	})
+
+	t.Run("missing file is 404", func(t *testing.T) {
+		if rec := do("path=" + url.QueryEscape(filepath.Join(dir, "nope"))); rec.Code != http.StatusNotFound {
+			t.Errorf("missing status = %d, want 404", rec.Code)
+		}
+	})
 }
 
 func TestSafeJoin(t *testing.T) {

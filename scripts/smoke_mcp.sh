@@ -167,8 +167,9 @@ send({"jsonrpc":"2.0","method":"notifications/initialized"})
 send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
 tools = sorted(t["name"] for t in read()["result"]["tools"])
 print("tools/list:", tools)
-if "run" not in tools or "fork" not in tools:
-    fail("catalog missing core tools: %s" % tools)
+for t in ("run", "fork", "write_files", "read_file"):
+    if t not in tools:
+        fail("catalog missing core tool %r: %s" % (t, tools))
 
 def call(name, args):
     send({"jsonrpc":"2.0","id":99,"method":"tools/call",

@@ -9,6 +9,7 @@
 #   01  daemon healthy (images)
 #   02  boot a sandbox from an OCI image (fresh embedded agent is injected)
 #   03  cp a single file  → exec cat confirms its content in the guest
+#   03b read the file back → GET /files returns its content (+ max_bytes caps it)
 #   04  cp a directory    → exec confirms a nested file under <dest>/<basename>
 #   05  cp overwrites an existing file in the guest
 #   06  the one-shot exec path is unaffected (sanity)
@@ -133,6 +134,21 @@ if cli cp "$SRC_DIR/hello.txt" "$SBX:/work" 2>&1 | grep -q 'copied'; then
   fi
 else
   fail "cp single file did not report success"
+fi
+
+# ---- 03b read a file back out (GET /files — the read_file/read plumbing) ----
+echo "== 03b read the file's content back out (daemon GET /files)"
+BODY="$(curl -s --max-time 5 "$BASE_URL/sandboxes/$SBX/files?path=/work/hello.txt" 2>&1)"
+if [[ "$BODY" == *"CP-SINGLE-FILE-OK"* ]]; then
+  pass "read the file's content back (guest → host, content only)"
+else
+  fail "read-back content wrong: $BODY"
+fi
+CAPPED="$(curl -s --max-time 5 "$BASE_URL/sandboxes/$SBX/files?path=/work/hello.txt&max_bytes=6" 2>&1)"
+if [[ "$CAPPED" == "CP-SIN" ]]; then
+  pass "max_bytes caps the read (got '$CAPPED')"
+else
+  fail "max_bytes cap wrong: '$CAPPED'"
 fi
 
 # ---- 04 cp a directory (recursive) ------------------------------------------
