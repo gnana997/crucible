@@ -109,7 +109,7 @@ func TestCmdlineMatchesIDRequiresDashIDAdjacency(t *testing.T) {
 	}{
 		{"jailer argv", nul("/usr/bin/jailer", "--id", "sbx-abc", "--exec-file", "/fc"), "sbx-abc", true},
 		{"firecracker argv", nul("firecracker", "--id", "sbx-abc"), "sbx-abc", true},
-		// The M6 danger: ambiguous id appearing as a bare arg, NOT after --id.
+		// The danger: an ambiguous id appearing as a bare arg, NOT after --id.
 		{"bare ambiguous token", nul("sleep", "1"), "1", false},
 		{"id present but not after --id", nul("--exec-file", "sbx-abc", "--id", "other"), "sbx-abc", false},
 		{"no match", nul("bash", "-c", "true"), "sbx-abc", false},

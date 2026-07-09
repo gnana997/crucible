@@ -824,7 +824,7 @@ func TestForkSnapshotRejectsBadCount(t *testing.T) {
 
 // streamPastWriteTimeout serves a chunked body that streams for longer than
 // the server's WriteTimeout, optionally clearing the write deadline the way
-// handleExecSandbox does. It is the mechanism M7's fix relies on: the exec
+// handleExecSandbox does. It is the mechanism the exec write-deadline fix relies on: the exec
 // route must SetWriteDeadline(zero) so a long exec isn't truncated mid-stream.
 func streamPastWriteTimeout(clearDeadline bool) http.HandlerFunc {
 	const chunks = 6
@@ -991,7 +991,7 @@ func TestExecFlushReachesWireThroughMiddleware(t *testing.T) {
 	release()
 }
 
-// TestSnapshotSurvivesWriteTimeoutOverHTTP proves the N2 fix: a snapshot
+// TestSnapshotSurvivesWriteTimeoutOverHTTP proves the write-timeout fix: a snapshot
 // whose server-side work outlasts the server WriteTimeout still delivers its
 // ID to the client. The WriteTimeout is armed once at request start; before
 // the fix, handleCreateSnapshot never cleared it, so the snapshot was written

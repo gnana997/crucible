@@ -111,7 +111,7 @@ func TestStageOverwritesExisting(t *testing.T) {
 	}
 }
 
-// TestStageSnapshotArtifactsPrivatePerFork is the N1 regression
+// TestStageSnapshotArtifactsPrivatePerFork is the per-fork-isolation regression
 // (H1's second half). It replaces a test that asserted restore
 // artifacts were hard-linked — one inode shared by every fork — on
 // the theory that "COW at the firecracker layer" protected them.

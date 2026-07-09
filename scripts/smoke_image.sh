@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Unprivileged end-to-end smoke for the OCI image pipeline (D1).
+# Unprivileged end-to-end smoke for the OCI image pipeline.
 #
 # No KVM, no sudo, no VM boot: this drives the daemon's /images API and
 # validates the converted ext4 artifacts on disk with fsck + debugfs.
-# Booting images is D2; this proves conversion end-to-end through the
+# Booting images is covered by the boot smokes; this proves conversion end-to-end through the
 # daemon.
 #
 # Scenarios:

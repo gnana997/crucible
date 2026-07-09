@@ -254,7 +254,7 @@ func (r *allowIPRecorder) snapshot() []allowIPCall {
 // --- tests ------------------------------------------------------
 
 // TestStartReturnsReadyProxyImmediately pins the readiness guarantee that made
-// the former Manager.WaitForDNSProxyReady redundant (L11): Start returns only
+// the former Manager.WaitForDNSProxyReady redundant: Start returns only
 // after the UDP listener is bound and the server's NotifyStartedFunc has fired,
 // so a query sent the instant Start returns — no wait, no retry — is answered.
 func TestStartReturnsReadyProxyImmediately(t *testing.T) {

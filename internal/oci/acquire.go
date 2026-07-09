@@ -44,7 +44,7 @@ type pullConfig struct {
 
 // WithInsecureRegistry allows plain-HTTP registries. Used by tests
 // against in-process registries; also the eventual knob for LAN
-// registries (the full auth story is D3).
+// registries (credentialed-registry auth is future work).
 func WithInsecureRegistry() PullOption {
 	return func(c *pullConfig) { c.nameOpts = append(c.nameOpts, name.Insecure) }
 }
@@ -53,7 +53,7 @@ func WithInsecureRegistry() PullOption {
 // linux/amd64. Multi-arch indexes resolve to the matching child (a
 // missing child is an error); a single-platform image of another
 // arch/OS is rejected. Credentialed registries are deliberately not
-// supported yet (D3): auth is pinned to anonymous so a host's docker
+// supported yet: auth is pinned to anonymous so a host's docker
 // login can't leak into daemon behavior.
 func Pull(ctx context.Context, ref string, opts ...PullOption) (*Acquired, error) {
 	var cfg pullConfig

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke test for the supervised-service API (B1-core).
+# End-to-end smoke test for the supervised-service API.
 #
 # Scenarios:
 #
@@ -177,8 +177,8 @@ exec_in() {
 
 # wait_guest_http <id> <port> [tries] — poll an in-guest HTTP GET until
 # it returns 200. state=running means the process is alive, not that
-# the listener is bound yet (that's B3 health checks, P1b) — python
-# needs a beat to bind, and a restored fork needs a beat to settle.
+# the listener is bound yet (readiness/health checks are future work) —
+# python needs a beat to bind, and a restored fork needs a beat to settle.
 wait_guest_http() {
   local id="$1" port="$2" tries="${3:-20}"
   local body

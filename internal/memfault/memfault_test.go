@@ -151,7 +151,7 @@ func TestServesPagesFromMemoryFile(t *testing.T) {
 // TestCloseBeforeConnect exercises the lifecycle where the VM never
 // arrives (e.g. LoadSnapshot failed for another reason): Close must
 // not hang and must be idempotent.
-// TestSocketIsOwnerOnly guards L4: the uffd socket must not be
+// TestSocketIsOwnerOnly guards the uffd-socket permissions: the socket must not be
 // world-writable (the old 0o666), so a stray local process can't connect
 // first and feed a bogus layout/fd. Without a jail uid it stays owned by
 // us at 0o600.

@@ -111,7 +111,7 @@ func snapshotTimeout(memoryMiB int) time.Duration {
 // source after a failed snapshot. The caller ctx is unusable there — it may
 // be why the snapshot failed, and is cancelled once the sized budget above
 // expires — so the rollback runs on a fresh, bounded ctx, mirroring the
-// Shutdown grace (M3): a wedged firecracker must not hang the Snapshot
+// Shutdown grace: a wedged firecracker must not hang the Snapshot
 // goroutine forever with an unbounded Resume(context.Background()).
 const resumeRollbackTimeout = 10 * time.Second
 

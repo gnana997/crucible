@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# D2-m4 — the compat-ten matrix. P1a's exit bar.
+# OCI image compatibility matrix — the exit bar for image support.
 #
 # Boots ten unmodified public images across the spectrum of styles
 # crucible must handle, and asserts each one works: server images boot
@@ -57,7 +57,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible OCI compat-ten (P1a exit bar)"
+echo " crucible OCI image compatibility matrix"
 echo "==============================================================="
 echo " output dir : $SMOKE_ROOT"
 echo " kernel     : $KERNEL"
@@ -238,7 +238,7 @@ run_compat gcr.io/distroless/base-debian12 boot   -
 # ---- summary ----------------------------------------------------------------
 
 echo "==============================================================="
-echo " compat-ten: $PASS passed, $FAIL failed"
+echo " OCI compat: $PASS passed, $FAIL failed"
 echo " transcripts: $SMOKE_ROOT"
 echo "==============================================================="
 [[ "$FAIL" -eq 0 ]]

@@ -2,7 +2,7 @@
 #
 # Interactive-exec (shell) smoke.
 #
-# Proves the M1 "explore untrusted code" UX: a real, long-lived shell into a
+# Proves the "explore untrusted code" UX: a real, long-lived shell into a
 # running sandbox over a hijacked full-duplex frame stream (stdin ↔ output),
 # with persistent session state and no PTY.
 #

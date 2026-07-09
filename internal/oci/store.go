@@ -64,8 +64,8 @@ type ImageRecord struct {
 	ConvertMode       string `json:"convert_mode"`
 	ConvertedAtUnixMs int64  `json:"converted_at_unix_ms"`
 
-	// RunConfig is the image's runtime contract — the source D2 will
-	// compute the effective service spec from.
+	// RunConfig is the image's runtime contract — the source the boot
+	// path computes the effective service spec from.
 	RunConfig *RunConfig `json:"run_config"`
 }
 

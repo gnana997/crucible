@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build + run smoke (M4 + M7).
+# build + run smoke.
 #
 # Proves the two-line docker-parity story:
 #   crucible build -t <tag> <context>   → image in the store (prints digest)

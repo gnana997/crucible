@@ -49,7 +49,7 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 	defer cancel()
 
 	// One-shot exec keeps today's semantics (agent env, root); Docker-
-	// exec-style user/env fidelity is deferred past P1a (decision D2-8).
+	// exec-style per-user/env fidelity is a later refinement.
 	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil, nil,
 		fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr))
 	if err != nil {

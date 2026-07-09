@@ -137,7 +137,7 @@ func TestWaitReady(t *testing.T) {
 	})
 }
 
-// TestShutdownKillsWedgedProcessWithoutDeadline guards M3: internal
+// TestShutdownKillsWedgedProcessWithoutDeadline guards shutdown teardown: internal
 // teardown passes context.Background (no deadline), and Shutdown must
 // still escalate to SIGKILL. A process that ignores SIGINT stands in for a
 // wedged firecracker — before the fix, Shutdown's ctx.Done() was nil and
@@ -172,7 +172,7 @@ func TestShutdownKillsWedgedProcessWithoutDeadline(t *testing.T) {
 			t.Error("Shutdown returned nil, want a timeout-then-kill error")
 		}
 	case <-time.After(defaultShutdownGrace + 10*time.Second):
-		t.Fatal("Shutdown hung on a SIGINT-ignoring process (M3 regression)")
+		t.Fatal("Shutdown hung on a SIGINT-ignoring process (teardown regression)")
 	}
 }
 

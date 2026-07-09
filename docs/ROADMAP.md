@@ -53,13 +53,13 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 ### v0.3.x — Copy files into/out of a sandbox (`crucible cp`) *(next)*
 
-The most-requested gap in the agentic iteration loop: get *your* files in and run them, with no image build and no Dockerfile. An immediate follow-up to the v0.3.0 single-op theme, independent of the v0.4 work.
+The most-requested gap in the agentic iteration loop: get *your* files in and run them, with no image build and no Dockerfile. A small follow-up to v0.3.0, independent of the v0.4 work.
 
 - • **`crucible cp <local> <sbx>:<path>`** — copy a file or directory into a running sandbox (tar over vsock; the safe-*copy* model, not a host bind-mount, so the guest gets files it can't use to reach back). Turns any sandbox into a scratch workspace: `run python:3.12` → `cp ./script.py <sbx>:/app/` → `exec`/`shell`. Pairs with snapshot + fork — `cp` a project in once, then fork N variations that all inherit it.
 - • **`crucible cp <sbx>:<path> <local>`** — copy artifacts back out. The security-sensitive direction: the tar comes from untrusted guest code, so host-side extraction is tar-slip-safe and size-bounded (adversarial-input handling).
 - • **MCP `write_files` / `read_file`** — the "drop code in and run it" primitive for agents, alongside `exec`.
 
-### v0.4 — Durable, long-lived workloads ("manage many")
+### v0.4 — Durable, long-lived workloads
 
 v0.3.0 sandboxes are consciously ephemeral — a daemon restart drops running VMs. v0.4 is about making a workload something you *manage over time* rather than only spin up and tear down.
 

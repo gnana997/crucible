@@ -505,7 +505,7 @@ func TestManagerSnapshotUnknownSandbox(t *testing.T) {
 
 // wedgedHandle models a firecracker that has wedged during CreateSnapshot:
 // Snapshot fails (triggering Manager.Snapshot's resume rollback) and Resume
-// only unblocks if handed a ctx with a deadline. Before the N3 fix the
+// only unblocks if handed a ctx with a deadline. Before the bounded-resume fix the
 // rollback passed context.Background() — deadline-less — so a wedged Resume
 // blocked the Snapshot goroutine forever.
 type wedgedHandle struct {
@@ -532,7 +532,7 @@ func (h *wedgedHandle) Resume(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// TestSnapshotRollbackResumeIsBounded proves the N3 fix: when CreateSnapshot
+// TestSnapshotRollbackResumeIsBounded proves the bounded-resume fix: when CreateSnapshot
 // fails against a wedged firecracker, the rollback Resume runs on a bounded
 // ctx so Manager.Snapshot returns instead of hanging the daemon goroutine.
 func TestSnapshotRollbackResumeIsBounded(t *testing.T) {

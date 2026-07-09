@@ -135,7 +135,7 @@ func waitInBackground(cmd *exec.Cmd, limit time.Duration) bool {
 	}
 }
 
-// TestExecTimeoutDoesNotWedgeOnInheritedPipe is the primary N4 guard: a command
+// TestExecTimeoutDoesNotWedgeOnInheritedPipe is the primary anti-wedge guard: a command
 // that backgrounds a long sleep and exits 0 leaves the sleep holding the
 // command's inherited stdout pipe. Without configureExecProcess's WaitDelay,
 // cmd.Wait blocks on that pipe until the sleep closes it (effectively forever),
@@ -171,7 +171,7 @@ func TestExecTimeoutDoesNotWedgeOnInheritedPipe(t *testing.T) {
 	}
 }
 
-// TestExecTimeoutKillsWholeGroup verifies the second N4 property: when the
+// TestExecTimeoutKillsWholeGroup verifies the second anti-wedge property: when the
 // timeout fires while the command is still running, the SIGKILL reaches the
 // whole process group, not just the leader. Here bash stays alive on a
 // foreground sleep while a second sleep is backgrounded in the same group;

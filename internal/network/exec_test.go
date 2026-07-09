@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// TestRanAndExitedNonZeroExcludesDeadlineKill is the N5 guard: a command
+// TestRanAndExitedNonZeroExcludesDeadlineKill is the deadline-kill classification guard: a command
 // SIGKILLed by its own context deadline returns "signal: killed" as an
 // *exec.ExitError — which errors.As accepts — so without the ctx.Err() check
 // a timed-out teardown would be misclassified as "already gone" and leak the

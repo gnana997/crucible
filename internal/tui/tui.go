@@ -93,7 +93,7 @@ type model struct {
 	execing  bool // a session (one-shot or interactive) is streaming
 	execCh   chan execEvent
 
-	// interactive shell (M1 ExecInteractive): when attached, each entered
+	// interactive shell (ExecInteractive): when attached, each entered
 	// line is written to attachIn as stdin and session state (cwd/env)
 	// persists across commands. nil attachIn means one-shot mode.
 	attached bool

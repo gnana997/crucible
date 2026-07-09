@@ -10,7 +10,7 @@ import (
 	"github.com/gnana997/crucible/internal/network/dnsproxy"
 )
 
-// TestCheckNftSandboxIDRejectsInjection is the L6 guard: the sandbox id is
+// TestCheckNftSandboxIDRejectsInjection is the injection guard: the sandbox id is
 // concatenated into per-sandbox nft object names and the script fed to
 // `nft -f -`, so anything outside [a-zA-Z0-9-] must be refused locally rather
 // than trusting the distant sandbox-ID validator.

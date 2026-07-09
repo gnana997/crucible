@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke for booting converted OCI images (D2-m1).
+# End-to-end smoke for booting converted OCI images.
 #
-# Boots a real Firecracker microVM from a D1-converted image with the
+# Boots a real Firecracker microVM from a converted image with the
 # crucible-agent as PID 1 (init mode), and validates the boot end to
 # end: healthz over vsock, exec into the guest, PID 1 is the agent, and
-# a supervised service runs. Networking for image sandboxes lands in
-# D2-m2; this milestone is boot + exec + service, no network.
+# a supervised service runs. This covers boot + exec + service; image
+# sandbox networking is exercised by the port-publish / run-image smokes.
 #
 # Scenarios:
 #   01  pull alpine and convert it (via the daemon image store)

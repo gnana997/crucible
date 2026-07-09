@@ -3,7 +3,7 @@
 # Durable, tailable per-sandbox logs smoke.
 #
 # Boots a service that prints a known line then ticks, and proves:
-#   02  create from a local image (D8 auto-import)
+#   02  create from a local image (auto-import)
 #   03  crucible logs <id>            → the service's startup line (durable app log)
 #   04  crucible logs <id> -f         → new ticks stream in (follow)
 #   05  crucible exec + logs --source exec → the exec output + its activity events
@@ -112,7 +112,7 @@ pass "daemon healthy with --log-dir"
 
 # ---- 02 build + create ------------------------------------------------------
 
-echo "== 02 build the log-test image + create a sandbox (D8 auto-import)"
+echo "== 02 build the log-test image + create a sandbox (auto-import)"
 if ! docker build -q -t crucible-logtest "$HERE/logtest" >/dev/null 2>"$SMOKE_ROOT/build.err"; then
   fail "docker build: $(cat "$SMOKE_ROOT/build.err")"; exit 1
 fi

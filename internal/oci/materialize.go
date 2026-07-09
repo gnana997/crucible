@@ -19,7 +19,7 @@ import (
 const (
 	// sizePadFloorBytes is the minimum free space added on top of the
 	// image content — headroom for ext4 metadata, the journal, and a
-	// little runtime writable space (D4 makes this a real policy).
+	// little runtime writable space (growable-disk sizing is future work).
 	sizePadFloorBytes = 256 << 20 // 256 MiB
 	// sizePadNumer/sizePadDenom express the proportional pad (20%).
 	sizePadNumer = 1

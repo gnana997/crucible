@@ -79,7 +79,7 @@ func TestExecEventStream(t *testing.T) {
 	}
 }
 
-// TestScrollbackRetainsPriorCommands is the M2 scrollback property: a
+// TestScrollbackRetainsPriorCommands is the scrollback property: a
 // finished command's block stays in the buffer when the next one runs, so
 // the whole session's history shows up (not just the last run).
 func TestScrollbackRetainsPriorCommands(t *testing.T) {
