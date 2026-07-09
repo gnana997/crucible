@@ -102,6 +102,14 @@ if [[ "$CLIENT" -eq 0 && "$(uname -s)" != "Linux" ]]; then
     echo "install: $(uname -s) detected — installing the client (the daemon is Linux-only)." >&2
 fi
 
+# RERUN is how the message hints tell the user to invoke this installer again.
+# A piped install (curl | sudo bash) has $0 = "bash" / an fd path — not runnable
+# — so fall back to the canonical one-liner; a file invocation uses the path.
+case "$0" in
+    */install.sh|install.sh|./install.sh) RERUN="sudo $0" ;;
+    *) RERUN="curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sudo bash -s --" ;;
+esac
+
 # detect_platform sets OS (linux|darwin|windows) and ARCH (amd64|arm64).
 detect_platform() {
     local u m
@@ -428,7 +436,7 @@ print_remote_guidance() {
     Or let the installer do steps 1-2 and print the exact client command
     plus an MCP config block to paste:
 
-        sudo $0 --connect-token
+        $RERUN --connect-token
 EOF
 }
 
@@ -511,7 +519,7 @@ if [[ -e "$CONFDIR/crucible.env" ]]; then
         warn "Until you add it, \`crucible run <image>\`, \`sandbox create --image\`"
         warn "and \`crucible build\` will fail. Apply the missing flags automatically:"
         echo >&2
-        echo "  sudo $0 --upgrade-config" >&2
+        echo "  $RERUN --upgrade-config" >&2
         echo "  sudo systemctl restart crucible" >&2
         echo >&2
     fi
