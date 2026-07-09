@@ -85,6 +85,14 @@ The lint set is `errcheck, govet, ineffassign, staticcheck, unused, revive, gocr
 3. Make sure `make fmt vet test` (and `make lint` if you have golangci-lint) is clean; CI runs `go vet`, a `gofmt -s` check, and `go test -race` on Go 1.25.
 4. Write a clear description: what changed, why, and how you verified it. Link the issue if there is one.
 
+## Cutting a release
+
+Maintainers: see [RELEASING.md](RELEASING.md). The trap worth knowing even as a
+contributor — the guest agent is **baked into profile rootfs images at build
+time** (`make rootfs` / `make profile`) but **injected into OCI images by the
+daemon** (`make build`). So after changing `cmd/crucible-agent`, a `make build`
+alone leaves every profile `.ext4` on the old agent.
+
 ## License
 
 By contributing you agree that your contributions are licensed under the project's [Apache-2.0 license](LICENSE).
