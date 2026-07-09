@@ -19,6 +19,13 @@ func newTable(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 }
 
+// hintCmd writes one aligned "    label   command" suggestion line — the human
+// "here's how to manage this" context printed (on stderr) under a machine id.
+// Keeps multi-command hints readable instead of cramming them onto one line.
+func hintCmd(w io.Writer, label, command string) {
+	_, _ = fmt.Fprintf(w, "    %-8s%s\n", label, command)
+}
+
 // age renders a compact "how long ago" from a timestamp.
 func age(t time.Time) string {
 	d := time.Since(t)
@@ -278,9 +285,10 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 		return tailUntilCancel(cmd, o, sb.ID)
 	}
 
-	_, _ = fmt.Fprintf(errOut,
-		"%s is running (long-lived). logs: crucible logs -f %s   stop: crucible stop %s   remove: crucible rm %s\n",
-		sb.ID, sb.ID, sb.ID, sb.ID)
+	_, _ = fmt.Fprintln(errOut, "  running (long-lived):")
+	hintCmd(errOut, "logs", "crucible logs -f "+sb.ID)
+	hintCmd(errOut, "stop", "crucible stop "+sb.ID)
+	hintCmd(errOut, "remove", "crucible rm "+sb.ID)
 	return nil
 }
 
