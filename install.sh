@@ -85,6 +85,11 @@ die()  { echo "install: $*" >&2; exit 1; }
 warn() { echo "install: warning: $*" >&2; }
 # kv prints an aligned "    label: value" detail line under a "==> step" header.
 kv()   { printf '    %-9s%s\n' "$1:" "$2"; }
+# flags_have reports whether the daemon's CRUCIBLE_FLAGS line already carries a
+# flag. It matches ONLY the CRUCIBLE_FLAGS= assignment, not the template's
+# descriptive comments (which mention --network-egress-iface / --image-dir / …
+# and would otherwise fool a whole-file grep into skipping the flag).
+flags_have() { grep '^CRUCIBLE_FLAGS=' "$2" 2>/dev/null | grep -q -- "$1"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -500,7 +505,7 @@ apply_config_flags() {
     local cfg="$1" changed=0
     local egress; egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
     add_flag() { # flag value
-        grep -q -- "$1" "$cfg" && return 0
+        flags_have "$1" "$cfg" && return 0
         sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 $1 $2\"#" "$cfg"
         kv config "added $1 $2"
         changed=1
@@ -521,7 +526,7 @@ if [[ -e "$CONFDIR/crucible.env" ]]; then
         else
             kv config "updated — restart to apply: sudo systemctl restart crucible"
         fi
-    elif ! grep -q -- "--image-dir" "$CONFDIR/crucible.env"; then
+    elif ! flags_have "--image-dir" "$CONFDIR/crucible.env"; then
         # An upgrade from a pre-image release leaves a config without --image-dir,
         # which silently disables `crucible run <image>` / `build` / /images.
         echo
@@ -540,7 +545,7 @@ else
     # `run -p HOST:GUEST` port publish work without a manual edit. This is the
     # host's existing NIC, not a surprising choice; suppress with --no-egress-auto.
     egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
-    if [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && ! grep -q -- "--network-egress-iface" "$CONFDIR/crucible.env"; then
+    if [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && ! flags_have "--network-egress-iface" "$CONFDIR/crucible.env"; then
         sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 --network-egress-iface $egress\"#" "$CONFDIR/crucible.env"
         kv config "$CONFDIR/crucible.env (from template; sandbox egress NIC = $egress)"
     else
