@@ -15,12 +15,18 @@
 #   curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh \
 #     | sh -s -- --client --addr https://my-linux-host:7878 --token <key>
 #
+# The mode is auto-selected by OS: Linux installs the daemon (+ client); macOS
+# and Windows install the client only. Force client mode anywhere with --client.
+# A default install mints NO key and leaves auth off — the local CLI just works;
+# use --connect-token only when you want to serve *other* machines.
+#
 # Flags:
-#   --client            install just the CLI (+ `mcp serve`); no daemon/systemd/root
+#   --client            install just the CLI (+ `mcp serve`); no daemon/systemd/root (auto on non-Linux)
 #   --addr URL          (client) default daemon address → CRUCIBLE_ADDR (e.g. https://host:7878)
 #   --token TOK         (client) API key → CRUCIBLE_TOKEN
 #   --enable            (daemon) enable + start the service now
 #   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, (kernel: see notes) — opt-in, checksum-verified
+#   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
 #   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --network-egress-iface to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
 #   --token-name NAME   (daemon) name for --connect-token's key (default: remote-client)
@@ -57,26 +63,39 @@ WITH_DEPS=0
 UPGRADE_CONFIG=0
 CONNECT_TOKEN=0
 TOKEN_NAME="remote-client"
+NO_EGRESS_AUTO=0
+CLIENT_EXPLICIT=0
 
 die()  { echo "install: $*" >&2; exit 1; }
 warn() { echo "install: warning: $*" >&2; }
+# kv prints an aligned "    label: value" detail line under a "==> step" header.
+kv()   { printf '    %-9s%s\n' "$1:" "$2"; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --client) CLIENT=1; shift ;;
+        --client) CLIENT=1; CLIENT_EXPLICIT=1; shift ;;
         --addr) CLIENT_ADDR="${2:?--addr needs a URL}"; shift 2 ;;
         --token) CLIENT_TOKEN="${2:?--token needs a key}"; shift 2 ;;
         --enable) ENABLE=1; shift ;;
         --with-deps) WITH_DEPS=1; shift ;;
+        --no-egress-auto) NO_EGRESS_AUTO=1; shift ;;
         --upgrade-config) UPGRADE_CONFIG=1; shift ;;
         --connect-token) CONNECT_TOKEN=1; shift ;;
         --token-name) TOKEN_NAME="${2:?--token-name needs a name}"; shift 2 ;;
         --version) VERSION="${2:?--version needs a tag}"; shift 2 ;;
         --binary) BINARY="${2:?--binary needs a path}"; BINARY_SET=1; shift 2 ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,38p' "$0"; exit 0 ;;
         *) die "unknown argument: $1 (see --help)" ;;
     esac
 done
+
+# Auto-select the mode by OS: the daemon is Linux-only, so on macOS/Windows we
+# install the client. --client forces it anywhere (e.g. a Linux box that only
+# drives a remote daemon).
+if [[ "$CLIENT" -eq 0 && "$(uname -s)" != "Linux" ]]; then
+    CLIENT=1
+    echo "install: $(uname -s) detected — installing the client (the daemon is Linux-only)." >&2
+fi
 
 # detect_platform sets OS (linux|darwin|windows) and ARCH (amd64|arm64).
 detect_platform() {
@@ -132,6 +151,20 @@ verify_sha256() {
 install_client() {
     detect_platform
 
+    # When run from a real terminal (not `curl | sh`), ask for the daemon URL
+    # and key if they weren't passed — a client is only useful pointed at a
+    # daemon. Piped installs stay non-interactive and fall back to guidance.
+    if [[ -t 0 ]]; then
+        if [[ -z "$CLIENT_ADDR" ]]; then
+            printf 'Daemon URL (e.g. https://my-linux-host:7878) [skip]: ' >&2
+            read -r CLIENT_ADDR || true
+        fi
+        if [[ -n "$CLIENT_ADDR" && -z "$CLIENT_TOKEN" ]]; then
+            printf 'API key for %s [skip]: ' "$CLIENT_ADDR" >&2
+            read -r CLIENT_TOKEN || true
+        fi
+    fi
+
     # Pick an install dir that doesn't need root. Honor CLIENT_BINDIR, else use
     # the system bindir when writable, else ~/.local/bin.
     local bindir="${CLIENT_BINDIR:-}"
@@ -177,8 +210,9 @@ install_client() {
     cp "$src" "$out"
     chmod 755 "$out"
     [[ -n "$tmp" ]] && rm -rf "$tmp"
-    echo "==> installed client: $out"
-    "$out" version 2>/dev/null || true
+    echo "==> Installed crucible client"
+    kv binary "$out"
+    kv version "$("$out" version 2>/dev/null || echo unknown)"
 
     # Write a client env file the CLI + `mcp serve` pick up (CRUCIBLE_ADDR /
     # CRUCIBLE_TOKEN). Non-invasive: we don't touch shell rc files.
@@ -192,25 +226,36 @@ install_client() {
     chmod 600 "$envfile"
 
     echo
-    echo "==> next steps"
+    echo "==> Next steps"
+    echo
     case ":$PATH:" in
         *":$bindir:"*) : ;;
-        *) echo "    • add $bindir to your PATH:"
-           echo "        echo 'export PATH=\"$bindir:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc" ;;
+        *) echo "    Add $bindir to your PATH:"
+           echo
+           echo "        echo 'export PATH=\"$bindir:\$PATH\"' >> ~/.zshrc   # or ~/.bashrc"
+           echo ;;
     esac
     if [[ -n "$CLIENT_ADDR" ]]; then
-        echo "    • load the daemon address/token in each shell:"
+        echo "    Load the daemon address and token in each shell:"
+        echo
         echo "        echo 'source $envfile' >> ~/.zshrc   # or ~/.bashrc"
-        echo "    • or use them right now:"
+        echo
+        echo "    Or use them right now:"
+        echo
         echo "        source $envfile && crucible sandbox ls"
     else
-        echo "    • point the client at your Linux daemon:"
+        echo "    Point the client at your Linux daemon:"
+        echo
         echo "        export CRUCIBLE_ADDR=https://YOUR-LINUX-HOST:7878"
         echo "        export CRUCIBLE_TOKEN=<key from: crucible daemon token add>"
         echo "        crucible sandbox ls"
     fi
-    echo "    • wire it into Claude Code / Cursor as an MCP server:"
-    echo "        command: crucible   args: [\"mcp\",\"serve\"]   env: CRUCIBLE_ADDR + CRUCIBLE_TOKEN"
+    echo
+    echo "    Wire it into Claude Code / Cursor as an MCP server:"
+    echo
+    echo "        command: crucible"
+    echo "        args:    [\"mcp\", \"serve\"]"
+    echo "        env:     CRUCIBLE_ADDR, CRUCIBLE_TOKEN"
 }
 
 if [[ "$CLIENT" -eq 1 ]]; then
@@ -266,12 +311,12 @@ provision_deps() {
 
     # 1) firecracker + jailer (from the official releases; verified sidecar).
     if [[ -x "$BINDIR/firecracker" && -x "$BINDIR/jailer" ]]; then
-        echo "    deps: firecracker + jailer already present ($BINDIR) — skipped"
+        kv deps "firecracker + jailer already present ($BINDIR) — skipped"
     else
         local tgz="firecracker-${FC_VERSION}-${fc_arch}.tgz"
         local base="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VERSION}"
         local tmp; tmp="$(mktemp -d)"
-        echo "    deps: fetching firecracker ${FC_VERSION} (${fc_arch})"
+        kv deps "fetching firecracker ${FC_VERSION} (${fc_arch})"
         fetch "${base}/${tgz}" "$tmp/$tgz"
         verify_sha256 "$tmp/$tgz" "${base}/${tgz}.sha256.txt"
         tar -C "$tmp" -xzf "$tmp/$tgz"
@@ -279,43 +324,101 @@ provision_deps() {
         install -Dm755 "$d/firecracker-${FC_VERSION}-${fc_arch}" "$BINDIR/firecracker"
         install -Dm755 "$d/jailer-${FC_VERSION}-${fc_arch}"       "$BINDIR/jailer"
         rm -rf "$tmp"
-        echo "    deps: installed firecracker + jailer -> $BINDIR"
+        kv deps "installed firecracker + jailer -> $BINDIR"
     fi
 
     # 2) default rootfs (from crucible's own releases; amd64 profiles only).
     if [[ -f "$STATEDIR/rootfs.ext4" ]]; then
-        echo "    deps: rootfs already present ($STATEDIR/rootfs.ext4) — skipped"
+        kv deps "rootfs already present ($STATEDIR/rootfs.ext4) — skipped"
     elif [[ "$fc_arch" != x86_64 ]]; then
         warn "--with-deps: no prebuilt rootfs for $fc_arch — build one with 'make profile' or supply --rootfs"
     else
         local tag; tag=$(resolve_tag)
         local url="https://github.com/$REPO/releases/download/$tag/${ROOTFS_PROFILE}.ext4"
         local tmp; tmp="$(mktemp -d)"
-        echo "    deps: fetching rootfs profile '${ROOTFS_PROFILE}' ($tag)"
+        kv deps "fetching rootfs profile '${ROOTFS_PROFILE}' ($tag)"
         fetch "$url" "$tmp/rootfs.ext4"
         verify_sha256 "$tmp/rootfs.ext4" "${url}.sha256"
         install -Dm644 "$tmp/rootfs.ext4" "$STATEDIR/rootfs.ext4"
         rm -rf "$tmp"
-        echo "    deps: installed rootfs -> $STATEDIR/rootfs.ext4"
+        kv deps "installed rootfs -> $STATEDIR/rootfs.ext4"
     fi
 
     # 3) guest kernel — only if a source is configured (no release asset yet).
     if [[ -f "$STATEDIR/vmlinux" ]]; then
-        echo "    deps: kernel already present ($STATEDIR/vmlinux) — skipped"
+        kv deps "kernel already present ($STATEDIR/vmlinux) — skipped"
     elif [[ -n "${KERNEL_URL:-}" ]]; then
         local tmp; tmp="$(mktemp -d)"
-        echo "    deps: fetching kernel from KERNEL_URL"
+        kv deps "fetching kernel from KERNEL_URL"
         fetch "$KERNEL_URL" "$tmp/vmlinux"
         [[ -n "${KERNEL_SHA256:-}" ]] && verify_sha256 "$tmp/vmlinux" "$KERNEL_SHA256"
         install -Dm644 "$tmp/vmlinux" "$STATEDIR/vmlinux"
         rm -rf "$tmp"
-        echo "    deps: installed kernel -> $STATEDIR/vmlinux"
+        kv deps "installed kernel -> $STATEDIR/vmlinux"
     else
         warn "--with-deps: no guest kernel provisioned (no published asset yet)."
         warn "  Supply one and re-run, or drop a vmlinux at $STATEDIR/vmlinux:"
         warn "    KERNEL_URL=<uncompressed vmlinux url> [KERNEL_SHA256=<url>] sudo ./install.sh --with-deps"
         warn "  Firecracker CI kernels: https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md"
     fi
+}
+
+EXAMPLE_POLICY="$CONFDIR/policies/example.json"
+
+# write_example_policy drops an inert, editable scoped-policy template so the
+# guidance below can point at a real file to `cat` and copy. Writes nothing if
+# it already exists; mints no key and grants nothing on its own.
+write_example_policy() {
+    install -d -m 0750 "$CONFDIR/policies"
+    [[ -f "$EXAMPLE_POLICY" ]] && return 0
+    # Every operation, but resource-capped. Copy + tighten for real tokens
+    # (drop "delete", lower caps, add "net_allow_max", set expiry with --ttl).
+    cat > "$EXAMPLE_POLICY" <<'JSON'
+{
+  "operations": ["create", "exec", "snapshot", "fork", "delete", "read"],
+  "max_sandboxes": 25,
+  "max_fork": 16,
+  "max_timeout_s": 3600
+}
+JSON
+    chmod 640 "$EXAMPLE_POLICY"
+}
+
+# print_remote_guidance explains how to use the daemon locally and how to open
+# it to another machine — informational only. It mints no key and changes no
+# state, so a plain install stays zero-surprise.
+print_remote_guidance() {
+    local listen port
+    listen="$(grep -o -- '--listen [^ "]*' "$CONFDIR/crucible.env" 2>/dev/null | awk '{print $2}')" || true
+    listen="${listen:-127.0.0.1:7878}"; port="${listen##*:}"
+    cat <<EOF
+
+==> Using crucible
+
+    On this machine the CLI already works — no key, no config needed:
+
+        crucible sandbox ls
+
+    To drive it from another machine (your Mac, a CI runner, ...):
+
+        1. review or edit the example scoped policy:
+             cat $EXAMPLE_POLICY
+
+        2. mint a key bound to it (this turns on auth for every client):
+             sudo crucible daemon token add --name my-laptop --policy $EXAMPLE_POLICY
+
+        3. make the daemon reachable: set --listen to a routable address plus
+           --tls-cert / --tls-key in $CONFDIR/crucible.env, then restart it.
+
+        4. on the client machine:
+             curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh \\
+               | sh -s -- --client --addr https://THIS-HOST:$port --token <key>
+
+    Or let the installer do steps 1-2 and print the exact client command
+    plus an MCP config block to paste:
+
+        sudo $0 --connect-token
+EOF
 }
 
 # --- preflight ----------------------------------------------------------
@@ -340,8 +443,8 @@ maybe_download
 [[ -x "$BINARY" ]] || die "crucible binary not found at $BINARY (run 'make build' first, or pass --binary PATH)"
 [[ -f "$ROOT/packaging/crucible.service" ]] || die "packaging/crucible.service missing next to $BINARY"
 
-echo "==> installing crucible"
-echo "    binary : $BINARY -> $BINDIR/crucible"
+echo "==> Installing crucible"
+kv binary "$BINARY -> $BINDIR/crucible"
 install -Dm755 "$BINARY" "$BINDIR/crucible"
 
 # profiles/ = pre-baked <profile>.ext4; images/ = converted OCI image cache
@@ -349,14 +452,14 @@ install -Dm755 "$BINARY" "$BINDIR/crucible"
 # creates the latter two on demand, but pre-creating keeps ownership/mode sane.
 install -d -m 0755 "$STATEDIR" "$STATEDIR/profiles" "$STATEDIR/images" "$STATEDIR/logs"
 
-echo "    unit   : $UNITDIR/crucible.service"
+kv unit "$UNITDIR/crucible.service"
 install -Dm644 "$ROOT/packaging/crucible.service" "$UNITDIR/crucible.service"
 
 # Enable lazy fork (userfaultfd for the jailed, uid-dropped Firecracker).
 if [[ ! -f /etc/sysctl.d/99-crucible.conf ]]; then
     echo 'vm.unprivileged_userfaultfd=1' > /etc/sysctl.d/99-crucible.conf
     if sysctl -p /etc/sysctl.d/99-crucible.conf >/dev/null 2>&1; then
-        echo "    sysctl : vm.unprivileged_userfaultfd=1 (lazy fork enabled)"
+        kv sysctl "vm.unprivileged_userfaultfd=1 (lazy fork enabled)"
     else
         warn "could not apply vm.unprivileged_userfaultfd — fork may be unavailable on this kernel"
     fi
@@ -370,24 +473,24 @@ apply_config_flags() {
     add_flag() { # flag value
         grep -q -- "$1" "$cfg" && return 0
         sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 $1 $2\"#" "$cfg"
-        echo "    config : added $1 $2"
+        kv config "added $1 $2"
         changed=1
     }
     add_flag "--image-dir" "$STATEDIR/images"
     add_flag "--log-dir"   "$STATEDIR/logs"
-    [[ -n "$egress" ]] && add_flag "--network-egress-iface" "$egress"
+    [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && add_flag "--network-egress-iface" "$egress"
     return $changed
 }
 
 # Config template — never clobber an operator's existing config.
 install -d -m 0755 "$CONFDIR"
 if [[ -e "$CONFDIR/crucible.env" ]]; then
-    echo "    config : $CONFDIR/crucible.env (exists, left unchanged)"
+    kv config "$CONFDIR/crucible.env (exists, left unchanged)"
     if [[ "$UPGRADE_CONFIG" -eq 1 ]]; then
         if apply_config_flags "$CONFDIR/crucible.env"; then
-            echo "    config : already complete — nothing to add"
+            kv config "already complete — nothing to add"
         else
-            echo "    config : updated — restart to apply: sudo systemctl restart crucible"
+            kv config "updated — restart to apply: sudo systemctl restart crucible"
         fi
     elif ! grep -q -- "--image-dir" "$CONFDIR/crucible.env"; then
         # An upgrade from a pre-image release leaves a config without --image-dir,
@@ -403,16 +506,22 @@ if [[ -e "$CONFDIR/crucible.env" ]]; then
     fi
 else
     install -Dm644 "$ROOT/packaging/crucible.env.example" "$CONFDIR/crucible.env"
-    # A fresh config is complete out of the box: fold in the host's egress NIC
-    # so sandbox networking + `run -p` work without a manual edit.
+    # A fresh config is complete out of the box: fold in the host's own
+    # default-route NIC so *sandbox* egress (behind the allowlist) and
+    # `run -p HOST:GUEST` port publish work without a manual edit. This is the
+    # host's existing NIC, not a surprising choice; suppress with --no-egress-auto.
     egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
-    if [[ -n "$egress" ]] && ! grep -q -- "--network-egress-iface" "$CONFDIR/crucible.env"; then
+    if [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && ! grep -q -- "--network-egress-iface" "$CONFDIR/crucible.env"; then
         sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 --network-egress-iface $egress\"#" "$CONFDIR/crucible.env"
-        echo "    config : $CONFDIR/crucible.env (from template; egress NIC $egress wired in)"
+        kv config "$CONFDIR/crucible.env (from template; sandbox egress NIC = $egress)"
     else
-        echo "    config : $CONFDIR/crucible.env (from template — edit before starting)"
+        kv config "$CONFDIR/crucible.env (from template)"
+        [[ "$NO_EGRESS_AUTO" -eq 1 ]] && kv config "egress NIC not set (--no-egress-auto) — add --network-egress-iface for sandbox net + run -p"
     fi
 fi
+
+# Drop the inert example scoped policy so the guidance can point at a real file.
+write_example_policy
 
 systemctl daemon-reload
 
@@ -424,8 +533,8 @@ fi
 if [[ "$ENABLE" -eq 1 ]]; then
     systemctl enable --now crucible
     echo "==> crucible enabled and started"
-    echo "    status : systemctl status crucible"
-    echo "    logs   : journalctl -u crucible -f"
+    kv status "systemctl status crucible"
+    kv logs "journalctl -u crucible -f"
 else
     cat <<EOF
 ==> installed (not started)
@@ -452,77 +561,75 @@ Then start it:
 EOF
 fi
 
-# --- mint a scoped token + print a ready-to-paste remote-client setup ---
-if [[ "$CONNECT_TOKEN" -eq 1 ]]; then
-    tokenfile="$STATEDIR/tokens.json"
-    policydir="$CONFDIR/policies"
-    policyfile="$policydir/${TOKEN_NAME}.json"
-    install -d -m 0750 "$policydir"
-    if [[ ! -f "$policyfile" ]]; then
-        # A bounded remote-developer scope: every operation, but capped. Edit to
-        # tighten (drop "delete", lower the caps, add net_allow_max, ...).
-        cat > "$policyfile" <<'JSON'
+# A plain install mints nothing: just show how to use it locally and how to open
+# it to another machine. --connect-token is the opt-in that actually does it.
+if [[ "$CONNECT_TOKEN" -ne 1 ]]; then
+    print_remote_guidance
+    exit 0
+fi
+
+# --- --connect-token: mint a scoped token + print a ready-to-paste setup ---
+tokenfile="$STATEDIR/tokens.json"
+policyfile="$EXAMPLE_POLICY"        # the same example scoped policy install wrote
+write_example_policy
+
+echo
+echo "==> Minting a scoped key"
+echo
+echo "    Policy ($policyfile):"
+echo
+sed 's/^/        /' "$policyfile"
+
+raw=$("$BINDIR/crucible" daemon token add \
+    --token-file "$tokenfile" --name "$TOKEN_NAME" --policy "$policyfile" 2>/dev/null \
+    | awk '/key created/{f=1; next} f && NF {print $1; exit}') || true
+
+# Derive the address to advertise from the config's --listen.
+# (guard: grep finding nothing must not trip set -e under pipefail)
+listen="$(grep -o -- '--listen [^ "]*' "$CONFDIR/crucible.env" 2>/dev/null | awk '{print $2}')" || true
+listen="${listen:-127.0.0.1:7878}"
+advertise="$listen"
+case "$listen" in 127.0.0.1:*|localhost:*) advertise="https://YOUR-LINUX-HOST:${listen##*:}" ;; esac
+
+echo
+echo "==> Connect a remote client (e.g. your Mac)"
+echo
+if [[ -n "$raw" ]]; then
+    echo "    Scoped API key '$TOKEN_NAME' — copy it now, it is not shown again:"
+    echo
+    echo "        $raw"
+else
+    echo "    Could not mint a token (is $BINDIR/crucible the new build?). Mint one with:"
+    echo
+    echo "        sudo crucible daemon token add --name $TOKEN_NAME --policy $policyfile"
+fi
+echo
+echo "    1. On your Mac / Windows box, install the client and point it here:"
+echo
+echo "        curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh \\"
+echo "          | sh -s -- --client --addr $advertise --token ${raw:-<key>}"
+echo
+echo "    2. Or wire it into Claude Code / Cursor as an MCP server:"
+echo
+sed 's/^/        /' <<JSON
 {
-  "operations": ["create", "exec", "snapshot", "fork", "delete", "read"],
-  "max_sandboxes": 25,
-  "max_fork": 16,
-  "max_timeout_s": 3600
-}
-JSON
-        chmod 640 "$policyfile"
-    fi
-
-    raw=$("$BINDIR/crucible" daemon token add \
-        --token-file "$tokenfile" --name "$TOKEN_NAME" --policy "$policyfile" 2>/dev/null \
-        | awk '/key created/{f=1; next} f && NF {print $1; exit}') || true
-
-    # Derive the address to advertise from the config's --listen.
-    # (guard: grep finding nothing must not trip set -e under pipefail)
-    listen="$(grep -o -- '--listen [^ "]*' "$CONFDIR/crucible.env" 2>/dev/null | awk '{print $2}')" || true
-    listen="${listen:-127.0.0.1:7878}"
-    advertise="$listen"
-    case "$listen" in 127.0.0.1:*|localhost:*) advertise="https://YOUR-LINUX-HOST:${listen##*:}" ;; esac
-
-    echo
-    echo "==============================================================="
-    echo " connect a remote client (e.g. your Mac)"
-    echo "==============================================================="
-    if [[ -n "$raw" ]]; then
-        echo "Scoped API key '$TOKEN_NAME' (policy: $policyfile). Copy it now — not shown again:"
-        echo
-        echo "    $raw"
-    else
-        warn "could not mint a token (is $BINDIR/crucible the new build?). Mint one with:"
-        echo "    sudo crucible daemon token add --name $TOKEN_NAME --policy $policyfile" >&2
-    fi
-    echo
-    echo "On your Mac / Windows box, install the client and point it here:"
-    echo
-    echo "    curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh \\"
-    echo "      | sh -s -- --client --addr $advertise --token ${raw:-<key>}"
-    echo
-    echo "Then wire it into Claude Code / Cursor as an MCP server:"
-    echo
-    cat <<JSON
-    {
-      "mcpServers": {
-        "crucible": {
-          "command": "crucible",
-          "args": ["mcp", "serve"],
-          "env": {
-            "CRUCIBLE_ADDR": "$advertise",
-            "CRUCIBLE_TOKEN": "${raw:-<key>}"
-          }
-        }
+  "mcpServers": {
+    "crucible": {
+      "command": "crucible",
+      "args": ["mcp", "serve"],
+      "env": {
+        "CRUCIBLE_ADDR": "$advertise",
+        "CRUCIBLE_TOKEN": "${raw:-<key>}"
       }
     }
+  }
+}
 JSON
-    echo
-    echo "Note: minting a key turns ON auth for ALL clients (including local ones)."
-    case "$listen" in
-        127.0.0.1:*|localhost:*)
-            warn "the daemon still listens on $listen (loopback). For real remote access,"
-            warn "set --listen to a reachable address AND --tls-cert/--tls-key in $CONFDIR/crucible.env,"
-            warn "then: sudo systemctl restart crucible" ;;
-    esac
-fi
+echo
+echo "    Note: minting a key turns on auth for ALL clients, including local ones."
+case "$listen" in
+    127.0.0.1:*|localhost:*)
+        echo "    Note: the daemon still listens on $listen (loopback). For remote access,"
+        echo "          set --listen to a reachable address AND --tls-cert / --tls-key in"
+        echo "          $CONFDIR/crucible.env, then: sudo systemctl restart crucible" ;;
+esac
