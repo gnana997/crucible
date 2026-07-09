@@ -6,9 +6,9 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-![crucible TUI](demo/tui.gif)
+![crucible: build, run, and observe a sandbox](demo/hero.gif)
 
-<p align="center"><em>The <code>crucible tui</code> control center — live sandboxes, the fork tree, and streaming <code>exec</code> against a running daemon (<a href="docs/tui.md">docs</a>).</em></p>
+<p align="center"><em>Build a Dockerfile into a microVM and publish a port with <code>docker run</code> ergonomics — then drop into a <strong>k9s-style TUI</strong> to watch it and tail its logs live (<a href="docs/cli.md">CLI</a> · <a href="docs/tui.md">TUI</a>).</em></p>
 
 AI coding agents write code and want to run it — check it compiles, run the tests they just wrote, try three approaches in parallel. Today's options are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, usage-priced), or rolling your own Firecracker stack (months of operational work).
 

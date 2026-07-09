@@ -62,6 +62,7 @@ const (
 	modeDashboard viewMode = iota
 	modeTree
 	modeDetail
+	modeLogs
 )
 
 type model struct {
@@ -99,6 +100,13 @@ type model struct {
 	attached bool
 	attachIn *io.PipeWriter
 
+	// logs view: tail a sandbox's durable logs in the dashboard. logsVP holds
+	// the accumulated content; logsOffset is the byte cursor for the next poll.
+	logsVP      viewport.Model
+	logsID      string
+	logsOffset  int64
+	logsContent string // accumulated rendered log lines (viewport can't append)
+
 	lastRefresh   time.Time
 	ready         bool
 	width, height int
@@ -113,7 +121,7 @@ func newModel(cfg Config) model {
 	in.Placeholder = "type a command, enter to run"
 	in.CharLimit = 512
 
-	return model{cfg: cfg, table: t, vp: viewport.New(0, 0), execVP: viewport.New(0, 0), input: in}
+	return model{cfg: cfg, table: t, vp: viewport.New(0, 0), execVP: viewport.New(0, 0), logsVP: viewport.New(0, 0), input: in}
 }
 
 func (m model) Init() tea.Cmd {
@@ -167,6 +175,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeDetail {
 			return m.updateDetailKey(msg)
 		}
+		if m.mode == modeLogs {
+			return m.updateLogsKey(msg)
+		}
 		return m.updateMainKey(msg)
 
 	case tea.WindowSizeMsg:
@@ -175,12 +186,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.table.SetWidth(msg.Width)
 		m.table.SetHeight(max(3, msg.Height-4))
 		m.vp.Width, m.vp.Height = msg.Width, max(3, msg.Height-4)
+		m.logsVP.Width, m.logsVP.Height = msg.Width, max(3, msg.Height-4)
 		m.execVP.Width, m.execVP.Height = msg.Width, max(3, msg.Height-7)
 		m.input.Width = max(10, msg.Width-6)
 		m.ready = true
 
 	case tickMsg:
-		return m, tea.Batch(m.fetch(), tickCmd())
+		cmds := []tea.Cmd{m.fetch(), tickCmd()}
+		if m.mode == modeLogs && m.logsID != "" {
+			cmds = append(cmds, m.fetchLogs(m.logsID, m.logsOffset)) // follow
+		}
+		return m, tea.Batch(cmds...)
+
+	case logsMsg:
+		return m.handleLogsMsg(msg)
 
 	case dataMsg:
 		m.err = msg.err
@@ -226,6 +245,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.mode {
 	case modeTree:
 		m.vp, cmd = m.vp.Update(msg)
+	case modeLogs:
+		m.logsVP, cmd = m.logsVP.Update(msg)
 	case modeDetail:
 		m.input, cmd = m.input.Update(msg)
 	default:
@@ -247,6 +268,11 @@ func (m model) updateMainKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.mode = modeTree
 			m.vp.SetContent(renderTree(m.sandboxes, m.snapshots))
 			m.vp.GotoTop()
+		}
+		return m, nil
+	case "l":
+		if sb, ok := m.selectedSandbox(); ok {
+			return m.openLogs(sb.ID)
 		}
 		return m, nil
 	case "enter":
@@ -496,6 +522,8 @@ func (m model) View() string {
 	switch m.mode {
 	case modeTree:
 		body = m.vp.View()
+	case modeLogs:
+		body = m.logsBody()
 	case modeDetail:
 		body = m.detailBody()
 	default:
@@ -575,6 +603,12 @@ func (m model) helpLine(compact bool) string {
 		} else {
 			s = "↑/↓ scroll · [t] dashboard · [r]efresh · [q]uit"
 		}
+	case modeLogs:
+		if compact {
+			s = "logs · esc back"
+		} else {
+			s = "↑/↓ scroll · following live · esc back · [q]uit"
+		}
 	case modeDetail:
 		switch {
 		case m.attached && compact:
@@ -590,7 +624,7 @@ func (m model) helpLine(compact bool) string {
 		if compact {
 			s = m.actionsHelp() + " · [q]uit"
 		} else {
-			s = "↑/↓ move · enter detail · tab shell · " + m.actionsHelp() + " · [t]ree · [r] · [q]uit"
+			s = "↑/↓ move · enter detail · tab shell · [l]ogs · " + m.actionsHelp() + " · [t]ree · [r] · [q]uit"
 		}
 	}
 	return helpStyle.Render(s)

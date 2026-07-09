@@ -87,6 +87,29 @@ crucible stop sbx_abc      # halt the workload, keep the box
 crucible rm sbx_abc        # tear the box down
 ```
 
+### `crucible shell <id>`
+
+Open a live interactive shell into a running sandbox — `cd`, environment, and shell state persist across commands within the session. Line-oriented (no PTY). The fast way to poke at untrusted code you just booted.
+
+```bash
+SBX=$(crucible sandbox create --profile python-3.12)
+crucible shell $SBX        # a real /bin/sh inside it; `exit` to leave
+```
+
+Override the shell with `--shell /bin/bash`.
+
+### `crucible cp <src> <dst>`
+
+Copy a local file or directory **into** a running sandbox (host → guest) — drop code in and run it, no image build, no Dockerfile. Directories are recursive; the destination is treated as a directory and the source's basename is preserved under it (`cp ./app sbx:/work` → `/work/app`). Parents are created and existing files overwritten.
+
+```bash
+SBX=$(crucible run --profile python-3.12)
+crucible cp ./script.py $SBX:/work                 # → /work/script.py
+crucible sandbox exec $SBX -- python /work/script.py
+```
+
+A `sbx_…:<path>` operand is the sandbox side; the other is the local path. Copying *out* of a sandbox is exposed to agents through the MCP `read_file` tool ([docs/mcp.md](mcp.md)); a CLI pull lands in a later release.
+
 ### `crucible sandbox`
 
 | Command | Description |

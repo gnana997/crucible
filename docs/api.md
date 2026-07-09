@@ -30,6 +30,8 @@ The daemon supports bearer-token API keys, on the same model as the Docker or Ku
 | `GET` | `/sandboxes/{id}` | Inspect a sandbox |
 | `DELETE` | `/sandboxes/{id}` | Destroy a sandbox |
 | `POST` | `/sandboxes/{id}/exec` | Run a command (streamed frames). Add `?stdin=1` for an **interactive**, full-duplex session — the connection is hijacked and the client sends `FrameStdin`/`FrameStdinClose` (what `crucible shell` / `exec -i` use). |
+| `POST` | `/sandboxes/{id}/files` | Push a **tar** stream into the guest, extracted beneath `?path=<dest>` (the `crucible cp` push / MCP `write_files`). Streamed, not buffered; entries that escape the dest are rejected. Returns `{files, bytes}`. |
+| `GET` | `/sandboxes/{id}/files` | Read one guest file's bytes: `?path=<file>&max_bytes=<n>` (the MCP `read_file`). Content only — nothing is written host-side, so there is no traversal surface. |
 | `GET` | `/sandboxes/{id}/logs` | Durable per-sandbox logs (entrypoint output + exec activity). Query: `source=service\|exec\|all`, `since=<byte-cursor>`, tail bounds. `501` when the daemon has no log store configured. |
 | `PUT` | `/sandboxes/{id}/service` | Configure the supervised entrypoint (spec). |
 | `POST` | `/sandboxes/{id}/service/start\|stop\|restart` | Start / graceful-stop (StopSignal + grace) / restart the entrypoint. |
@@ -205,6 +207,16 @@ Because the `200` is committed before the command finishes, a failure *after* st
 - `signal` is the signal name (e.g. `"SIGKILL"`) when the process was signalled; empty on a clean exit.
 - `oom_killed` is a best-effort heuristic (SIGKILL not from our timeout + peak RSS ≥ 95% of guest memory), not a precise cgroup reading.
 - `usage` is `null` when the agent collected no stats (e.g. the process never started), so callers can tell "no data" from "zeroes". I/O counters are per-process and approximate for sub-100 ms commands (see the field docs in `internal/agentwire/messages.go`).
+
+---
+
+### `POST /sandboxes/{id}/files` and `GET /sandboxes/{id}/files`
+
+File transfer between host and guest — one-way bulk copy, so no frame protocol.
+
+**Push** (`POST …/files?path=<dest>`): the request body is a **tar** stream. The daemon streams it straight to the guest agent (nothing buffered whole); the agent `MkdirAll`s `<dest>` and extracts each entry beneath it, **rejecting** any entry whose resolved path escapes the destination (absolute paths, `..`, or symlinks pointing outside). Returns `200 {"files":N,"bytes":M}`. Gated as an `exec`-class operation. This backs `crucible cp` (push) and the MCP `write_files` tool.
+
+**Read** (`GET …/files?path=<file>&max_bytes=<n>`): returns the raw bytes of a single guest file (capped by `max_bytes`; a directory is a `400`). This is a **content read** — only bytes flow out, nothing is written host-side, so it has no path-traversal surface. Gated as `read`. It backs the MCP `read_file` tool. Pulling a directory *tree* onto the host is intentionally not offered.
 
 ---
 

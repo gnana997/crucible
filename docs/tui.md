@@ -20,11 +20,12 @@ The dashboard polls the daemon every couple of seconds, so what you see tracks t
 
 ## Views
 
-Three views, toggled from the dashboard:
+Four views, toggled from the dashboard:
 
 - **Dashboard** (default) — a table of live sandboxes: id, profile, age, CPU/memory, network, and a fork mark (`⑂`) for sandboxes forked from a snapshot.
 - **Fork tree** (`t`) — the genealogy built from the sandbox + snapshot lists: created sandboxes are roots, then `● sandbox → ◆ snapshot → ● fork → …`. Orphan snapshots (whose source sandbox is already gone) are surfaced too, so nothing hides.
 - **Detail + exec** (`enter`) — the selected sandbox's metadata plus an interactive shell: type a command, press `enter`, and stdout/stderr stream live into a scrolling viewport. When the command finishes, a filled exit chip shows `exit 0` (green) or `exit N` (red) with the duration; `timed out`, `OOM`, and signals are annotated.
+- **Logs** (`l`) — tail the selected sandbox's **durable logs** (entrypoint output + exec activity) live in a scrolling pane, each line timestamped, `stderr` highlighted. It follows new records automatically and stays pinned to the tail unless you scroll up; `esc` returns to the dashboard. Because the logs are durable, they survive the sandbox — a crashed workload can still be inspected.
 
 ## Keys
 
@@ -32,6 +33,7 @@ Three views, toggled from the dashboard:
 |---|---|---|
 | Dashboard | `↑`/`↓` | move the selection |
 | | `enter` | open the selected sandbox's detail + exec view |
+| | `l` | **tail the selected sandbox's durable logs**, live |
 | | `c` | **create** a sandbox |
 | | `s` | **snapshot** the selected sandbox |
 | | `f` | **fork** a child from the selected sandbox's latest snapshot |
@@ -44,6 +46,8 @@ Three views, toggled from the dashboard:
 | Detail | *(type)* | edit the command line |
 | | `enter` | run the command (streams output) |
 | | `esc` | back to the dashboard |
+| Logs | `↑`/`↓` | scroll (auto-follows the tail) |
+| | `esc` | back to the dashboard |
 | Any | `ctrl+c` | quit |
 
 ## Actions and scope
@@ -52,9 +56,9 @@ The mutating actions — create, snapshot, fork, delete — run as asynchronous 
 
 Actions are **gated on the token's scope**. Against a daemon that reports a scoped policy, any operation the policy forbids is struck through in the footer hint and rejected on keypress with a "not permitted by policy scope" notice — the same policy the daemon enforces authoritatively, surfaced before you press the key. (The layout is responsive: on a narrow terminal the hints compact and nothing spills past the edge.)
 
-## A note on exec history
+## exec output vs. durable logs
 
-Streaming `exec` in the detail view is **live only** — the output is shown as it arrives and is not persisted. If you run a command, leave the view, and come back, the previous output is gone. Durable per-sandbox activity logs (a queryable record of every exec and lifecycle event, viewable and searchable here) are the next release — see [ROADMAP.md](ROADMAP.md).
+Streaming `exec` in the **detail** view is **live only** — the output is shown as it arrives and is not persisted, so leaving and returning loses it. For a persistent record, use the **logs** view (`l`): it reads the daemon's **durable** per-sandbox logs (entrypoint output + exec activity), which survive the sandbox itself. Same data as `crucible logs <id>` on the CLI.
 
 ## Regenerating the demo GIF
 
