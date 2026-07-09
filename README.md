@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.2.0](https://img.shields.io/badge/status-v0.2.0-orange)
+![Status: v0.3.0](https://img.shields.io/badge/status-v0.3.0-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -13,6 +13,16 @@
 AI coding agents write code and want to run it — check it compiles, run the tests they just wrote, try three approaches in parallel. Today's options are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, usage-priced), or rolling your own Firecracker stack (months of operational work).
 
 **crucible is the fourth option:** a single self-hosted Go binary on top of Firecracker, with snapshot/fork as first-class primitives, sane defaults, and observability baked in — tuned for running AI-generated code. Full motivation and design: [docs/VISION.md](docs/VISION.md).
+
+**Think of it as a safe `docker run` for code you don't trust.** The moment you'd reach for `docker run` on a random repo, a dependency you haven't audited, or something an agent just wrote — reach for `crucible run` instead. You get a real guest kernel (a container escape is a VM escape), **default-deny egress** (the code can't phone home unless you allow-list the host), and one-command **fork** to explore three approaches in parallel. Boot an unmodified OCI image, poke at it with a real interactive shell, and tear it down:
+
+```bash
+crucible run nginx:alpine -p 8080:80     # boot an image, publish a port — long-lived
+crucible shell <id>                       # a real /bin/sh into it (cd/env persist)
+crucible run --net-allow pypi.org --profile python-3.12 -- pip install requests   # egress only to pypi
+```
+
+> **Ephemeral by design (v0.3.0).** Sandboxes are *consciously ephemeral* — a daemon restart does **not** resurrect running sandboxes (their registry records and durable logs persist; the live VMs do not). That is exactly the right contract for "run a sketchy repo, test it, tear it down." Durable, self-healing long-lived workloads are v0.4.
 
 ## Highlights
 
@@ -79,10 +89,18 @@ crucible is daemon-authoritative: the daemon owns all sandbox logic, and every i
 **CLI** — [full reference](docs/cli.md):
 
 ```bash
+# Docker-parity: boot an OCI image, publish a port. Long-lived by default.
+crucible run nginx:alpine -p 8080:80         # → prints a sandbox id; curl localhost:8080
+crucible shell <id>                          # a real interactive shell inside it (no PTY)
+crucible stop <id> ; crucible rm <id>        # graceful stop; then remove
+
+# Build a repo's Dockerfile and run it in two lines:
+crucible build -t myapp . && crucible run myapp -p 3000:3000
+
 # One-shot: create a sandbox, run a command, delete it. The command's exit code propagates.
 crucible run --profile python-3.12 -- python3 -c 'print(2**10)'
 
-# Or drive the lifecycle explicitly:
+# Or drive the lifecycle explicitly, with snapshot + fork:
 SBX=$(crucible sandbox create --memory 1024 --profile python-3.12)
 crucible sandbox exec $SBX -- pip install requests   # streams stdout/stderr live
 SNP=$(crucible snapshot create $SBX)                  # freeze the warm state
@@ -91,6 +109,15 @@ crucible sandbox ls                                   # table of live sandboxes
 ```
 
 Add `-o json` to any command for machine-readable output.
+
+**The 30-second demo** — run untrusted code, prove it's boxed in:
+
+```bash
+SBX=$(crucible run some/untrusted-image -p 8080:80)   # 1. boot it, publish a port
+curl localhost:8080                                    # 2. reach the service on localhost
+crucible sandbox exec $SBX -- curl -sS https://example.com   # 3. egress DENIED (no allowlist)
+crucible snapshot create $SBX | xargs crucible fork --count 3 # 4. fork it 3× to explore in parallel
+```
 
 **TUI** — `crucible tui` opens a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. [Reference](docs/tui.md).
 
@@ -166,8 +193,9 @@ Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent
 
 - **v0.1** — core runtime: Firecracker + jailer, snapshot/fork with lazy memory, clone-safety, default-deny networking, durable registry, CLI, native profiles, `/metrics`, cgroup quotas, install/systemd, an MCP server, and daemon API-key auth.
 - **v0.1.3** — daemon-enforced **scoped / policy tokens**.
-- **v0.2.0** (current) — a **TUI** (`crucible tui`), plus fork lineage on the API (`source_snapshot_id`).
-- **v0.2.x** (planned) — durable per-sandbox activity logs, CLI-driven image pull, a `policy.yaml` superset, more language profiles, and a custom rootfs builder.
+- **v0.2.0** — a **TUI** (`crucible tui`), plus fork lineage on the API (`source_snapshot_id`).
+- **v0.3.0** (current) — **the safe `docker run` for untrusted/AI code**: OCI image boot + `crucible build`, an interactive `crucible shell` + TUI session view, `--disk` sizing, top-level `stop`/`rm`, durable logs, and MCP image/publish/logs tools. Sandboxes are **ephemeral** (durability is v0.4).
+- **v0.4** (planned) — durable, self-healing long-lived workloads (an app model that survives daemon restart), plus a PTY for full-terminal interactive sessions.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).
 

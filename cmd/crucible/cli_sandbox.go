@@ -123,38 +123,10 @@ func parseDiskSize(s string) (int64, error) {
 	return v * mult, nil
 }
 
-// parsePublish parses a docker-style port spec:
-//
-//	HOST:GUEST              8080:80
-//	HOST_IP:HOST:GUEST      127.0.0.1:8080:80
-//	…with an optional /tcp suffix (tcp is the default).
+// parsePublish parses a docker-style port spec (see api.ParsePublish). Kept
+// as a thin wrapper so CLI call sites and tests read naturally.
 func parsePublish(spec string) (api.PortMapping, error) {
-	var pm api.PortMapping
-	body, proto, hasProto := strings.Cut(spec, "/")
-	pm.Protocol = "tcp"
-	if hasProto {
-		pm.Protocol = proto
-	}
-	parts := strings.Split(body, ":")
-	var hostStr, guestStr string
-	switch len(parts) {
-	case 2:
-		hostStr, guestStr = parts[0], parts[1]
-	case 3:
-		pm.HostIP, hostStr, guestStr = parts[0], parts[1], parts[2]
-	default:
-		return pm, fmt.Errorf("--publish %q: want [HOST_IP:]HOST:GUEST[/tcp]", spec)
-	}
-	hp, err := strconv.Atoi(hostStr)
-	if err != nil {
-		return pm, fmt.Errorf("--publish %q: bad host port %q", spec, hostStr)
-	}
-	gp, err := strconv.Atoi(guestStr)
-	if err != nil {
-		return pm, fmt.Errorf("--publish %q: bad guest port %q", spec, guestStr)
-	}
-	pm.HostPort, pm.GuestPort = hp, gp
-	return pm, nil
+	return api.ParsePublish(spec)
 }
 
 func newSandboxLsCmd(o *globalOpts) *cobra.Command {

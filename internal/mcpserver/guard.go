@@ -107,6 +107,11 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpCreate}
 	case "exec":
 		return []policy.Operation{policy.OpExec}
+	case "stop_sandbox":
+		// The daemon gates service/stop as an exec-class mutation.
+		return []policy.Operation{policy.OpExec}
+	case "logs":
+		return []policy.Operation{policy.OpRead}
 	case "snapshot":
 		return []policy.Operation{policy.OpSnapshot}
 	case "fork":

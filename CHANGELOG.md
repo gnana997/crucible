@@ -6,6 +6,86 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.3.0] — 2026-07-09
+
+**The "safe `docker run` for untrusted code" release.** Boot an unmodified OCI
+image in a Firecracker microVM in one command, poke at it with a real
+interactive shell, and tear it down — with default-deny egress and
+fork-for-parallel-exploration throughout. The launch line: the moment you'd
+reach for `docker run` on code you don't fully trust (a random repo, something
+an agent just wrote), reach for `crucible run` instead.
+
+> **Ephemeral contract.** v0.3.0 sandboxes are *consciously ephemeral* — a
+> daemon restart does **not** resurrect running sandboxes (their registry
+> records and durable logs persist; the live VMs do not). That is the right
+> contract for "run a sketchy repo, test it, tear it down." Durable,
+> self-healing long-lived workloads are v0.4.
+
+### Added
+
+- **Interactive shell — `crucible shell <id>`** (and `crucible sandbox exec -i`).
+  A real, long-lived `/bin/sh` into a running sandbox over a hijacked
+  full-duplex vsock stream: `cd`/env persist across commands and stdin
+  round-trips at interactive latency. Line-buffered, **no PTY** (full-screen
+  programs, colors, and Ctrl-C job control are v0.4). Adds `FrameStdin` /
+  `FrameStdinClose` to the agent wire; the one-shot `/exec` path is untouched.
+- **TUI session view.** The detail view keeps a **scrollback** of every command
+  in a session, and **`tab`** opens the interactive shell (from the list, or
+  inside detail) so commands share state — riding the same `ExecInteractive`.
+- **`crucible run <image>`** — the docker-parity headline: acquire → boot the
+  image's entrypoint → publish ports (`-p`) → **long-lived by default**. `--rm`
+  tails logs in the foreground and removes the sandbox on Ctrl-C. The previous
+  throwaway-command shape stays as `crucible run -- <command>`.
+- **`crucible build [-t tag] [-f Dockerfile] <context>`** — `docker build`
+  locally, then load the result into crucible's image store in one verb (Docker
+  stays client-side; the daemon is Docker-free). Prints the converted digest,
+  ready for `crucible run`.
+- **`crucible stop <id>` / `crucible rm <id>`** — top-level ops verbs: graceful
+  stop (image StopSignal + grace, the sandbox remains) and hard remove.
+- **`--disk <size>`** on `sandbox create` / `run` — grow the writable rootfs
+  (e.g. `2G`, `512M`) by resizing the *per-sandbox clone* (`resize2fs`) before
+  boot; the shared image/profile ext4 is never touched.
+- **MCP surface for the wedge.** `create_sandbox` / `run` gain `image` + `pull`,
+  `disk_mib`, and (create) `publish`; two new tools — **`logs`** (durable
+  service/exec logs that survive the sandbox) and **`stop_sandbox`** (graceful
+  stop). See [docs/mcp.md](docs/mcp.md).
+- Smokes: `scripts/smoke_shell.sh`, `smoke_reap.sh`, `smoke_build_run.sh`.
+
+### Changed
+
+- **`crucible run` is dual-mode**, selected by the `--` separator: a bare
+  positional is an *image* (`run nginx -p 8080:80`); `-- <cmd>` is a *throwaway
+  command* (the prior behavior, unchanged).
+- **Ctrl-C is graceful across the CLI.** Client commands cancel their context on
+  SIGINT/SIGTERM instead of being hard-killed, so `run --rm` cleans up, `logs
+  -f` stops cleanly, and an interactive `shell`/`exec -i` tears the guest
+  process down on exit.
+
+### Fixed
+
+- **Bare commands resolve on OCI images.** The PID-1 (init-mode) agent spawns via
+  `os.StartProcess`, which does no `PATH` search — so `sh` / `sh -c` (the TUI,
+  `exec -- sh`, `shell`) failed to start on image sandboxes with `exit -1`. The
+  init exec path now resolves `argv[0]` against the child's `PATH`, matching
+  profile mode and Docker.
+- **Orphan reaping is complete.** A killed daemon leaves no lingering
+  firecracker: startup now sweeps live orphan **processes** (scoped by
+  `--chroot-base-dir`) alongside the existing chroot-driven reap, and mops up
+  empty orphan **cgroup directories** whose chroot is already gone (these
+  previously accumulated indefinitely).
+
+### Security
+
+- **Scope stated honestly.** v0.3.0 supports *running code you distrust on your
+  own host*; it does **not** yet support hosting mutually-distrusting tenants on
+  one host — that is gated on a hardening + external-audit pass. The microVM +
+  jailer + default-deny-egress boundary is described precisely in
+  [SECURITY.md](SECURITY.md).
+- MCP image / publish / disk params pass through under the **existing** operator
+  guardrails (timeout / net-allow / fork / sandbox clamps) — no new
+  agent-widenable capability, and the resolved-IP range filter still gates all
+  egress.
+
 ## [0.2.0] — 2026-07-08
 
 The TUI release: a live terminal control center for a crucible daemon — see
@@ -196,6 +276,8 @@ Initial release — the core single-host Firecracker microVM sandbox runtime.
   `-o json`), native language rootfs profiles (base/python/node/go), a
   Prometheus `/metrics` endpoint, and an install script + systemd unit.
 
+[0.3.0]: https://github.com/gnana997/crucible/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/gnana997/crucible/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/gnana997/crucible/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/gnana997/crucible/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/gnana997/crucible/compare/v0.1.0...v0.1.1

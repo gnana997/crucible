@@ -15,10 +15,15 @@ fits together), [api](docs/api.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.2.0. The core runtime is feature-complete (runtime, CLI, native
-rootfs profiles, `/metrics`, cgroup quotas, install/systemd), plus an MCP server,
-daemon API-key auth with scoped/policy tokens, and a TUI (`crucible tui`). See the
-ROADMAP for what's planned next.
+**Status:** v0.3.0 — "the safe `docker run` for untrusted/AI code." The core
+runtime is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`,
+cgroup quotas, install/systemd), plus OCI image boot (`crucible run <image>` /
+`build`), an interactive shell (`crucible shell`, no PTY) + TUI session view,
+`--disk` sizing, top-level `stop`/`rm`, durable logs, an MCP server (image/
+publish/disk params + `logs`/`stop_sandbox` tools), daemon API-key auth with
+scoped/policy tokens, and a TUI (`crucible tui`). Sandboxes are **ephemeral** —
+a daemon restart drops running VMs (durability is v0.4). See the ROADMAP for
+what's next.
 
 ## Working style
 

@@ -113,7 +113,7 @@ func TestServerAdvertisesFullCatalog(t *testing.T) {
 	want := []string{
 		"create_sandbox", "delete_sandbox", "delete_snapshot", "exec", "fork",
 		"inspect_sandbox", "list_profiles", "list_sandboxes", "list_snapshots",
-		"run", "snapshot",
+		"logs", "run", "snapshot", "stop_sandbox",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tools = %v (%d), want %d", got, len(got), len(want))
@@ -199,6 +199,136 @@ func TestCreateSandboxTool(t *testing.T) {
 	}
 	if out.Network == nil || !out.Network.Enabled || out.Network.GuestIP != "10.0.0.2" {
 		t.Errorf("network = %+v", out.Network)
+	}
+}
+
+// TestCreateSandboxImagePublishDisk: the new create params reach the daemon
+// (image+pull override profile; publish parses; disk_mib → disk_bytes), and
+// the published mappings are echoed back in the tool output.
+func TestCreateSandboxImagePublishDisk(t *testing.T) {
+	var got api.CreateSandboxRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_img", Published: got.Publish})
+	})
+	cs := connect(t, Config{Client: daemonClient(t, mux)})
+
+	var out sandboxOutput
+	call(t, cs, "create_sandbox", map[string]any{
+		"image":    "nginx:alpine",
+		"pull":     "always",
+		"disk_mib": 2048,
+		"publish":  []string{"8080:80"},
+	}, &out)
+
+	if got.Image == nil || got.Image.OCI != "nginx:alpine" || got.Pull != "always" {
+		t.Errorf("daemon saw image=%+v pull=%q", got.Image, got.Pull)
+	}
+	if got.Profile != "" {
+		t.Errorf("profile should be empty when image is set, got %q", got.Profile)
+	}
+	if got.DiskBytes != 2048<<20 {
+		t.Errorf("disk_bytes = %d, want %d", got.DiskBytes, int64(2048)<<20)
+	}
+	if len(got.Publish) != 1 || got.Publish[0].HostPort != 8080 || got.Publish[0].GuestPort != 80 {
+		t.Errorf("publish = %+v, want 8080->80", got.Publish)
+	}
+	if len(out.Published) != 1 || out.Published[0].HostPort != 8080 {
+		t.Errorf("output published = %+v, want it echoed", out.Published)
+	}
+}
+
+func TestCreateSandboxImageProfileMutuallyExclusive(t *testing.T) {
+	cs := connect(t, Config{Client: client.New("http://127.0.0.1:0")})
+	msg := callErr(t, cs, "create_sandbox", map[string]any{"image": "nginx", "profile": "base"})
+	if !strings.Contains(msg, "mutually exclusive") {
+		t.Errorf("error = %q, want mutually-exclusive", msg)
+	}
+}
+
+func TestRunToolImage(t *testing.T) {
+	var got api.CreateSandboxRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_run"})
+	})
+	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, _ *http.Request) {
+		fw := agentwire.NewFrameWriter(w)
+		payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 0})
+		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+	})
+	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	cs := connect(t, Config{Client: daemonClient(t, mux)})
+
+	var out execOutput
+	call(t, cs, "run", map[string]any{
+		"image":    "python:3.12-slim",
+		"command":  []string{"python", "--version"},
+		"disk_mib": 1024,
+	}, &out)
+	if got.Image == nil || got.Image.OCI != "python:3.12-slim" {
+		t.Errorf("daemon saw image %+v, want python:3.12-slim", got.Image)
+	}
+	if got.DiskBytes != 1024<<20 {
+		t.Errorf("disk_bytes = %d, want %d", got.DiskBytes, int64(1024)<<20)
+	}
+}
+
+func TestLogsTool(t *testing.T) {
+	var gotSource string
+	var gotSince string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /sandboxes/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		gotSource = r.URL.Query().Get("source")
+		gotSince = r.URL.Query().Get("since")
+		_ = json.NewEncoder(w).Encode(api.LogsResponse{
+			Records: []api.LogRecord{
+				{TimeMs: 1, Source: "exec", Stream: "stdout", Text: "hello\n"},
+			},
+			NextOffset: 42,
+		})
+	})
+	cs := connect(t, Config{Client: daemonClient(t, mux)})
+
+	var out logsOutput
+	call(t, cs, "logs", map[string]any{"sandbox_id": "sbx_1", "source": "exec"}, &out)
+	if gotSource != "exec" {
+		t.Errorf("daemon saw source %q, want exec", gotSource)
+	}
+	if gotSince != "" {
+		t.Errorf("daemon saw since %q, want it omitted (client tails on negative since)", gotSince)
+	}
+	if out.NextOffset != 42 || len(out.Records) != 1 || out.Records[0].Text != "hello\n" {
+		t.Errorf("logs output = %+v", out)
+	}
+
+	if msg := callErr(t, cs, "logs", map[string]any{"sandbox_id": "sbx_1", "source": "bogus"}); !strings.Contains(msg, "source must be") {
+		t.Errorf("bad source error = %q", msg)
+	}
+}
+
+func TestStopSandboxTool(t *testing.T) {
+	var stopped string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /sandboxes/{id}/service/stop", func(w http.ResponseWriter, r *http.Request) {
+		stopped = r.PathValue("id")
+		_ = json.NewEncoder(w).Encode(agentwire.ServiceStatus{})
+	})
+	cs := connect(t, Config{Client: daemonClient(t, mux)})
+
+	var out stoppedOutput
+	call(t, cs, "stop_sandbox", map[string]any{"sandbox_id": "sbx_9"}, &out)
+	if stopped != "sbx_9" {
+		t.Errorf("daemon stopped %q, want sbx_9", stopped)
+	}
+	if out.Stopped != "sbx_9" {
+		t.Errorf("output stopped = %q, want sbx_9", out.Stopped)
 	}
 }
 

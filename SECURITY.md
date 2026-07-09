@@ -2,6 +2,15 @@
 
 crucible exists to run **untrusted code** — so isolation is a core design property, not an afterthought. This document describes the isolation model, the honest limitations of the current release, and how to report a vulnerability.
 
+## Scope — what crucible is (and isn't) for
+
+Be precise about the threat model, because overclaiming is the one thing that backfires on a security tool.
+
+- ✅ **Supported: run code *you* distrust, on *your own* host.** You control the daemon; you decide what to run. crucible's job is to stop code you don't trust — a random repo, something an AI agent just wrote, a dependency you haven't audited — from escaping onto your host or phoning home. This is the "safe `docker run`" use case, and it is what v0.3.0 is built and tested for.
+- ❌ **Not yet: host mutually-distrusting strangers on one shared host.** crucible assumes a **single, trusted operator**. It has **not** been validated as a boundary between tenants who distrust *each other* (a multi-tenant PaaS where the operator is also adversarial to some users). That posture is gated on a dedicated hardening pass **plus an external security audit**, and no release will claim it until that review backs it. Until then, treat any daemon key as full code-execution-on-your-behalf and don't expose crucible to parties you wouldn't hand a shell.
+
+In one line: **crucible protects the host from the code; it does not yet protect tenants from each other.**
+
 ## Isolation model
 
 Each sandbox is a **Firecracker microVM with its own guest kernel** — escape requires breaking out of a virtual machine, not merely a shared-kernel namespace. This is the same isolation primitive AWS Lambda and Fargate use. On top of that boundary, crucible adds:

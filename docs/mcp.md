@@ -55,21 +55,24 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 
 | Tool | What it does | Key inputs |
 |---|---|---|
-| `run` | The 80% case: create a sandbox, run one command, return its output, **always delete** it. | `command` (argv), `profile?`, `env?`, `timeout_s?`, `net_allow?[]` |
-| `create_sandbox` | Create a persistent sandbox. | `profile?`, `vcpus?`, `memory_mib?`, `timeout_s?`, `net_allow?[]` |
+| `run` | The 80% case: create a sandbox, run one command, return its output, **always delete** it. | `command` (argv), `profile?` \| `image?`+`pull?`, `env?`, `disk_mib?`, `timeout_s?`, `net_allow?[]` |
+| `create_sandbox` | Create a persistent sandbox. | `profile?` \| `image?`+`pull?`, `vcpus?`, `memory_mib?`, `disk_mib?`, `timeout_s?`, `net_allow?[]`, `publish?[]` |
 | `exec` | Run a command in an existing sandbox; capture and return. | `sandbox_id`, `command`, `cwd?`, `env?`, `timeout_s?` |
+| `logs` | Read a sandbox's durable logs (survive the sandbox). | `sandbox_id`, `source?` (service\|exec\|all), `since?` |
 | `snapshot` | Snapshot a sandbox's warm state. | `sandbox_id` |
 | `fork` | Create N independent, clone-safe sandboxes from a snapshot. | `snapshot_id`, `count?` |
 | `list_sandboxes` | List live sandboxes. | — |
 | `inspect_sandbox` | Full detail for one sandbox. | `sandbox_id` |
+| `stop_sandbox` | Gracefully stop a sandbox's entrypoint (StopSignal + grace); the sandbox remains. | `sandbox_id`, `grace_s?` |
 | `delete_sandbox` | Destroy a sandbox. | `sandbox_id` |
 | `list_snapshots` | List snapshots. | — |
 | `delete_snapshot` | Delete a snapshot. | `snapshot_id` |
 | `list_profiles` | List available rootfs profiles. | — |
 
 - **`run` is the star** — most agents want "run this code, give me the output" with no lifecycle to manage. `env` entries are `KEY=VALUE` strings; `net_allow` is a list of hostnames the sandbox may reach.
-- **The primitives (`create`/`exec`/`snapshot`/`fork`)** are what make crucible special: an agent can set up once, branch N ways, and keep the best.
-- **`exec` is capture-and-return** — the full result (`exit_code`, `stdout`, `stderr`, `timed_out`, `oom_killed`, `duration_ms`). Live streaming and interactive REPLs are not in this release.
+- **Booting an image** — set `image` (e.g. `nginx:alpine` or a converted digest) instead of `profile` on `run`/`create_sandbox`; the daemon pulls + converts on a store miss (`pull`: missing/always/never). `image` and `profile` are mutually exclusive. `create_sandbox` boots the image's entrypoint and can `publish` host ports (`["8080:80"]`), echoing the applied mappings back.
+- **The primitives (`create`/`exec`/`snapshot`/`fork`)** are what make crucible special: an agent can set up once, branch N ways, and keep the best. `logs` lets it inspect what ran (even after the sandbox is gone); `stop_sandbox` halts a workload without removing it.
+- **`exec` is capture-and-return** — the full result (`exit_code`, `stdout`, `stderr`, `timed_out`, `oom_killed`, `duration_ms`). Live streaming and interactive REPLs are not in this release (the interactive shell is a CLI/TUI feature).
 - **Errors** surface as MCP tool errors carrying the daemon's message (e.g. unknown profile, sandbox not found), so the agent gets something actionable.
 
 ## Security model

@@ -245,6 +245,11 @@ Required flags:
 		} else if len(reaped) > 0 {
 			logger.Info("reaped orphan chroots from previous run", "count", len(reaped), "ids", reaped)
 		}
+		// Finally, sweep any empty per-VM cgroup dirs left behind — the reaps
+		// above are chroot-driven and can't see a cgroup whose chroot is gone.
+		if reaped := jailer.ReapOrphanCgroups(*fcBin); len(reaped) > 0 {
+			logger.Info("reaped orphan cgroups from previous run", "count", len(reaped))
+		}
 		jr := runner.NewJailerRunner(*jailerBin, *fcBin, *chrootBase, uint32(*jailUID), uint32(*jailGID))
 		jr.Logger = logger
 		r = jr

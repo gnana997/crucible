@@ -208,6 +208,43 @@ func TestKillLiveOrphansScopedByChrootBase(t *testing.T) {
 	}
 }
 
+// TestReapOrphanCgroups: empty per-VM cgroup dirs are removed; a non-empty
+// one (a still-live VM) and a non-matching name are left in place; a missing
+// root is a clean no-op.
+func TestReapOrphanCgroups(t *testing.T) {
+	root := t.TempDir()
+	mk := func(name string) {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+	}
+	mk("sbx-aaa")       // empty → reaped
+	mk("sbx-bbb")       // empty → reaped
+	mk("not_a_cgroup")  // invalid id (underscore) → skipped
+	mk("sbx-ccc/child") // non-empty (has a child) → skipped (can't rmdir)
+
+	reaped := reapOrphanCgroups(root)
+	slices.Sort(reaped)
+	if !slices.Equal(reaped, []string{"sbx-aaa", "sbx-bbb"}) {
+		t.Errorf("reaped = %v, want [sbx-aaa sbx-bbb]", reaped)
+	}
+	for _, gone := range []string{"sbx-aaa", "sbx-bbb"} {
+		if _, err := os.Stat(filepath.Join(root, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed", gone)
+		}
+	}
+	for _, kept := range []string{"not_a_cgroup", "sbx-ccc"} {
+		if _, err := os.Stat(filepath.Join(root, kept)); err != nil {
+			t.Errorf("%s should have been kept: %v", kept, err)
+		}
+	}
+
+	// A missing cgroup root (first run / no quotas) reaps nothing, no error.
+	if got := reapOrphanCgroups(filepath.Join(root, "does-not-exist")); got != nil {
+		t.Errorf("missing root = %v, want nil", got)
+	}
+}
+
 func TestReapOrphansNoDirIsNotError(t *testing.T) {
 	// First-ever daemon startup: ChrootBase exists but has never had a
 	// jailer subdirectory under it.

@@ -23,19 +23,37 @@ import (
 type noInput struct{}
 
 type runInput struct {
-	Profile  string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs"`
+	Profile  string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
+	Image    string   `json:"image,omitempty" jsonschema:"OCI image to run the command inside, e.g. \"python:3.12-slim\" or a converted digest; the daemon pulls+converts on a store miss. Mutually exclusive with profile."`
+	Pull     string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
 	Command  []string `json:"command" jsonschema:"command argv to run, e.g. [\"python\",\"-c\",\"print(1)\"]"`
 	Env      []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings"`
+	DiskMib  int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
 	TimeoutS int      `json:"timeout_s,omitempty" jsonschema:"wall-clock timeout in seconds"`
 	NetAllow []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
 }
 
 type createSandboxInput struct {
-	Profile   string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs"`
+	Profile   string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
+	Image     string   `json:"image,omitempty" jsonschema:"OCI image to boot instead of a profile, e.g. \"nginx:alpine\" or a converted digest; the daemon pulls+converts on a store miss and runs its entrypoint. Mutually exclusive with profile."`
+	Pull      string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
 	Vcpus     int      `json:"vcpus,omitempty" jsonschema:"number of vCPUs"`
 	MemoryMib int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB"`
+	DiskMib   int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
 	TimeoutS  int      `json:"timeout_s,omitempty" jsonschema:"sandbox idle timeout in seconds"`
 	NetAllow  []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
+	Publish   []string `json:"publish,omitempty" jsonschema:"host port publishes so a guest service is reachable from the host, e.g. [\"8080:80\"] or [\"127.0.0.1:8080:80\"]"`
+}
+
+type logsInput struct {
+	SandboxID string `json:"sandbox_id" jsonschema:"id of the sandbox whose logs to read"`
+	Source    string `json:"source,omitempty" jsonschema:"filter: service (entrypoint output), exec (command activity), or all (default)"`
+	Since     int64  `json:"since,omitempty" jsonschema:"byte cursor from a previous call's next_offset to continue from; omit to read the recent tail"`
+}
+
+type stopSandboxInput struct {
+	SandboxID string `json:"sandbox_id" jsonschema:"id of the sandbox to gracefully stop (StopSignal + grace, then SIGKILL). The sandbox remains; use delete_sandbox to remove it."`
+	GraceS    int    `json:"grace_s,omitempty" jsonschema:"override the image's stop grace in seconds before SIGKILL"`
 }
 
 type execInput struct {
@@ -78,14 +96,38 @@ type networkOutput struct {
 	Allowlist []string `json:"allowlist,omitempty"`
 }
 
+type publishOutput struct {
+	HostIP    string `json:"host_ip,omitempty"`
+	HostPort  int    `json:"host_port"`
+	GuestPort int    `json:"guest_port"`
+	Protocol  string `json:"protocol,omitempty"`
+}
+
 type sandboxOutput struct {
-	ID        string         `json:"id"`
-	Profile   string         `json:"profile,omitempty"`
-	VCPUs     int            `json:"vcpus"`
-	MemoryMiB int            `json:"memory_mib"`
-	Workdir   string         `json:"workdir,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	Network   *networkOutput `json:"network,omitempty"`
+	ID        string          `json:"id"`
+	Profile   string          `json:"profile,omitempty"`
+	VCPUs     int             `json:"vcpus"`
+	MemoryMiB int             `json:"memory_mib"`
+	Workdir   string          `json:"workdir,omitempty"`
+	CreatedAt time.Time       `json:"created_at"`
+	Network   *networkOutput  `json:"network,omitempty"`
+	Published []publishOutput `json:"published,omitempty"`
+}
+
+type logRecordOutput struct {
+	TimeMs int64  `json:"time_ms"`
+	Source string `json:"source"`
+	Stream string `json:"stream"`
+	Text   string `json:"text"`
+}
+
+type logsOutput struct {
+	Records    []logRecordOutput `json:"records"`
+	NextOffset int64             `json:"next_offset"`
+}
+
+type stoppedOutput struct {
+	Stopped string `json:"stopped"`
 }
 
 type sandboxListOutput struct {
@@ -125,6 +167,11 @@ func toSandboxOutput(s api.SandboxResponse) sandboxOutput {
 		out.Network = &networkOutput{
 			Enabled: s.Network.Enabled, GuestIP: s.Network.GuestIP, Allowlist: s.Network.Allowlist,
 		}
+	}
+	for _, pm := range s.Published {
+		out.Published = append(out.Published, publishOutput{
+			HostIP: pm.HostIP, HostPort: pm.HostPort, GuestPort: pm.GuestPort, Protocol: pm.Protocol,
+		})
 	}
 	return out
 }
@@ -181,6 +228,10 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createSandbox) })
 	add("exec", "Run a command in an existing sandbox and return its captured output.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.exec) })
+	add("logs", "Read a sandbox's durable logs (entrypoint output and/or exec activity). Logs survive the sandbox, so a crashed workload can still be inspected.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.logs) })
+	add("stop_sandbox", "Gracefully stop a sandbox's entrypoint (StopSignal + grace, then SIGKILL). The sandbox remains; use delete_sandbox to remove it.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.stopSandbox) })
 	add("snapshot", "Snapshot a sandbox's warm state so it can be forked.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.snapshot) })
 	add("fork", "Create N independent, clone-safe sandboxes from a snapshot.",
@@ -209,11 +260,10 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 	if len(in.Command) == 0 {
 		return nil, execOutput{}, errors.New("command must not be empty")
 	}
-	env, err := envMap(in.Env)
-	if err != nil {
-		return nil, execOutput{}, err
+	if in.Image != "" && in.Profile != "" {
+		return nil, execOutput{}, errors.New("image and profile are mutually exclusive")
 	}
-	profile, err := h.cfg.resolveProfile(in.Profile)
+	env, err := envMap(in.Env)
 	if err != nil {
 		return nil, execOutput{}, err
 	}
@@ -225,7 +275,17 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 	}
 	timeout := h.cfg.clampTimeout(in.TimeoutS)
 
-	req := api.CreateSandboxRequest{Profile: profile, TimeoutSec: timeout}
+	req := api.CreateSandboxRequest{TimeoutSec: timeout, DiskBytes: mibToBytes(in.DiskMib)}
+	if in.Image != "" {
+		req.Image = &api.ImageRef{OCI: in.Image}
+		req.Pull = in.Pull
+	} else {
+		profile, err := h.cfg.resolveProfile(in.Profile)
+		if err != nil {
+			return nil, execOutput{}, err
+		}
+		req.Profile = profile
+	}
 	if len(in.NetAllow) > 0 {
 		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
 	}
@@ -247,9 +307,8 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 }
 
 func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in createSandboxInput) (*mcp.CallToolResult, sandboxOutput, error) {
-	profile, err := h.cfg.resolveProfile(in.Profile)
-	if err != nil {
-		return nil, sandboxOutput{}, err
+	if in.Image != "" && in.Profile != "" {
+		return nil, sandboxOutput{}, errors.New("image and profile are mutually exclusive")
 	}
 	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
 		return nil, sandboxOutput{}, err
@@ -258,16 +317,73 @@ func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, sandboxOutput{}, err
 	}
 	req := api.CreateSandboxRequest{
-		Profile: profile, VCPUs: in.Vcpus, MemoryMiB: in.MemoryMib, TimeoutSec: in.TimeoutS,
+		VCPUs: in.Vcpus, MemoryMiB: in.MemoryMib, TimeoutSec: in.TimeoutS, DiskBytes: mibToBytes(in.DiskMib),
+	}
+	if in.Image != "" {
+		req.Image = &api.ImageRef{OCI: in.Image}
+		req.Pull = in.Pull
+	} else {
+		profile, err := h.cfg.resolveProfile(in.Profile)
+		if err != nil {
+			return nil, sandboxOutput{}, err
+		}
+		req.Profile = profile
 	}
 	if len(in.NetAllow) > 0 {
 		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
+	}
+	for _, p := range in.Publish {
+		pm, err := api.ParsePublish(p)
+		if err != nil {
+			return nil, sandboxOutput{}, err
+		}
+		req.Publish = append(req.Publish, pm)
 	}
 	sb, err := h.cfg.Client.CreateSandbox(ctx, req)
 	if err != nil {
 		return nil, sandboxOutput{}, err
 	}
 	return nil, toSandboxOutput(sb), nil
+}
+
+// mibToBytes converts a MiB count to bytes; 0 stays 0 (unset).
+func mibToBytes(mib int) int64 { return int64(mib) << 20 }
+
+func (h *handlers) logs(ctx context.Context, _ *mcp.CallToolRequest, in logsInput) (*mcp.CallToolResult, logsOutput, error) {
+	if in.SandboxID == "" {
+		return nil, logsOutput{}, errors.New("sandbox_id is required")
+	}
+	switch in.Source {
+	case "", "all", "service", "exec":
+	default:
+		return nil, logsOutput{}, errors.New("source must be service, exec, or all")
+	}
+	// Default (0/omitted) tails the recent log; the daemon tails on since < 0.
+	since := in.Since
+	if since == 0 {
+		since = -1
+	}
+	resp, err := h.cfg.Client.Logs(ctx, in.SandboxID, since, in.Source)
+	if err != nil {
+		return nil, logsOutput{}, err
+	}
+	out := logsOutput{NextOffset: resp.NextOffset}
+	for _, r := range resp.Records {
+		out.Records = append(out.Records, logRecordOutput{
+			TimeMs: r.TimeMs, Source: r.Source, Stream: r.Stream, Text: r.Text,
+		})
+	}
+	return nil, out, nil
+}
+
+func (h *handlers) stopSandbox(ctx context.Context, _ *mcp.CallToolRequest, in stopSandboxInput) (*mcp.CallToolResult, stoppedOutput, error) {
+	if in.SandboxID == "" {
+		return nil, stoppedOutput{}, errors.New("sandbox_id is required")
+	}
+	if _, err := h.cfg.Client.StopService(ctx, in.SandboxID, in.GraceS); err != nil {
+		return nil, stoppedOutput{}, err
+	}
+	return nil, stoppedOutput{Stopped: in.SandboxID}, nil
 }
 
 func (h *handlers) exec(ctx context.Context, _ *mcp.CallToolRequest, in execInput) (*mcp.CallToolResult, execOutput, error) {

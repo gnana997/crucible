@@ -35,14 +35,23 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 - [x] Bind a key to a policy the **daemon** enforces — allowed operations, an egress ceiling, a profile allowlist, resource caps, and an expiry — so a handed-out key is worthless beyond its bounds. `crucible policy validate/show`, `GET /whoami` ([policy.md](policy.md)).
 
-### v0.2.0 — TUI + fork lineage *(current)*
+### v0.2.0 — TUI + fork lineage
 
 - [x] **TUI** (`crucible tui`) — a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. A thin consumer of `internal/client` ([tui.md](tui.md)).
 - [x] **Fork lineage on the API** — `source_snapshot_id` records which snapshot a sandbox was forked from, so the fork genealogy is reconstructable by any client (this is what the tree view draws).
 
+### v0.3.0 — The safe `docker run` for untrusted/AI code *(current)*
+
+- [x] **OCI image boot** — `crucible run <image>` boots an unmodified image's entrypoint in a microVM; `crucible build` builds a Dockerfile and loads it into the store (daemon stays Docker-free). Publish host ports with `-p`.
+- [x] **Interactive shell** — `crucible shell <id>` / `sandbox exec -i`: a real long-lived `/bin/sh` over a hijacked full-duplex vsock stream (state persists; line-buffered, **no PTY**). The TUI gains a **scrollback + `tab`-to-shell** session view.
+- [x] **`--disk`** per-sandbox writable sizing (`resize2fs` the clone, never the shared image); top-level **`stop`/`rm`** ops verbs; durable **`logs`**.
+- [x] **MCP for the wedge** — `image`/`pull`/`publish`/`disk_mib` on `create_sandbox`/`run`, plus `logs` and `stop_sandbox` tools ([mcp.md](mcp.md)).
+- [x] **Complete orphan reaping** — startup sweeps live orphan processes and empty orphan cgroups; a killed daemon leaves no lingering firecracker.
+- **Ephemeral contract:** running sandboxes do **not** survive a daemon restart — durability is v0.4.
+
 ## Planned
 
-### v0.2.x — Next
+### v0.4.x — Next
 
 - • **Durable per-sandbox activity logs** — the immediate fast-follow. Persist every exec (command + streamed output) and lifecycle event to an append-only per-sandbox log, exposed over the API and viewable/streamable/searchable in the TUI. Today exec output is live-only and leaves no trail once a client detaches; this closes that gap.
 - • **Custom rootfs builder.** `crucible rootfs build ./Dockerfile` produces a Firecracker-compatible rootfs you can use as a custom profile.
@@ -52,7 +61,7 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
 - • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
 
-### v0.3 — Observability and debugging
+### v0.5 — Observability and debugging
 
 Turn the per-exec records into first-class, exportable telemetry.
 
@@ -62,7 +71,7 @@ Turn the per-exec records into first-class, exportable telemetry.
 - • **Filesystem diff.** `crucible fs diff sbx_…` shows every file created, modified, or deleted vs. the starting rootfs.
 - • **Record and replay.** Capture a full execution trace (stdin/stdout, env, filesystem writes, network bytes) and replay it deterministically in a new sandbox.
 
-### v0.4 — Fork trees
+### v0.6 — Fork trees
 
 Make parallel agent exploration a first-class workflow, not just a primitive. Fork lineage (v0.2.0) and the TUI tree view are the groundwork.
 

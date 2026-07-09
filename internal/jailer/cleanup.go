@@ -239,6 +239,47 @@ func KillLiveOrphans(chrootBase string) []string {
 	return reaped
 }
 
+// ReapOrphanCgroups removes empty per-VM cgroup directories left under
+// /sys/fs/cgroup/<basename(execFile)>/ by a previous daemon run.
+//
+// It is the cgroup analog of ReapOrphans, which is *chroot-directory*-driven
+// and therefore blind to a cgroup whose chroot was already removed — the way
+// a cgroup orphans when Cleanup's chroot removal succeeds but its cgroup rmdir
+// hits transient EBUSY (cgroup teardown is async to task exit), or when a
+// kill -9'd daemon never ran Cleanup at all. Without this sweep such empty
+// cgroup dirs accumulate forever.
+//
+// Called once at startup, after KillLiveOrphans + ReapOrphans have killed our
+// VMM processes and cleaned chroot-backed cgroups — so every cgroup still
+// present here should be empty. A cgroup that is somehow still populated is
+// left in place (removeCgroupDir returns an error, so it isn't counted).
+// Missing cgroup root (no quotas were ever set) reaps nothing.
+func ReapOrphanCgroups(execFile string) []string {
+	return reapOrphanCgroups(filepath.Join("/sys/fs/cgroup", filepath.Base(execFile)))
+}
+
+// reapOrphanCgroups is ReapOrphanCgroups' testable core: the cgroup root is a
+// parameter so tests don't touch the real cgroupfs.
+func reapOrphanCgroups(root string) []string {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil // no cgroup root yet (first run / no quotas) — nothing to reap
+	}
+	var reaped []string
+	for _, e := range entries {
+		// Only per-VM cgroup dirs (jailer names them by the sandbox's jailer
+		// id). validIDPattern is the same guard ReapOrphans uses before it
+		// takes a directory name as a kill/cleanup selector.
+		if !e.IsDir() || !validIDPattern.MatchString(e.Name()) {
+			continue
+		}
+		if err := removeCgroupDir(filepath.Join(root, e.Name())); err == nil {
+			reaped = append(reaped, e.Name())
+		}
+	}
+	return reaped
+}
+
 // KillByID SIGKILLs the jailer + firecracker processes for the VM with the
 // given jailer ID and waits, bounded, for them to exit. Returns true once the
 // process set has drained (false if something is still alive after the
