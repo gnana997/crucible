@@ -1,6 +1,9 @@
 package oci
 
 import (
+	"archive/tar"
+	"bytes"
+	"io"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -12,7 +15,6 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-	"github.com/google/go-containerregistry/pkg/v1/random"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
@@ -27,16 +29,47 @@ func newFakeRegistry(t *testing.T) string {
 	return strings.TrimPrefix(srv.URL, "http://")
 }
 
-// craftImage builds a small random image and rewrites its config to
-// the given platform + runtime config, preserving the rootfs metadata
-// random.Image generated.
+// craftImage builds a small single-layer image with realistic file modes and
+// rewrites its config to the given platform + runtime config.
+//
+// We hand-build the layer rather than use random.Image: the latter emits
+// mode-0000 files, which an unprivileged `mkfs.ext4 -d <dir>` (staging-mode
+// conversion) cannot read — it fails with "Permission denied while
+// populating". The daemon runs as root, so production is unaffected, but the
+// unprivileged test environment (CI) hits it whenever the host lacks tarball
+// (pipe-mode) mkfs support. A layer with normal perms converts everywhere.
 func craftImage(t *testing.T, os, arch string, cfg v1.Config) v1.Image {
 	t.Helper()
-	base, err := random.Image(256, 1)
-	if err != nil {
-		t.Fatalf("random.Image: %v", err)
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	write := func(h *tar.Header, body []byte) {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatalf("tar header %s: %v", h.Name, err)
+		}
+		if len(body) > 0 {
+			if _, err := tw.Write(body); err != nil {
+				t.Fatalf("tar body %s: %v", h.Name, err)
+			}
+		}
 	}
-	cf, err := base.ConfigFile()
+	write(&tar.Header{Name: "app/", Typeflag: tar.TypeDir, Mode: 0o755}, nil)
+	body := []byte("crucible-test-payload")
+	write(&tar.Header{Name: "app/data.txt", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body))}, body)
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar close: %v", err)
+	}
+	raw := buf.Bytes()
+	layer, err := tarball.LayerFromOpener(func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(raw)), nil
+	})
+	if err != nil {
+		t.Fatalf("LayerFromOpener: %v", err)
+	}
+	img, err := mutate.AppendLayers(empty.Image, layer)
+	if err != nil {
+		t.Fatalf("AppendLayers: %v", err)
+	}
+	cf, err := img.ConfigFile()
 	if err != nil {
 		t.Fatalf("ConfigFile: %v", err)
 	}
@@ -44,7 +77,7 @@ func craftImage(t *testing.T, os, arch string, cfg v1.Config) v1.Image {
 	cf.OS = os
 	cf.Architecture = arch
 	cf.Config = cfg
-	img, err := mutate.ConfigFile(base, cf)
+	img, err = mutate.ConfigFile(img, cf)
 	if err != nil {
 		t.Fatalf("mutate.ConfigFile: %v", err)
 	}

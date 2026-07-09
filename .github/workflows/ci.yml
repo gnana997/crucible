@@ -98,8 +98,12 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "Linux only" || { echo "::error::daemon stub message missing"; exit 1; }
       - name: Pure-Go client/MCP tests on darwin
+        # The packages a Mac user actually exercises — all HTTP/pure-Go. We omit
+        # internal/agentapi: it's the daemon<->guest socket client (Linux-only in
+        # practice) and its unix-socket test trips macOS's 104-char sun_path limit
+        # on the runner's long $TMPDIR — irrelevant to the client.
         run: |
           go test -count=1 \
             ./internal/client/... ./internal/mcpserver/... ./internal/api/... \
             ./internal/netallow/... ./internal/policy/... ./internal/agentwire/... \
-            ./internal/agentapi/... ./internal/tokenstore/... ./internal/version/...
+            ./internal/tokenstore/... ./internal/version/...
