@@ -104,6 +104,31 @@ jobs:
             $(ls stage/*.sha256 2>/dev/null) \
             --repo "${GITHUB_REPOSITORY}"
 
+  # Mirror the pinned guest kernel into our own release so `install.sh
+  # --with-deps` doesn't depend on firecracker's CI S3 bucket (which can rotate
+  # or drop old CI kernels). We re-publish the exact firecracker-CI vmlinux,
+  # verified against a pinned digest — install.sh prefers this asset and falls
+  # back to the S3 source. Keep KERNEL_URL/KERNEL_SHA256 in sync with install.sh.
+  kernel:
+    needs: create-release
+    runs-on: ubuntu-latest
+    env:
+      KERNEL_URL: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102
+      KERNEL_SHA256: cf42303c29e8c4a02798f357ba056c5567baf074aaed4eec78c997fb9df08cf9
+    steps:
+      - name: Fetch + verify the pinned kernel
+        run: |
+          curl -fSL "$KERNEL_URL" -o vmlinux-x86_64
+          echo "${KERNEL_SHA256}  vmlinux-x86_64" | sha256sum -c -
+          sha256sum vmlinux-x86_64 > vmlinux-x86_64.sha256
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            vmlinux-x86_64 vmlinux-x86_64.sha256 \
+            --repo "${GITHUB_REPOSITORY}"
+
   profiles:
     needs: create-release
     runs-on: ubuntu-latest

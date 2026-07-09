@@ -50,10 +50,14 @@ STATEDIR="${STATEDIR:-/var/lib/crucible}"
 # --with-deps pins (override via env). Firecracker v1.15+ is required.
 FC_VERSION="${FC_VERSION:-v1.16.1}"
 ROOTFS_PROFILE="${ROOTFS_PROFILE:-base}"
-# Pinned guest kernel for x86_64 (firecracker's CI bucket). --with-deps fetches
-# and verifies this by default so the daemon boots out of the box; override with
+# Pinned guest kernel for x86_64. --with-deps fetches + verifies it so the daemon
+# boots out of the box: it prefers our own release asset (vmlinux-x86_64) for
+# supply-chain independence, and falls back to the firecracker-CI bucket when the
+# resolved release predates that asset. The pinned digest verifies either source
+# (byte-identical — our release job just mirrors this kernel). Override with
 # KERNEL_URL (+ optional KERNEL_SHA256 — a literal digest or a .sha256 URL).
-DEFAULT_KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102"
+# NOTE: bumping the kernel means updating this digest AND release.yml's kernel job.
+DEFAULT_KERNEL_FALLBACK_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102"
 DEFAULT_KERNEL_SHA256="cf42303c29e8c4a02798f357ba056c5567baf074aaed4eec78c997fb9df08cf9"
 
 # ROOT is the checkout / extracted-tarball dir the script runs from, used to
@@ -331,7 +335,8 @@ maybe_download() {
 # provision_deps fetches firecracker+jailer, a default rootfs, and a guest
 # kernel into the paths the config expects. Opt-in (--with-deps),
 # checksum-verified, and skips any piece already present. On x86_64 the kernel
-# defaults to a pinned firecracker-CI vmlinux; other arches need KERNEL_URL.
+# comes from our own pinned release asset (firecracker-CI bucket as fallback);
+# other arches need KERNEL_URL.
 provision_deps() {
     local fc_arch
     case "$(uname -m)" in
@@ -375,18 +380,28 @@ provision_deps() {
         kv deps "installed rootfs -> $STATEDIR/rootfs.ext4"
     fi
 
-    # 3) guest kernel. Default to the pinned firecracker-CI kernel (x86_64) so
-    #    the daemon boots out of the box; override with KERNEL_URL/KERNEL_SHA256.
-    local kurl="${KERNEL_URL:-}" ksha="${KERNEL_SHA256:-}"
+    # 3) guest kernel. Prefer our own pinned release asset (supply-chain
+    #    independence), fall back to the firecracker-CI bucket if the release
+    #    predates it; override with KERNEL_URL / KERNEL_SHA256. x86_64 only by
+    #    default (a matching rootfs only exists for x86_64).
+    local kurl="${KERNEL_URL:-}" ksha="${KERNEL_SHA256:-}" kfallback=""
     if [[ -z "$kurl" && "$fc_arch" == x86_64 ]]; then
-        kurl="$DEFAULT_KERNEL_URL"; ksha="$DEFAULT_KERNEL_SHA256"
+        kurl="https://github.com/$REPO/releases/download/$(resolve_tag)/vmlinux-x86_64"
+        kfallback="$DEFAULT_KERNEL_FALLBACK_URL"
+        ksha="$DEFAULT_KERNEL_SHA256"
     fi
     if [[ -f "$STATEDIR/vmlinux" ]]; then
         kv deps "kernel already present ($STATEDIR/vmlinux) — skipped"
     elif [[ -n "$kurl" ]]; then
         local tmp; tmp="$(mktemp -d)"
         kv deps "fetching guest kernel"
-        fetch "$kurl" "$tmp/vmlinux"
+        if curl -fSL "$kurl" -o "$tmp/vmlinux" 2>/dev/null; then
+            :
+        elif [[ -n "$kfallback" ]] && curl -fSL "$kfallback" -o "$tmp/vmlinux" 2>/dev/null; then
+            kv deps "(release kernel asset absent — used firecracker-CI fallback)"
+        else
+            die "kernel download failed: $kurl"
+        fi
         [[ -n "$ksha" ]] && verify_sha256 "$tmp/vmlinux" "$ksha"
         install -Dm644 "$tmp/vmlinux" "$STATEDIR/vmlinux"
         rm -rf "$tmp"
