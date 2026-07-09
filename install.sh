@@ -31,7 +31,8 @@ BINARY_SET=0
 VERSION=""
 ENABLE=0
 
-die() { echo "install: $*" >&2; exit 1; }
+die()  { echo "install: $*" >&2; exit 1; }
+warn() { echo "install: warning: $*" >&2; }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -85,6 +86,19 @@ maybe_download() {
 [[ "$(id -u)" -eq 0 ]] || die "must run as root (try: sudo $0 $*)"
 command -v systemctl >/dev/null || die "systemctl not found — this installer targets systemd hosts"
 
+# The daemon shells out to e2fsprogs: mkfs.ext4 / fsck.ext4 / debugfs to convert
+# OCI images into rootfs artifacts, and resize2fs for `--disk`. Missing tools
+# don't block a profile-only install, so warn rather than fail.
+missing_tools=""
+for t in mkfs.ext4 fsck.ext4 debugfs resize2fs; do
+    command -v "$t" >/dev/null 2>&1 || missing_tools="$missing_tools $t"
+done
+if [[ -n "$missing_tools" ]]; then
+    warn "missing e2fsprogs tools:$missing_tools"
+    warn "  booting OCI images (\`crucible run <image>\`) and \`--disk\` will fail."
+    warn "  install with:  apt-get install -y e2fsprogs   # or: dnf install e2fsprogs"
+fi
+
 maybe_download
 
 [[ -x "$BINARY" ]] || die "crucible binary not found at $BINARY (run 'make build' first, or pass --binary PATH)"
@@ -94,7 +108,10 @@ echo "==> installing crucible"
 echo "    binary : $BINARY -> $BINDIR/crucible"
 install -Dm755 "$BINARY" "$BINDIR/crucible"
 
-install -d -m 0755 "$STATEDIR" "$STATEDIR/profiles"
+# profiles/ = pre-baked <profile>.ext4; images/ = converted OCI image cache
+# (--image-dir); logs/ = durable per-sandbox logs (--log-dir). The daemon
+# creates the latter two on demand, but pre-creating keeps ownership/mode sane.
+install -d -m 0755 "$STATEDIR" "$STATEDIR/profiles" "$STATEDIR/images" "$STATEDIR/logs"
 
 echo "    unit   : $UNITDIR/crucible.service"
 install -Dm644 "$ROOT/packaging/crucible.service" "$UNITDIR/crucible.service"
@@ -103,6 +120,20 @@ install -Dm644 "$ROOT/packaging/crucible.service" "$UNITDIR/crucible.service"
 install -d -m 0755 "$CONFDIR"
 if [[ -e "$CONFDIR/crucible.env" ]]; then
     echo "    config : $CONFDIR/crucible.env (exists, left unchanged)"
+
+    # An upgrade from a pre-image release leaves a config without --image-dir,
+    # which silently disables `crucible run <image>` / `build` / the /images
+    # API. We won't edit an operator's config, so say exactly what to add.
+    if ! grep -q -- "--image-dir" "$CONFDIR/crucible.env"; then
+        echo
+        warn "your existing config predates OCI image support and has no --image-dir."
+        warn "Until you add it, \`crucible run <image>\`, \`sandbox create --image\`"
+        warn "and \`crucible build\` will fail. Add it with:"
+        echo >&2
+        echo "  sudo sed -i 's#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 --image-dir $STATEDIR/images\"#' $CONFDIR/crucible.env" >&2
+        echo "  sudo systemctl restart crucible" >&2
+        echo >&2
+    fi
 else
     install -Dm644 "$ROOT/packaging/crucible.env.example" "$CONFDIR/crucible.env"
     echo "    config : $CONFDIR/crucible.env (from template — edit before starting)"
@@ -126,9 +157,17 @@ bundle those. Put them at the paths $CONFDIR/crucible.env already expects:
   kernel      : $STATEDIR/vmlinux
   rootfs      : $STATEDIR/rootfs.ext4
   profiles    : $STATEDIR/profiles/<name>.ext4
+  images      : $STATEDIR/images            (created — converted OCI image cache)
+  logs        : $STATEDIR/logs              (created — durable per-sandbox logs)
 
   Firecracker + jailer          : https://github.com/firecracker-microvm/firecracker/releases
   kernel + profile images + docs: https://github.com/$REPO
+
+To boot OCI images (\`crucible run nginx:alpine\`) you also need e2fsprogs.
+For sandbox networking and \`run -p HOST:GUEST\` port publish, add your NIC to
+$CONFDIR/crucible.env:
+
+  --network-egress-iface \$(ip -4 route show default | awk '{print \$5; exit}')
 
 Then start it:
   sudo systemctl enable --now crucible

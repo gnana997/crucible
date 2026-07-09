@@ -20,7 +20,7 @@ RestartSec=2
 # per-sandbox netns/nftables. It confines the guest VMM itself via the
 # jailer. Aggressive unit-level sandboxing (ProtectSystem, PrivateTmp,
 # NoNewPrivileges, ...) conflicts with the jailer and is deliberately
-# left off in v0.1 — revisit once the isolation surface is audited.
+# left off for now — revisit once the isolation surface is audited.
 
 [Install]
 WantedBy=multi-user.target
