@@ -940,6 +940,21 @@ func (m *Manager) ExecInteractive(ctx context.Context, id string, req agentwire.
 	return s.execClient.ExecInteractive(ctx, req)
 }
 
+// PutFiles streams a tar archive to the sandbox's guest agent, which extracts
+// it beneath dest (an absolute directory inside the guest). See
+// agentapi.Client.PushFiles. Fails fast with ErrNotFound for unknown IDs, or a
+// clear error when the sandbox has no agent client.
+func (m *Manager) PutFiles(ctx context.Context, id, dest string, tar io.Reader) (agentwire.FilesPutResult, error) {
+	s, err := m.Get(id)
+	if err != nil {
+		return agentwire.FilesPutResult{}, err
+	}
+	if s.execClient == nil {
+		return agentwire.FilesPutResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
+	}
+	return s.execClient.PushFiles(ctx, dest, tar)
+}
+
 // Get returns the sandbox with the given ID, or ErrNotFound.
 func (m *Manager) Get(id string) (*Sandbox, error) {
 	m.mu.RLock()

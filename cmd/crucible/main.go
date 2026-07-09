@@ -122,6 +122,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newRunCmd(opts),
 		newStopCmd(opts),
 		newRmCmd(opts),
+		newCpCmd(opts),
 		newMcpCmd(opts),
 		newPolicyCmd(opts),
 		newTuiCmd(opts),

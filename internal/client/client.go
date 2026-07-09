@@ -124,6 +124,27 @@ func (c *Client) DeleteSandbox(ctx context.Context, id string) error {
 	return expectNoContent(resp)
 }
 
+// CopyTo streams a tar archive into a sandbox (POST /sandboxes/{id}/files),
+// extracted beneath dest (an absolute guest directory). The tar reader is sent
+// as the raw request body, so a large project streams without being buffered.
+func (c *Client) CopyTo(ctx context.Context, sandboxID, dest string, tar io.Reader) (agentwire.FilesPutResult, error) {
+	var res agentwire.FilesPutResult
+	u := c.base + "/sandboxes/" + url.PathEscape(sandboxID) + "/files?path=" + url.QueryEscape(dest)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, tar)
+	if err != nil {
+		return res, err
+	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return res, fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+	}
+	return decodeInto[agentwire.FilesPutResult](resp)
+}
+
 // Snapshot captures a sandbox (POST /sandboxes/{id}/snapshot).
 func (c *Client) Snapshot(ctx context.Context, sandboxID string) (api.SnapshotResponse, error) {
 	resp, err := c.do(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/snapshot", nil)

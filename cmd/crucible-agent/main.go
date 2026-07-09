@@ -92,6 +92,7 @@ func run(logger *slog.Logger) int {
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
 	mux.HandleFunc("POST /network/configure", handleNetworkConfigure)
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
+	mux.HandleFunc("PUT /files", handleFilesPut)
 	(&serviceAPI{sup: sup}).register(mux)
 
 	// No Read/Write timeouts on the server: exec responses can stream for

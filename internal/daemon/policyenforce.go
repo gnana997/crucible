@@ -75,6 +75,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 			return policy.OpCreate, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
+		// Writing files into a sandbox is exec-grade power over the guest.
+		case strings.HasSuffix(path, "/files"):
+			return policy.OpExec, true
 		// Service lifecycle mutations control the guest's entrypoint —
 		// gated like exec.
 		case strings.HasSuffix(path, "/service/start"),

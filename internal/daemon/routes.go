@@ -42,6 +42,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
+	mux.HandleFunc("POST /sandboxes/{id}/files", s.handlePutFiles)
 	// Supervised-service API (experimental): proxies to the guest
 	// agent's supervisor. Mutations are gated as `exec` operations,
 	// reads as `read` — see operationFor.
@@ -668,6 +669,46 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, jerr.Error()))
 	}
 	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+}
+
+// maxFilesBody caps a PUT-files (`crucible cp` push) tar body. The daemon is a
+// streaming proxy, so this bounds a runaway upload without buffering; the agent
+// enforces the same cap on its side.
+const maxFilesBody = 1 << 30
+
+// handlePutFiles streams a tar body (the `crucible cp` push path) into a
+// sandbox's guest filesystem beneath ?path=<dest>. It is a pure streaming proxy
+// to the guest agent: r.Body flows straight through Manager.PutFiles, nothing
+// is buffered whole. Gated as exec-grade (see operationFor).
+func (s *Server) handlePutFiles(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sandbox.IsValidID(id) {
+		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
+		return
+	}
+	dest := r.URL.Query().Get("path")
+	if dest == "" {
+		writeError(w, http.StatusBadRequest, errors.New("path query param (guest destination dir) is required"))
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxFilesBody)
+
+	res, err := s.cfg.Manager.PutFiles(r.Context(), id, dest, r.Body)
+	if err != nil {
+		if errors.Is(err, sandbox.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if s.cfg.LogStore != nil {
+		s.appendLog(id, logstore.Record{
+			TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamEvent,
+			Text: fmt.Sprintf("cp: wrote %d file(s), %d bytes to %s", res.Files, res.Bytes, dest),
+		})
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // handleExecInteractive bridges a hijacked client connection to a hijacked

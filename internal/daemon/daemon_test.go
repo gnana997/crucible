@@ -522,6 +522,43 @@ func TestExecSandboxRouteSandboxNotFound(t *testing.T) {
 	}
 }
 
+func TestPutFilesRouteValidatesID(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Post(ts.URL+"/sandboxes/not-a-real-id/files?path=/work",
+		"application/x-tar", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPutFilesRouteRequiresPath(t *testing.T) {
+	ts, _ := newTestServer(t)
+	// Valid-looking id but no ?path= — rejected before reaching the Manager.
+	resp, err := http.Post(ts.URL+"/sandboxes/sbx_0000000000000/files",
+		"application/x-tar", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPutFilesRouteSandboxNotFound(t *testing.T) {
+	ts, _ := newTestServer(t)
+	resp, err := http.Post(ts.URL+"/sandboxes/sbx_0000000000000/files?path=/work",
+		"application/x-tar", strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestExecSandboxRouteRejectsEmptyCmd(t *testing.T) {
 	ts, _ := newTestServer(t)
 
