@@ -16,6 +16,8 @@ Today, agent builders solve this one of three ways:
 
 **crucible is option four:** a single-binary, self-hosted sandbox runtime with the operational defaults baked in. Firecracker under the hood, a clean HTTP API on top, and a small set of opinionated features — fast snapshot restore, fork/checkpoint, default-deny networking — tuned for coding-agent workloads.
 
+The same need shows up any time you want to **run code you don't trust** — a random repo, an unaudited dependency, an unmodified Docker image — not just an agent's snippets. That's why crucible boots OCI images directly (`crucible run <image>`) and reads as a **safe `docker run`** for untrusted code: the moment you'd `docker run` something you're not sure about, reach for `crucible run` and get a real VM boundary and default-deny egress instead of a shared kernel.
+
 ## What crucible is
 
 A single Go binary you run on a Linux host. It speaks HTTP: you hand it a command, it gives you back stdout, stderr, an exit code, and a structured execution record. Behind the scenes it boots Firecracker microVMs, restores them from snapshots, forks them cheaply, isolates their networking, and cleans up when you're done. Drive it with the CLI, a live TUI dashboard, or an MCP server for agents — all thin clients over the same API, so they can't drift.
@@ -27,7 +29,7 @@ The interesting features are the ones you don't have to ask for:
 - **Clone-safety** — each fork wakes with fresh kernel RNG state and rotated machine identifiers, so forks don't silently share UUIDs, secrets, or entropy.
 - **Locked-down network by default** — no egress except an explicit hostname allowlist, with resolved addresses range-filtered so a guest can't reach cloud-metadata or private ranges.
 - **Per-request resource ceilings** — vCPU count, memory, and fork fan-out are bounded at the API boundary; every sandbox has a lifetime timeout and every exec a deadline.
-- **Structured per-exec results (exit, timing, signal, OOM, and CPU/memory/I/O usage), JSON-formatted daemon logs, and a Prometheus `/metrics` endpoint** today; durable per-sandbox activity logs and OpenTelemetry are on the roadmap.
+- **Structured per-exec results (exit, timing, signal, OOM, and CPU/memory/I/O usage), durable per-sandbox activity logs (`crucible logs` — command + output survive the sandbox), JSON-formatted daemon logs, and a Prometheus `/metrics` endpoint** today; OpenTelemetry export is on the roadmap.
 
 ## How it compares
 
@@ -46,7 +48,7 @@ If you need a primitive, use Firecracker. If you want to hand somebody a credit 
 
 **Sandbox.** A Firecracker microVM with its own kernel, rootfs, and network policy. Lives as long as you need it; cleaned up on timeout or explicit delete.
 
-**Rootfs.** The filesystem image a sandbox boots from. Pre-baked language profiles (`base`, `python`, `node`, `go`) ship today; you can also supply your own image, and a custom rootfs builder is planned.
+**Rootfs.** The filesystem image a sandbox boots from. Pre-baked language profiles (`base`, `python`, `node`, `go`) ship, and you can boot any **unmodified OCI image** (`crucible run <image>` pulls + converts it) or build one from a Dockerfile straight into the store (`crucible build`).
 
 **Snapshot.** A frozen sandbox state — memory, registers, disk — captured at a point in time. Restores without a cold boot, and is the basis for forking.
 
@@ -106,6 +108,8 @@ with c.sandbox(profile="python") as parent:
 
 Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This is the pattern every serious coding agent wants and almost nobody has a clean primitive for. That's why it's first-class here.
 
+The `write_file` step above hints at the other half of the iteration loop: **getting your working files into a sandbox without building an image**. A file-copy primitive — `crucible cp ./script.py <sbx>:/app/` — is the near-term roadmap: drop code into a running `python`/`node`/`go` sandbox and run it directly, no Dockerfile round-trip. It's the safe-*copy* model (the guest gets a copy it can't use to reach your host), and it composes with fork — copy a project in once, then fork N variations that all inherit it.
+
 ## Design principles
 
 **Firecracker isolation, not namespace trust.** Every sandbox is a separate kernel. Escape attacks have to break out of a VM, not a shared kernel — the same isolation model AWS Lambda and Fargate use.
@@ -114,7 +118,7 @@ Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This 
 
 **Uniqueness is a correctness property.** Cloning a VM naïvely means every fork shares the source's RNG state, machine-id, and cached secrets — a real hazard for code that generates UUIDs, nonces, or tokens. crucible reseeds and rotates that state per fork, before the fork is reachable.
 
-**Observability is not optional.** Every exec returns a structured result with resource usage — exit code, wall-clock duration, OOM/timeout flags, and CPU/memory/I/O counters — and a Prometheus `/metrics` endpoint plus JSON-formatted logs ship today. What's still missing is durable history: those records go back to the caller but aren't persisted, so a detached run or an MCP agent's actions leave no trail. A queryable per-sandbox activity log and OpenTelemetry export are the near-term roadmap. A sandbox runtime without observability is a black box.
+**Observability is not optional.** Every exec returns a structured result with resource usage — exit code, wall-clock duration, OOM/timeout flags, and CPU/memory/I/O counters — plus a Prometheus `/metrics` endpoint and JSON-formatted logs. Per-sandbox activity now **persists durably** (`crucible logs` — every exec's command + output and each lifecycle event, survivable and tailable after a client detaches or the sandbox is gone), so a detached run or an MCP agent's actions leave a trail. OpenTelemetry export is the near-term roadmap. A sandbox runtime without observability is a black box.
 
 **Fork/checkpoint is a primitive, not an afterthought.** Most runtimes treat snapshot/restore as a perf optimization. crucible treats it as an API surface your agent reasons about and structures its exploration around.
 

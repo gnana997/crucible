@@ -195,6 +195,7 @@ Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent
 - **v0.1.3** — daemon-enforced **scoped / policy tokens**.
 - **v0.2.0** — a **TUI** (`crucible tui`), plus fork lineage on the API (`source_snapshot_id`).
 - **v0.3.0** (current) — **the safe `docker run` for untrusted/AI code**: OCI image boot + `crucible build`, an interactive `crucible shell` + TUI session view, `--disk` sizing, top-level `stop`/`rm`, durable logs, and MCP image/publish/logs tools. Sandboxes are **ephemeral** (durability is v0.4).
+- **v0.3.x** (next) — **`crucible cp`**: copy files into (and out of) a running sandbox, so you can drop code into a `python`/`node`/`go` sandbox and run it with no image build — the agentic iteration loop, minus the Dockerfile.
 - **v0.4** (planned) — durable, self-healing long-lived workloads (an app model that survives daemon restart), plus a PTY for full-terminal interactive sessions.
 
 Longer-term direction lives in [docs/ROADMAP.md](docs/ROADMAP.md).

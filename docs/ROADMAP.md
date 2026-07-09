@@ -51,11 +51,28 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 ## Planned
 
-### v0.4.x — Next
+### v0.3.x — Copy files into/out of a sandbox (`crucible cp`) *(next)*
 
-- • **Durable per-sandbox activity logs** — the immediate fast-follow. Persist every exec (command + streamed output) and lifecycle event to an append-only per-sandbox log, exposed over the API and viewable/streamable/searchable in the TUI. Today exec output is live-only and leaves no trail once a client detaches; this closes that gap.
-- • **Custom rootfs builder.** `crucible rootfs build ./Dockerfile` produces a Firecracker-compatible rootfs you can use as a custom profile.
-- • **OCI image pull.** Fetch a profile rootfs from `ghcr.io` / a private registry (the `image: {path, oci}` wire contract is already frozen; it returns `501` today).
+The most-requested gap in the agentic iteration loop: get *your* files in and run them, with no image build and no Dockerfile. An immediate follow-up to the v0.3.0 single-op theme, independent of the v0.4 work.
+
+- • **`crucible cp <local> <sbx>:<path>`** — copy a file or directory into a running sandbox (tar over vsock; the safe-*copy* model, not a host bind-mount, so the guest gets files it can't use to reach back). Turns any sandbox into a scratch workspace: `run python:3.12` → `cp ./script.py <sbx>:/app/` → `exec`/`shell`. Pairs with snapshot + fork — `cp` a project in once, then fork N variations that all inherit it.
+- • **`crucible cp <sbx>:<path> <local>`** — copy artifacts back out. The security-sensitive direction: the tar comes from untrusted guest code, so host-side extraction is tar-slip-safe and size-bounded (adversarial-input handling).
+- • **MCP `write_files` / `read_file`** — the "drop code in and run it" primitive for agents, alongside `exec`.
+
+### v0.4 — Durable, long-lived workloads ("manage many")
+
+v0.3.0 sandboxes are consciously ephemeral — a daemon restart drops running VMs. v0.4 is about making a workload something you *manage over time* rather than only spin up and tear down.
+
+- • **An app model that survives restart.** Promote a sandbox to a named, durable app whose desired state is reconciled — so the *running workload* (not just a registry record) comes back after a daemon restart or host reboot.
+- • **Health checks + restart policy.** The supervisor already restarts a crashed entrypoint on command; v0.4 adds daemon-side health probing and a declarative restart policy (always / on-failure / never) so an app self-heals.
+- • **Reach an app by name.** Routing that keys on app identity rather than an ephemeral sandbox id, so a stable name is how you address a workload.
+- • **Private / authenticated registry pull.** v0.3.0 pulls anonymous public images; v0.4 adds credentialed pulls from private registries (ghcr.io, ECR, …).
+- • **PTY / full terminal.** The interactive shell (`crucible shell`) is line-buffered today; v0.4 adds a real PTY for full-screen programs, colors, and Ctrl-C job control.
+- • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.
+- • **Growable disk + accounting.** `--disk` sizes the writable rootfs at create today; v0.4 adds growing a live sandbox's disk and per-sandbox disk accounting.
+
+### v0.4.x — Hardening & ecosystem
+
 - • **More language profiles** — Rust, Java, Ruby, Swift, C/C++, bash-only, minimal-alpine.
 - • **`policy.yaml`.** A single versionable artifact that supersets scoped tokens — quotas, syscall rules, network allowlists, and mount policies.
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
@@ -83,9 +100,9 @@ Make parallel agent exploration a first-class workflow, not just a primitive. Fo
 
 Directions that matter once the core is solid. Not committed to a version or order yet.
 
-- • **Interactive execution.** Bidirectional stdin so agents can drive REPLs and language servers, and persistent workspaces that survive beyond a single exec (streamed stdout/stderr already ships).
-- • **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and common agent frameworks, building on the MCP server.
+- • **Persistent workspaces & richer interactive sessions.** Bidirectional stdin ships (`crucible shell` / `exec -i`) and a full PTY is v0.4; what's left is longer-lived named workspaces an agent reattaches to, and first-class REPL / language-server ergonomics on top of the shell.
+- • **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and common agent frameworks, building on the MCP server, plus a typed SDK (Python/TS) so the fork/snapshot workflow isn't hand-rolled over HTTP.
 - • **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
-- • **Benchmarking harness.** Published regression numbers for cold start, fork latency, and network throughput.
+- • **Published regression benchmarks.** The harness ships (`make bench`, [benchmarks.md](benchmarks.md)); tracking cold-start / fork-latency / throughput numbers over releases in CI is the remainder.
 - • **Stable API + external security audit.** A versioned API with a deprecation policy and a published third-party audit — the bar for `v1.0`.
 - • **WASM profiles.** WebAssembly sandboxes alongside VM sandboxes, for workloads where full-VM isolation is overkill.

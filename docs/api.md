@@ -29,14 +29,22 @@ The daemon supports bearer-token API keys, on the same model as the Docker or Ku
 | `GET` | `/sandboxes` | List sandboxes |
 | `GET` | `/sandboxes/{id}` | Inspect a sandbox |
 | `DELETE` | `/sandboxes/{id}` | Destroy a sandbox |
-| `POST` | `/sandboxes/{id}/exec` | Run a command (streamed) |
+| `POST` | `/sandboxes/{id}/exec` | Run a command (streamed frames). Add `?stdin=1` for an **interactive**, full-duplex session — the connection is hijacked and the client sends `FrameStdin`/`FrameStdinClose` (what `crucible shell` / `exec -i` use). |
+| `GET` | `/sandboxes/{id}/logs` | Durable per-sandbox logs (entrypoint output + exec activity). Query: `source=service\|exec\|all`, `since=<byte-cursor>`, tail bounds. `501` when the daemon has no log store configured. |
+| `PUT` | `/sandboxes/{id}/service` | Configure the supervised entrypoint (spec). |
+| `POST` | `/sandboxes/{id}/service/start\|stop\|restart` | Start / graceful-stop (StopSignal + grace) / restart the entrypoint. |
+| `GET` | `/sandboxes/{id}/service` | Entrypoint supervisor status. |
+| `GET` | `/sandboxes/{id}/service/logs` | Cursored read of the supervisor's in-guest output ring (the raw source `logs` durably persists). |
 | `POST` | `/sandboxes/{id}/snapshot` | Snapshot a sandbox |
 | `GET` | `/snapshots` | List snapshots |
 | `GET` | `/snapshots/{id}` | Inspect a snapshot |
 | `DELETE` | `/snapshots/{id}` | Delete a snapshot |
 | `POST` | `/snapshots/{id}/fork` | Fork N sandboxes from a snapshot |
+| `POST` | `/images` | Pull + convert an OCI image into the store (`{"ref": "nginx:alpine"}`). |
+| `POST` | `/images/import` | Import a `docker save` archive stream into the store. |
+| `GET` | `/images` · `GET`/`DELETE` `/images/{ref}` | List / inspect / remove converted images. |
 
-Calling a known path with an unsupported method returns `405`.
+The image, service, and logs endpoints answer `501` when the daemon is started without the corresponding subsystem (`--image-dir`, a service-capable rootfs, `--log-dir`). Calling a known path with an unsupported method returns `405`.
 
 ---
 
@@ -48,7 +56,7 @@ Returns `200` with `{"status": "ok"}` once the daemon is serving. No side effect
 
 ### `GET /metrics`
 
-Prometheus metrics in the standard text exposition format. Label-free in `v0.1`:
+Prometheus metrics in the standard text exposition format. Label-free today:
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -98,9 +106,12 @@ Create a sandbox. **All fields are optional** — an empty body `{}` boots a san
 | `timeout_s` | int | Max sandbox lifetime in seconds. `0` = no timeout (lives until `DELETE` or shutdown). |
 | `profile` | string | Pre-baked rootfs to boot from, e.g. `"python-3.12"`, `"node-22"`, `"base"`. Empty uses the daemon's default `--rootfs`. Resolved against the daemon's `--rootfs-dir`; an unknown profile is a `400`. See [profiles.md](profiles.md). |
 | `network` | object | Omit or `null` for **no network** (default-deny). See below. |
-| `image` | object | Reserved wire field. Any value returns `501` in `v0.1` — leave unset and use the daemon's `--rootfs`. |
+| `image` | object | Boot from an OCI image instead of a profile: `{"oci": "nginx:alpine"}` (a registry ref or a converted digest). The daemon pulls + converts on a store miss and runs the image's entrypoint as the sandbox's service. Mutually exclusive with `profile`. |
+| `pull` | string | Image pull policy when `image.oci` is set: `"missing"` (default — convert/cache on a store miss), `"always"` (re-pull even on a hit), `"never"` (fail if not already converted). Ignored when `image` is unset. |
+| `publish` | array | Host→guest port publishes, e.g. `[{"host_port":8080,"guest_port":80}]` (optional `host_ip`, default `protocol` `"tcp"`) — the moral equivalent of `docker run -p`. Requires a NIC; when `network` is absent one is created ingress-published, egress-denied. |
+| `disk_bytes` | int | Grow the writable rootfs clone to at least this size (`truncate` + `resize2fs`, before boot). `0`/omitted keeps the image/profile headroom; a value smaller than the clone is a no-op (never shrinks). The shared template is never modified. |
 
-**Network policy.** When `network` is present, `enabled: true` **requires** a non-empty `allowlist`; full-internet egress is not offered in `v0.1`. Each allowlist entry is an exact hostname (`pypi.org`) or a single-label wildcard (`*.npmjs.org`); a bare `*` is rejected. `enabled: false` with a populated allowlist is a `400` (inconsistent).
+**Network policy.** When `network` is present, `enabled: true` **requires** a non-empty `allowlist`; unrestricted full-internet egress is not offered by design (default-deny is the model). Each allowlist entry is an exact hostname (`pypi.org`) or a single-label wildcard (`*.npmjs.org`); a bare `*` is rejected. `enabled: false` with a populated allowlist is a `400` (inconsistent).
 
 **Response** `201 Created`:
 
@@ -161,10 +172,12 @@ Run a command inside the sandbox and **stream** its output. Request body:
 Validation errors (bad JSON, empty `cmd`, unknown sandbox) come back **before** streaming as a normal `4xx` JSON error. Once validation passes the daemon sends `200` with `Content-Type: application/octet-stream` and streams a **frame protocol**:
 
 - Each frame = an 8-byte header (1 type byte, 3 reserved bytes, a big-endian `uint32` payload length) followed by the payload.
-- Frame types: `1` = stdout, `2` = stderr, `3` = exit.
+- Response frame types: `1` = stdout, `2` = stderr, `3` = exit.
 - stdout/stderr data frames arrive as the command runs; the final `exit` frame's payload is the `ExecResult` JSON.
 
 Because the `200` is committed before the command finishes, a failure *after* streaming starts (agent unreachable, dropped connection) is delivered in-band as an exit frame with `exit_code: -1` and a populated `error` — never as an HTTP error code.
+
+**Interactive exec** (`POST /sandboxes/{id}/exec?stdin=1`). The one-shot path above is buffered. For a live shell, the daemon **hijacks** the connection into a full-duplex framed stream after the `200`: the client sends inbound frames `4` = stdin and `5` = stdin-close (EOF), and reads the same stdout/stderr/exit frames back. State (`cd`, env) persists for the life of the long-lived process. This is what `crucible shell <id>` and `sandbox exec -i` use; it is line-buffered with **no PTY**. The one-shot path is unchanged.
 
 **`ExecResult`** (the exit-frame payload):
 
