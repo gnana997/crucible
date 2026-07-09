@@ -138,7 +138,7 @@ gVisor is genuinely good and more battle-tested than crucible. Two reasons to pr
 Firecracker's attack surface is intentionally minimal — no USB, no PCI, no legacy devices — it boots in ~125 ms, and it powers AWS Lambda and Fargate, so it's battle-tested at scale.
 
 **Does this work on macOS / Windows?**
-No — Firecracker requires KVM, which requires Linux. On macOS, run crucible inside a Linux VM (Lima, UTM, Docker Desktop).
+The **daemon** is Linux-only — Firecracker requires KVM, which requires Linux — but the **client** (the CLI, TUI, and `crucible mcp serve`) is cross-platform, because everything but the daemon is a thin HTTP client. So the macOS / Windows path is: run the daemon on a Linux host (a cloud VM, a homelab box, a Linux desktop) and install the client on your Mac, pointed at it with `--addr`/`CRUCIBLE_ADDR`. Running the daemon *locally* on a Mac would mean a nested Linux VM, and nested virtualization on Apple Silicon is unreliable — so the remote-daemon + local-client split is the recommended path, not a workaround.
 
 **Is this production-ready? Can I run untrusted multi-tenant code?**
 Not yet. It's pre-1.0 and single-operator: loopback by default, with optional bearer-key auth and daemon-enforced scoped tokens for remote access — but a pre-release, not a hardened multi-tenant platform. See [SECURITY.md](../SECURITY.md) for the current isolation model and its limits.

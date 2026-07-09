@@ -39,7 +39,24 @@ crucible run --net-allow pypi.org --profile python-3.12 -- pip install requests 
 
 ## Quick start
 
-Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). On a Linux host with KVM (`ls /dev/kvm` succeeds):
+crucible splits into a **Linux daemon** (it needs KVM + Firecracker, so it's Linux-only) and a **cross-platform client** — the CLI, TUI, and `crucible mcp serve` are thin HTTP clients, so they run on macOS and Windows too. Pick your path:
+
+| Your machine | What you install | How |
+|---|---|---|
+| **Linux with KVM** (`ls /dev/kvm` works) | the **daemon** (client included) | `curl -fsSL …/install.sh \| sudo bash` |
+| **macOS / Windows** (or any box driving a remote daemon) | the **client** only | `curl -fsSL …/install.sh \| sh -s -- --client --addr https://HOST:7878 --token <key>` |
+
+> **On a Mac?** Firecracker needs Linux + KVM, and nested virtualization on Apple Silicon is unreliable — so instead of a local Linux VM, run the **daemon** on a Linux box (a cheap cloud VM, a homelab machine, a Linux desktop) and install the **client** on your Mac. `crucible mcp serve` then drives it from Claude Code / Cursor with no local VM. The daemon installer's `--connect-token` mints a scoped key and prints the exact client one-liner + MCP snippet to paste on your Mac.
+
+### Linux daemon
+
+Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). The installer can fetch the dependencies for you — a pinned firecracker + jailer and a default rootfs, checksum-verified — with `--with-deps`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh | sudo bash -s -- --with-deps --enable
+```
+
+You still supply a guest kernel (set `KERNEL_URL=…`, or step 3 below). Prefer to wire it up by hand on a host with KVM (`ls /dev/kvm` succeeds)? The explicit steps:
 
 **1. Firecracker + jailer** — crucible drives them but doesn't bundle them:
 
@@ -81,6 +98,19 @@ crucible tui        # or open the live dashboard
 ```
 
 Prefer to build from source? See [Build from source](#build-from-source).
+
+### macOS / Windows client
+
+Install just the client (no root, no VM) and point it at your Linux daemon:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh \
+  | sh -s -- --client --addr https://YOUR-LINUX-HOST:7878 --token <key>
+
+crucible sandbox ls        # now talks to the remote daemon
+```
+
+Get `<key>` from the daemon host with `crucible daemon token add` — or let the daemon installer's `--connect-token` mint a scoped one and print this exact line for you. To drive it from an agent, add `crucible mcp serve` as an MCP server in Claude Code / Cursor with `CRUCIBLE_ADDR` + `CRUCIBLE_TOKEN` in its environment.
 
 ## Usage
 
