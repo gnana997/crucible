@@ -50,13 +50,13 @@ crucible splits into a **Linux daemon** (it needs KVM + Firecracker, so it's Lin
 
 ### Linux daemon
 
-Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). The installer can fetch the dependencies for you — a pinned firecracker + jailer and a default rootfs, checksum-verified — with `--with-deps`:
+Prebuilt Linux/amd64 binaries and native rootfs profile images ship with each [release](https://github.com/gnana997/crucible/releases). The installer can fetch every dependency for you — a pinned firecracker + jailer, a guest kernel, and a default rootfs, all checksum-verified — with `--with-deps`, and start the service with `--enable`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh | sudo bash -s -- --with-deps --enable
 ```
 
-You still supply a guest kernel (set `KERNEL_URL=…`, or step 3 below). Prefer to wire it up by hand on a host with KVM (`ls /dev/kvm` succeeds)? The explicit steps:
+That's the whole daemon on a host with KVM (`ls /dev/kvm` succeeds). Prefer to wire it up by hand? The explicit steps:
 
 **1. Firecracker + jailer** — crucible drives them but doesn't bundle them:
 

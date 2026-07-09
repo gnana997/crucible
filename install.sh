@@ -25,7 +25,7 @@
 #   --addr URL          (client) default daemon address → CRUCIBLE_ADDR (e.g. https://host:7878)
 #   --token TOK         (client) API key → CRUCIBLE_TOKEN
 #   --enable            (daemon) enable + start the service now
-#   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, (kernel: see notes) — opt-in, checksum-verified
+#   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, and a guest kernel — opt-in, checksum-verified
 #   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
 #   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --network-egress-iface to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
@@ -35,7 +35,7 @@
 #
 # The daemon path runs as root but never calls sudo itself. Env overrides:
 #   PREFIX (/usr/local), CLIENT_BINDIR (client install dir), FC_VERSION,
-#   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (kernel source).
+#   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel).
 
 set -euo pipefail
 
@@ -50,6 +50,11 @@ STATEDIR="${STATEDIR:-/var/lib/crucible}"
 # --with-deps pins (override via env). Firecracker v1.15+ is required.
 FC_VERSION="${FC_VERSION:-v1.16.1}"
 ROOTFS_PROFILE="${ROOTFS_PROFILE:-base}"
+# Pinned guest kernel for x86_64 (firecracker's CI bucket). --with-deps fetches
+# and verifies this by default so the daemon boots out of the box; override with
+# KERNEL_URL (+ optional KERNEL_SHA256 — a literal digest or a .sha256 URL).
+DEFAULT_KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102"
+DEFAULT_KERNEL_SHA256="cf42303c29e8c4a02798f357ba056c5567baf074aaed4eec78c997fb9df08cf9"
 
 ROOT="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /nonexistent)"
 BINARY="$ROOT/crucible"
@@ -137,10 +142,14 @@ fetch() { curl -fSL "$1" -o "$2" || die "download failed: $1"; }
 # the hex digest). A missing checksum URL is a hard failure — we never install
 # an unverified dependency.
 verify_sha256() {
-    local file="$1" url="$2" want got
-    want=$(curl -fsSL "$url" 2>/dev/null | awk 'NF{print $1; exit}') \
-        || die "could not fetch checksum: $url"
-    [[ -n "$want" ]] || die "empty checksum from $url"
+    local file="$1" ref="$2" want got
+    if [[ "$ref" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        want="$ref"                                   # a literal digest
+    else
+        want=$(curl -fsSL "$ref" 2>/dev/null | awk 'NF{print $1; exit}') \
+            || die "could not fetch checksum: $ref"   # a URL to a checksum file
+    fi
+    [[ -n "$want" ]] || die "empty checksum for $(basename "$file")"
     got=$(sha256sum "$file" | awk '{print $1}')
     [[ "$want" == "$got" ]] || die "checksum mismatch for $(basename "$file") (want $want, got $got)"
 }
@@ -296,11 +305,10 @@ maybe_download() {
     BINARY="$ROOT/crucible"
 }
 
-# provision_deps fetches firecracker+jailer and a default rootfs into the paths
-# the config expects. Opt-in (--with-deps), checksum-verified, and skips any
-# piece already present. The guest kernel has no published release asset yet,
-# so it's fetched only when KERNEL_URL is set — otherwise we report it as the
-# one remaining manual piece.
+# provision_deps fetches firecracker+jailer, a default rootfs, and a guest
+# kernel into the paths the config expects. Opt-in (--with-deps),
+# checksum-verified, and skips any piece already present. On x86_64 the kernel
+# defaults to a pinned firecracker-CI vmlinux; other arches need KERNEL_URL.
 provision_deps() {
     local fc_arch
     case "$(uname -m)" in
@@ -344,22 +352,25 @@ provision_deps() {
         kv deps "installed rootfs -> $STATEDIR/rootfs.ext4"
     fi
 
-    # 3) guest kernel — only if a source is configured (no release asset yet).
+    # 3) guest kernel. Default to the pinned firecracker-CI kernel (x86_64) so
+    #    the daemon boots out of the box; override with KERNEL_URL/KERNEL_SHA256.
+    local kurl="${KERNEL_URL:-}" ksha="${KERNEL_SHA256:-}"
+    if [[ -z "$kurl" && "$fc_arch" == x86_64 ]]; then
+        kurl="$DEFAULT_KERNEL_URL"; ksha="$DEFAULT_KERNEL_SHA256"
+    fi
     if [[ -f "$STATEDIR/vmlinux" ]]; then
         kv deps "kernel already present ($STATEDIR/vmlinux) — skipped"
-    elif [[ -n "${KERNEL_URL:-}" ]]; then
+    elif [[ -n "$kurl" ]]; then
         local tmp; tmp="$(mktemp -d)"
-        kv deps "fetching kernel from KERNEL_URL"
-        fetch "$KERNEL_URL" "$tmp/vmlinux"
-        [[ -n "${KERNEL_SHA256:-}" ]] && verify_sha256 "$tmp/vmlinux" "$KERNEL_SHA256"
+        kv deps "fetching guest kernel"
+        fetch "$kurl" "$tmp/vmlinux"
+        [[ -n "$ksha" ]] && verify_sha256 "$tmp/vmlinux" "$ksha"
         install -Dm644 "$tmp/vmlinux" "$STATEDIR/vmlinux"
         rm -rf "$tmp"
         kv deps "installed kernel -> $STATEDIR/vmlinux"
     else
-        warn "--with-deps: no guest kernel provisioned (no published asset yet)."
-        warn "  Supply one and re-run, or drop a vmlinux at $STATEDIR/vmlinux:"
-        warn "    KERNEL_URL=<uncompressed vmlinux url> [KERNEL_SHA256=<url>] sudo ./install.sh --with-deps"
-        warn "  Firecracker CI kernels: https://github.com/firecracker-microvm/firecracker/blob/main/docs/getting-started.md"
+        warn "--with-deps: no prebuilt kernel for $fc_arch. Set KERNEL_URL to an"
+        warn "  uncompressed vmlinux (and optional KERNEL_SHA256), then re-run."
     fi
 }
 
@@ -540,8 +551,8 @@ else
 ==> installed (not started)
 
 crucible needs a Firecracker binary, a guest kernel, and a rootfs — it does not
-bundle those. Re-run with --with-deps to fetch firecracker+jailer+rootfs, or
-put them at the paths $CONFDIR/crucible.env already expects:
+bundle those. Re-run with --with-deps to fetch firecracker+jailer, a kernel, and
+a rootfs automatically, or put them at the paths $CONFDIR/crucible.env expects:
 
   firecracker : /usr/local/bin/firecracker   (and /usr/local/bin/jailer)
   kernel      : $STATEDIR/vmlinux
