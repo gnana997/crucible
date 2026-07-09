@@ -56,7 +56,17 @@ ROOTFS_PROFILE="${ROOTFS_PROFILE:-base}"
 DEFAULT_KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.11/x86_64/vmlinux-6.1.102"
 DEFAULT_KERNEL_SHA256="cf42303c29e8c4a02798f357ba056c5567baf074aaed4eec78c997fb9df08cf9"
 
-ROOT="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /nonexistent)"
+# ROOT is the checkout / extracted-tarball dir the script runs from, used to
+# install the local binary + packaging without downloading. This is only valid
+# when $0 is an actual install.sh file on disk; when piped (curl | sudo bash),
+# $0 is "bash" and dirname resolves to the CWD — which must NOT be mistaken for
+# a checkout (it would install whatever ./crucible happens to be there). In that
+# case point ROOT nowhere so we always download the release.
+if [[ -f "$0" && "$0" == *install.sh ]]; then
+    ROOT="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo /nonexistent)"
+else
+    ROOT="/nonexistent"
+fi
 BINARY="$ROOT/crucible"
 BINARY_SET=0
 VERSION=""
