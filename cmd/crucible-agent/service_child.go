@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // clock abstracts time for the supervisor so tests can drive the grace
@@ -33,7 +33,7 @@ func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 // resolveSignal maps a signal name ("SIGTERM") to its number, rejecting
-// names this platform doesn't know. Done agent-side (not in agentwire)
+// names this platform doesn't know. Done agent-side (not in sdk/wire)
 // because it needs the platform signal table.
 func resolveSignal(name string) (syscall.Signal, error) {
 	sig := unix.SignalNum(name)
@@ -93,7 +93,7 @@ type serviceChild interface {
 // profile rootfses) reaps orphans, and a global wait4(-1) loop next to
 // os/exec would steal its exit statuses.
 type childRunner interface {
-	start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error)
+	start(spec *wire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error)
 }
 
 // execRunner is the child-mode childRunner: plain os/exec with the same
@@ -110,7 +110,7 @@ type execChild struct {
 	pollDone chan struct{}
 }
 
-func (execRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
+func (execRunner) start(spec *wire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
 	argv, env, cred, err := resolveLaunch(spec)
 	if err != nil {
 		return nil, err

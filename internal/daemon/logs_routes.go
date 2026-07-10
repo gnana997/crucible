@@ -8,10 +8,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // logDrainInterval paces the poll of each sandbox's service log ring. A
@@ -66,7 +66,7 @@ func (s *Server) startServiceDrain(id string) {
 	s.bgWG.Add(1)
 	go func() {
 		defer s.bgWG.Done()
-		s.drainServiceLogs(s.bgCtx, id, func(ctx context.Context, fromSeq uint64) (agentwire.ServiceLogsResponse, error) {
+		s.drainServiceLogs(s.bgCtx, id, func(ctx context.Context, fromSeq uint64) (wire.ServiceLogsResponse, error) {
 			return s.cfg.Manager.ServiceLogs(ctx, id, fromSeq, logDrainMaxBytes)
 		})
 	}()
@@ -76,7 +76,7 @@ func (s *Server) startServiceDrain(id string) {
 // records to the durable store until the sandbox disappears (ErrNotFound,
 // which covers every delete path) or ctx is cancelled (server shutdown).
 // The poll func is injected so this is unit-testable without a live agent.
-func (s *Server) drainServiceLogs(ctx context.Context, id string, poll func(context.Context, uint64) (agentwire.ServiceLogsResponse, error)) {
+func (s *Server) drainServiceLogs(ctx context.Context, id string, poll func(context.Context, uint64) (wire.ServiceLogsResponse, error)) {
 	ticker := time.NewTicker(logDrainInterval)
 	defer ticker.Stop()
 	var cursor uint64

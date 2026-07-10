@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func newServiceTestServer(t *testing.T) (*httptest.Server, *fakeRunner) {
@@ -24,7 +24,7 @@ func newServiceTestServer(t *testing.T) (*httptest.Server, *fakeRunner) {
 	return ts, fr
 }
 
-func doJSON(t *testing.T, method, url string, body []byte) (*http.Response, agentwire.ServiceStatus) {
+func doJSON(t *testing.T, method, url string, body []byte) (*http.Response, wire.ServiceStatus) {
 	t.Helper()
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
@@ -35,7 +35,7 @@ func doJSON(t *testing.T, method, url string, body []byte) (*http.Response, agen
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
-	var status agentwire.ServiceStatus
+	var status wire.ServiceStatus
 	if resp.StatusCode == http.StatusOK {
 		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
 			t.Fatalf("decode status: %v", err)
@@ -50,17 +50,17 @@ func TestServiceHTTPLifecycle(t *testing.T) {
 	fc.exitOn(syscall.SIGTERM, childExit{})
 	fr.enqueue(fc)
 
-	spec, _ := json.Marshal(agentwire.ServiceSpec{Cmd: []string{"/bin/app"}})
+	spec, _ := json.Marshal(wire.ServiceSpec{Cmd: []string{"/bin/app"}})
 	resp, status := doJSON(t, http.MethodPut, ts.URL+"/service", spec)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT /service = %d, want 200", resp.StatusCode)
 	}
-	if status.State != agentwire.ServiceStateStopped {
+	if status.State != wire.ServiceStateStopped {
 		t.Fatalf("state after configure = %q", status.State)
 	}
 
 	resp, status = doJSON(t, http.MethodPost, ts.URL+"/service/start", nil)
-	if resp.StatusCode != http.StatusOK || status.State != agentwire.ServiceStateRunning {
+	if resp.StatusCode != http.StatusOK || status.State != wire.ServiceStateRunning {
 		t.Fatalf("start = %d state %q, want 200 running", resp.StatusCode, status.State)
 	}
 
@@ -73,7 +73,7 @@ func TestServiceHTTPLifecycle(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("stop = %d, want 200", resp.StatusCode)
 	}
-	if status.State != agentwire.ServiceStateStopping && status.State != agentwire.ServiceStateStopped {
+	if status.State != wire.ServiceStateStopping && status.State != wire.ServiceStateStopped {
 		t.Fatalf("state after stop = %q", status.State)
 	}
 }
@@ -115,7 +115,7 @@ func TestServiceHTTPLogs(t *testing.T) {
 		t.Fatalf("logs before configure = %d, want 409", resp.StatusCode)
 	}
 
-	spec, _ := json.Marshal(agentwire.ServiceSpec{Cmd: []string{"/bin/app"}})
+	spec, _ := json.Marshal(wire.ServiceSpec{Cmd: []string{"/bin/app"}})
 	doJSON(t, http.MethodPut, ts.URL+"/service", spec)
 	doJSON(t, http.MethodPost, ts.URL+"/service/start", nil)
 	stdout, _ := fr.writers()
@@ -127,7 +127,7 @@ func TestServiceHTTPLogs(t *testing.T) {
 		t.Fatalf("GET logs: %v", err)
 	}
 	defer func() { _ = res.Body.Close() }()
-	var logs agentwire.ServiceLogsResponse
+	var logs wire.ServiceLogsResponse
 	if err := json.NewDecoder(res.Body).Decode(&logs); err != nil {
 		t.Fatalf("decode logs: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestServiceHTTPStopEmptyBodyOK(t *testing.T) {
 	fc.exitOn(syscall.SIGTERM, childExit{})
 	fr.enqueue(fc)
 
-	spec, _ := json.Marshal(agentwire.ServiceSpec{Cmd: []string{"/bin/app"}})
+	spec, _ := json.Marshal(wire.ServiceSpec{Cmd: []string{"/bin/app"}})
 	doJSON(t, http.MethodPut, ts.URL+"/service", spec)
 	doJSON(t, http.MethodPost, ts.URL+"/service/start", nil)
 

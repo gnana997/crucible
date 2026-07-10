@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestSupervisorLogsBeforeConfigure(t *testing.T) {
@@ -35,10 +35,10 @@ func TestSupervisorLogsCaptureAndStatusCursors(t *testing.T) {
 	if len(resp.Records) != 2 {
 		t.Fatalf("records = %d, want 2", len(resp.Records))
 	}
-	if resp.Records[0].Stream != agentwire.ServiceLogStdout {
+	if resp.Records[0].Stream != wire.ServiceLogStdout {
 		t.Errorf("rec0 stream = %q", resp.Records[0].Stream)
 	}
-	if resp.Records[1].Stream != agentwire.ServiceLogStderr {
+	if resp.Records[1].Stream != wire.ServiceLogStderr {
 		t.Errorf("rec1 stream = %q", resp.Records[1].Stream)
 	}
 
@@ -67,7 +67,7 @@ func TestSupervisorLogsSurviveRestartResetOnRespec(t *testing.T) {
 	if _, err := s.Restart(); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateRunning)
+	waitForState(t, s, wire.ServiceStateRunning)
 	resp, err := s.Logs(0, 1<<20)
 	if err != nil {
 		t.Fatalf("Logs: %v", err)
@@ -80,7 +80,7 @@ func TestSupervisorLogsSurviveRestartResetOnRespec(t *testing.T) {
 	if _, err := s.Configure(specWith("/bin/app", "v2")); err != nil {
 		t.Fatalf("re-Configure: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateRunning)
+	waitForState(t, s, wire.ServiceStateRunning)
 	resp, err = s.Logs(0, 1<<20)
 	if err != nil {
 		t.Fatalf("Logs after respec: %v", err)
@@ -105,7 +105,7 @@ func TestServiceRealLogsCaptured(t *testing.T) {
 		for _, rec := range resp.Records {
 			got[rec.Stream] += string(rec.Data)
 		}
-		if got[agentwire.ServiceLogStdout] == "out-line\n" && got[agentwire.ServiceLogStderr] == "err-line\n" {
+		if got[wire.ServiceLogStdout] == "out-line\n" && got[wire.ServiceLogStderr] == "err-line\n" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -116,5 +116,5 @@ func TestServiceRealLogsCaptured(t *testing.T) {
 	if _, err := s.Stop(time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }

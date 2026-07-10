@@ -35,6 +35,7 @@ import (
 	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/runner"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // perSandboxRootfsName is the filename Manager.Create uses for the
@@ -229,7 +230,7 @@ type CreateConfig struct {
 	// or start fails the whole Create (rollback), so a 201 always means
 	// the entrypoint is supervised and launched. Requires WaitForAgent
 	// (the spec push needs a live agent) and a vsock channel.
-	Service *agentwire.ServiceSpec
+	Service *wire.ServiceSpec
 
 	// Publish maps host ports to guest ports (host port publish). Needs
 	// a networked sandbox (Network non-nil) so the guest has an IP to
@@ -909,15 +910,15 @@ func (m *Manager) waitForAgent(ctx context.Context, c *agentapi.Client) error {
 func (m *Manager) Exec(
 	ctx context.Context,
 	id string,
-	req agentwire.ExecRequest,
+	req wire.ExecRequest,
 	stdout, stderr io.Writer,
-) (agentwire.ExecResult, error) {
+) (wire.ExecResult, error) {
 	s, err := m.Get(id)
 	if err != nil {
-		return agentwire.ExecResult{}, err
+		return wire.ExecResult{}, err
 	}
 	if s.execClient == nil {
-		return agentwire.ExecResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
+		return wire.ExecResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
 	}
 	return s.execClient.Exec(ctx, req, stdout, stderr)
 }
@@ -929,7 +930,7 @@ func (m *Manager) Exec(
 //
 // Fails fast with ErrNotFound for unknown IDs, or a clear error when the
 // sandbox has no agent client (e.g. test stubs).
-func (m *Manager) ExecInteractive(ctx context.Context, id string, req agentwire.ExecRequest) (net.Conn, error) {
+func (m *Manager) ExecInteractive(ctx context.Context, id string, req wire.ExecRequest) (net.Conn, error) {
 	s, err := m.Get(id)
 	if err != nil {
 		return nil, err
@@ -944,13 +945,13 @@ func (m *Manager) ExecInteractive(ctx context.Context, id string, req agentwire.
 // it beneath dest (an absolute directory inside the guest). See
 // agentapi.Client.PushFiles. Fails fast with ErrNotFound for unknown IDs, or a
 // clear error when the sandbox has no agent client.
-func (m *Manager) PutFiles(ctx context.Context, id, dest string, tar io.Reader) (agentwire.FilesPutResult, error) {
+func (m *Manager) PutFiles(ctx context.Context, id, dest string, tar io.Reader) (wire.FilesPutResult, error) {
 	s, err := m.Get(id)
 	if err != nil {
-		return agentwire.FilesPutResult{}, err
+		return wire.FilesPutResult{}, err
 	}
 	if s.execClient == nil {
-		return agentwire.FilesPutResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
+		return wire.FilesPutResult{}, fmt.Errorf("sandbox %s has no agent vsock path", id)
 	}
 	return s.execClient.PushFiles(ctx, dest, tar)
 }

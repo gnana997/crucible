@@ -14,7 +14,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/network"
@@ -22,6 +21,7 @@ import (
 	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // routes builds the http.ServeMux for this Server. Keeping it in its own
@@ -248,8 +248,8 @@ func (s *Server) resolveImage(ctx context.Context, ref *api.ImageRef, pull strin
 //
 // Returns nil when there is nothing to run (no entrypoint/cmd and no
 // override) — a bare sandbox to exec into.
-func effectiveServiceSpec(rc *oci.RunConfig, override *agentwire.ServiceSpec) *agentwire.ServiceSpec {
-	spec := &agentwire.ServiceSpec{EnvExact: true}
+func effectiveServiceSpec(rc *oci.RunConfig, override *wire.ServiceSpec) *wire.ServiceSpec {
+	spec := &wire.ServiceSpec{EnvExact: true}
 	envMap := map[string]string{}
 	if rc != nil {
 		spec.Cmd = append(append([]string{}, rc.Entrypoint...), rc.Cmd...)
@@ -567,7 +567,7 @@ func (s *Server) handleDeleteSandbox(w http.ResponseWriter, r *http.Request) {
 
 // handleExecSandbox runs a command inside the sandbox via the guest
 // agent and streams its output back to the HTTP client. The response
-// body is a sequence of agentwire frames — identical in shape to what
+// body is a sequence of wire frames — identical in shape to what
 // the agent itself produces, so clients can parse it the same way.
 //
 // Error handling has two phases:
@@ -585,7 +585,7 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
-	var req agentwire.ExecRequest
+	var req wire.ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
 		return
@@ -635,9 +635,9 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	// assertion fails against loggingResponseWriter (its embedded-interface
 	// method set doesn't promote Flush), leaving frames buffered until the
 	// command exits. rc is the controller created above.
-	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, rc: rc})
+	fw := wire.NewFrameWriter(flushOnWrite{w: w, rc: rc})
 
-	stdoutStream, stderrStream := fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr)
+	stdoutStream, stderrStream := fw.Stream(wire.FrameStdout), fw.Stream(wire.FrameStderr)
 
 	// Durable exec-activity capture: bracket the run with start/exit
 	// events and tee its output into the log store, so `crucible logs
@@ -656,7 +656,7 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 		// Exec plumbing broke (agent unreachable, connection died,
 		// etc.). Synthesize an exit frame so the client still sees a
 		// well-formed stream.
-		result = agentwire.ExecResult{ExitCode: -1, Error: err.Error()}
+		result = wire.ExecResult{ExitCode: -1, Error: err.Error()}
 	}
 	if s.cfg.LogStore != nil {
 		s.appendLog(id, logstore.Record{
@@ -669,7 +669,7 @@ func (s *Server) handleExecSandbox(w http.ResponseWriter, r *http.Request) {
 	if jerr != nil {
 		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, jerr.Error()))
 	}
-	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+	_ = fw.WriteFrame(wire.FrameExit, payload)
 }
 
 // maxFilesBody caps a PUT-files (`crucible cp` push) tar body. The daemon is a
@@ -760,7 +760,7 @@ func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
 //
 // The agent conn is established first so a dial failure is a clean HTTP
 // error before the client conn is hijacked and the framing contract begins.
-func (s *Server) handleExecInteractive(w http.ResponseWriter, r *http.Request, id string, req agentwire.ExecRequest) {
+func (s *Server) handleExecInteractive(w http.ResponseWriter, r *http.Request, id string, req wire.ExecRequest) {
 	agentConn, err := s.cfg.Manager.ExecInteractive(r.Context(), id, req)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, fmt.Errorf("interactive exec: %w", err))
@@ -805,7 +805,7 @@ func (s *Server) handleExecInteractive(w http.ResponseWriter, r *http.Request, i
 	}
 }
 
-// relayExecFrames copies agentwire frames from the guest agent to the
+// relayExecFrames copies wire frames from the guest agent to the
 // client, teeing stdout/stderr payloads into the durable log store. It
 // returns the exit code carried by the terminal FrameExit (-1 if the stream
 // ends without one). Writes to the client are best-effort: a dead client
@@ -813,33 +813,33 @@ func (s *Server) handleExecInteractive(w http.ResponseWriter, r *http.Request, i
 func (s *Server) relayExecFrames(id string, agentConn io.Reader, clientConn io.Writer) int {
 	exit := -1
 	for {
-		f, err := agentwire.ReadFrame(agentConn)
+		f, err := wire.ReadFrame(agentConn)
 		if err != nil {
 			return exit
 		}
 		switch f.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			if s.cfg.LogStore != nil {
 				s.appendLog(id, logstore.Record{
 					TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamStdout, Text: string(f.Payload),
 				})
 			}
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			if s.cfg.LogStore != nil {
 				s.appendLog(id, logstore.Record{
 					TimeMs: nowMs(), Source: logstore.SourceExec, Stream: logstore.StreamStderr, Text: string(f.Payload),
 				})
 			}
-		case agentwire.FrameExit:
-			var res agentwire.ExecResult
+		case wire.FrameExit:
+			var res wire.ExecResult
 			if json.Unmarshal(f.Payload, &res) == nil {
 				exit = res.ExitCode
 			}
 		}
-		if err := agentwire.WriteFrame(clientConn, f.Type, f.Payload); err != nil {
+		if err := wire.WriteFrame(clientConn, f.Type, f.Payload); err != nil {
 			return exit
 		}
-		if f.Type == agentwire.FrameExit {
+		if f.Type == wire.FrameExit {
 			return exit
 		}
 	}

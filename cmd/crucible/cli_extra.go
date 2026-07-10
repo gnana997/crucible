@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/version"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // newTable returns a tabwriter tuned for the CLI's aligned list output.
@@ -215,7 +215,7 @@ func runCommand(cmd *cobra.Command, o *globalOpts, args []string, opts runComman
 		// cancelled (e.g. Ctrl-C during exec).
 		defer func() { _ = cl.DeleteSandbox(context.Background(), sb.ID) }()
 	}
-	res, err := cl.Exec(cmd.Context(), sb.ID, agentwire.ExecRequest{Cmd: args, TimeoutSec: opts.timeout}, cmd.OutOrStdout(), cmd.ErrOrStderr())
+	res, err := cl.Exec(cmd.Context(), sb.ID, wire.ExecRequest{Cmd: args, TimeoutSec: opts.timeout}, cmd.OutOrStdout(), cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

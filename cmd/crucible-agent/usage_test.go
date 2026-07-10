@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestTimevalToMs(t *testing.T) {
@@ -195,7 +195,7 @@ func TestDetectOOMKilledByCtxIsNotOOM(t *testing.T) {
 // cancelled exec could be mislabelled OomKilled.
 func TestAttachUsageClientCancelNotReportedOOM(t *testing.T) {
 	ps := processStateForSignal(t, "kill -9 $$") // SIGKILL, as our group-kill produces
-	var res agentwire.ExecResult
+	var res wire.ExecResult
 	attachUsage(&res, ps, nil, context.Canceled)
 	if res.OomKilled {
 		t.Error("OomKilled=true for a client-cancelled exec — client cancel must not read as OOM")
@@ -233,7 +233,7 @@ func TestAttachUsageRealCommand(t *testing.T) {
 		t.Fatalf("cmd.Run: %v", err)
 	}
 
-	var res agentwire.ExecResult
+	var res wire.ExecResult
 	attachUsage(&res, cmd.ProcessState, nil, nil)
 
 	if res.Usage == nil {
@@ -254,7 +254,7 @@ func TestAttachUsageNilProcessStateIsNoop(t *testing.T) {
 	// Parity with the start-failure path in handleExec: attachUsage on
 	// a nil ProcessState must leave the result untouched rather than
 	// panicking.
-	var res agentwire.ExecResult
+	var res wire.ExecResult
 	attachUsage(&res, nil, nil, nil)
 	if res.Usage != nil {
 		t.Error("Usage unexpectedly populated from nil ProcessState")

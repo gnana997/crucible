@@ -1,4 +1,4 @@
-package agentwire
+package wire
 
 import (
 	"encoding/binary"
@@ -43,7 +43,7 @@ type Frame struct {
 // multiple goroutines must serialize access (FrameWriter does this).
 func WriteFrame(w io.Writer, typ byte, payload []byte) error {
 	if len(payload) > MaxPayloadSize {
-		return fmt.Errorf("agentwire: payload %d > MaxPayloadSize %d", len(payload), MaxPayloadSize)
+		return fmt.Errorf("wire: payload %d > MaxPayloadSize %d", len(payload), MaxPayloadSize)
 	}
 	var hdr [FrameHeaderSize]byte
 	hdr[0] = typ
@@ -71,7 +71,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 	typ := hdr[0]
 	size := binary.BigEndian.Uint32(hdr[4:])
 	if size > MaxPayloadSize {
-		return Frame{}, fmt.Errorf("agentwire: frame size %d > MaxPayloadSize %d", size, MaxPayloadSize)
+		return Frame{}, fmt.Errorf("wire: frame size %d > MaxPayloadSize %d", size, MaxPayloadSize)
 	}
 	payload := make([]byte, size)
 	if size > 0 {

@@ -16,7 +16,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // maxExecRequestBody bounds the POST /exec request body. Exec requests
@@ -32,7 +32,7 @@ const maxExecRequestBody = 1 << 20 // 1 MiB
 const execWaitDelay = 2 * time.Second
 
 // handleExec runs a command inside the guest and streams the result
-// back as a sequence of agentwire frames.
+// back as a sequence of wire frames.
 //
 // Response flow:
 //  1. Parse ExecRequest JSON (<=1 MiB).
@@ -53,7 +53,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxExecRequestBody)
-	var req agentwire.ExecRequest
+	var req wire.ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		// Headers not sent yet; return a plain 400.
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
@@ -72,7 +72,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	// Flush frames as they're written so the host sees output live
 	// rather than everything at command exit.
 	flusher, _ := w.(http.Flusher)
-	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
+	fw := wire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
 
 	// Build command context. A zero TimeoutSec means "inherit request
 	// context only"; otherwise enforce a hard deadline on top.
@@ -84,8 +84,8 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	if req.Cwd != "" {
 		cmd.Dir = req.Cwd
 	}
-	cmd.Stdout = fw.Stream(agentwire.FrameStdout)
-	cmd.Stderr = fw.Stream(agentwire.FrameStderr)
+	cmd.Stdout = fw.Stream(wire.FrameStdout)
+	cmd.Stderr = fw.Stream(wire.FrameStderr)
 	// Put the command in its own process group and wire a cancel that
 	// SIGKILLs the whole group on timeout/disconnect, plus a WaitDelay
 	// backstop so an inherited pipe can't wedge Wait. See configureExecProcess.
@@ -131,7 +131,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 // child's Rusage + the final /proc/<pid>/io snapshot. Safe to call
 // with a nil ProcessState (it just becomes a no-op), for parity
 // with start-failure paths.
-func attachUsage(result *agentwire.ExecResult, ps *os.ProcessState, ioStats *procIOStats, ctxErr error) {
+func attachUsage(result *wire.ExecResult, ps *os.ProcessState, ioStats *procIOStats, ctxErr error) {
 	if ps == nil {
 		return
 	}
@@ -239,8 +239,8 @@ func configureExecProcess(cmd *exec.Cmd) {
 
 // resultFromError inspects cmd.Run's error and the context's error to
 // populate an ExecResult faithfully.
-func resultFromError(runErr error, cmd *exec.Cmd, ctxErr error, elapsed time.Duration) agentwire.ExecResult {
-	r := agentwire.ExecResult{DurationMs: elapsed.Milliseconds()}
+func resultFromError(runErr error, cmd *exec.Cmd, ctxErr error, elapsed time.Duration) wire.ExecResult {
+	r := wire.ExecResult{DurationMs: elapsed.Milliseconds()}
 
 	// Happy path.
 	if runErr == nil {
@@ -275,14 +275,14 @@ func resultFromError(runErr error, cmd *exec.Cmd, ctxErr error, elapsed time.Dur
 
 // writeExitFrame is a best-effort terminal frame write. If it fails,
 // the host sees a truncated stream — same outcome as a crashed agent.
-func writeExitFrame(fw *agentwire.FrameWriter, result agentwire.ExecResult) {
+func writeExitFrame(fw *wire.FrameWriter, result wire.ExecResult) {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		// Degenerate fallback; ExecResult only contains string/int, so
 		// Marshal shouldn't fail in practice.
 		payload = []byte(fmt.Sprintf(`{"exit_code":-1,"error":%q}`, err.Error()))
 	}
-	_ = fw.WriteFrame(agentwire.FrameExit, payload)
+	_ = fw.WriteFrame(wire.FrameExit, payload)
 }
 
 // flushOnWrite wraps an http.ResponseWriter so every Write immediately

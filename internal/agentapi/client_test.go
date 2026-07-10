@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // ---------------------------------------------------------------
@@ -155,7 +156,7 @@ func TestDialMissingSocket(t *testing.T) {
 // the client's frame-decoding path is exercised without spawning real
 // commands.
 type execHandler struct {
-	writeFrames func(fw *agentwire.FrameWriter)
+	writeFrames func(fw *wire.FrameWriter)
 }
 
 func (h *execHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +167,7 @@ func (h *execHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
+	fw := wire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
 	h.writeFrames(fw)
 }
 
@@ -187,19 +188,19 @@ func (f flushOnWrite) Write(p []byte) (int, error) {
 }
 
 func TestExecHappy(t *testing.T) {
-	h := &execHandler{writeFrames: func(fw *agentwire.FrameWriter) {
-		_ = fw.WriteFrame(agentwire.FrameStdout, []byte("line1\n"))
-		_ = fw.WriteFrame(agentwire.FrameStderr, []byte("warn\n"))
-		_ = fw.WriteFrame(agentwire.FrameStdout, []byte("line2\n"))
-		exit, _ := json.Marshal(agentwire.ExecResult{ExitCode: 0, DurationMs: 42})
-		_ = fw.WriteFrame(agentwire.FrameExit, exit)
+	h := &execHandler{writeFrames: func(fw *wire.FrameWriter) {
+		_ = fw.WriteFrame(wire.FrameStdout, []byte("line1\n"))
+		_ = fw.WriteFrame(wire.FrameStderr, []byte("warn\n"))
+		_ = fw.WriteFrame(wire.FrameStdout, []byte("line2\n"))
+		exit, _ := json.Marshal(wire.ExecResult{ExitCode: 0, DurationMs: 42})
+		_ = fw.WriteFrame(wire.FrameExit, exit)
 	}}
 	sock := startMockHybridServer(t, h)
 
 	c := NewClient(sock, 52)
 	var stdout, stderr bytes.Buffer
 	result, err := c.Exec(context.Background(),
-		agentwire.ExecRequest{Cmd: []string{"/bin/true"}},
+		wire.ExecRequest{Cmd: []string{"/bin/true"}},
 		&stdout, &stderr,
 	)
 	if err != nil {
@@ -217,16 +218,16 @@ func TestExecHappy(t *testing.T) {
 }
 
 func TestExecNilWritersDiscarded(t *testing.T) {
-	h := &execHandler{writeFrames: func(fw *agentwire.FrameWriter) {
-		_ = fw.WriteFrame(agentwire.FrameStdout, []byte("ignored\n"))
-		exit, _ := json.Marshal(agentwire.ExecResult{ExitCode: 1})
-		_ = fw.WriteFrame(agentwire.FrameExit, exit)
+	h := &execHandler{writeFrames: func(fw *wire.FrameWriter) {
+		_ = fw.WriteFrame(wire.FrameStdout, []byte("ignored\n"))
+		exit, _ := json.Marshal(wire.ExecResult{ExitCode: 1})
+		_ = fw.WriteFrame(wire.FrameExit, exit)
 	}}
 	sock := startMockHybridServer(t, h)
 
 	c := NewClient(sock, 52)
 	result, err := c.Exec(context.Background(),
-		agentwire.ExecRequest{Cmd: []string{"/bin/false"}},
+		wire.ExecRequest{Cmd: []string{"/bin/false"}},
 		nil, nil, // both discarded
 	)
 	if err != nil {
@@ -240,7 +241,7 @@ func TestExecNilWritersDiscarded(t *testing.T) {
 func TestExecRejectsEmptyCmd(t *testing.T) {
 	// Server is never reached; client-side validation trips first.
 	c := NewClient("/tmp/unused", 52)
-	_, err := c.Exec(context.Background(), agentwire.ExecRequest{}, nil, nil)
+	_, err := c.Exec(context.Background(), wire.ExecRequest{}, nil, nil)
 	if err == nil {
 		t.Fatal("got nil, want error")
 	}
@@ -257,7 +258,7 @@ func TestExecNonOKStatus(t *testing.T) {
 
 	c := NewClient(sock, 52)
 	_, err := c.Exec(context.Background(),
-		agentwire.ExecRequest{Cmd: []string{"/bin/true"}},
+		wire.ExecRequest{Cmd: []string{"/bin/true"}},
 		nil, nil,
 	)
 	if err == nil {
@@ -270,15 +271,15 @@ func TestExecNonOKStatus(t *testing.T) {
 
 func TestExecStreamEndsWithoutExitFrame(t *testing.T) {
 	// Simulate an agent that crashes mid-stream.
-	h := &execHandler{writeFrames: func(fw *agentwire.FrameWriter) {
-		_ = fw.WriteFrame(agentwire.FrameStdout, []byte("partial"))
+	h := &execHandler{writeFrames: func(fw *wire.FrameWriter) {
+		_ = fw.WriteFrame(wire.FrameStdout, []byte("partial"))
 		// no exit frame, connection closes after handler returns
 	}}
 	sock := startMockHybridServer(t, h)
 
 	c := NewClient(sock, 52)
 	_, err := c.Exec(context.Background(),
-		agentwire.ExecRequest{Cmd: []string{"/bin/true"}},
+		wire.ExecRequest{Cmd: []string{"/bin/true"}},
 		io.Discard, io.Discard,
 	)
 	if err == nil {
@@ -307,7 +308,7 @@ func TestExecContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() {
-		_, err := c.Exec(ctx, agentwire.ExecRequest{Cmd: []string{"/bin/true"}}, io.Discard, io.Discard)
+		_, err := c.Exec(ctx, wire.ExecRequest{Cmd: []string{"/bin/true"}}, io.Discard, io.Discard)
 		errCh <- err
 	}()
 

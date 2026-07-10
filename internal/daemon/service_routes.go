@@ -12,14 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/gnana997/crucible/internal/agentapi"
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // validateServiceSpec runs the shared structural validation plus the
 // host-side signal-name check, so a bad spec fails the HTTP request
 // instead of surfacing as an agent error mid-create.
-func validateServiceSpec(spec *agentwire.ServiceSpec) error {
+func validateServiceSpec(spec *wire.ServiceSpec) error {
 	if err := spec.Validate(); err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func (s *Server) handleConfigureService(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
-	var spec agentwire.ServiceSpec
+	var spec wire.ServiceSpec
 	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
 		return
@@ -78,7 +78,7 @@ func (s *Server) handleServiceRestart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serviceAction(w http.ResponseWriter, r *http.Request,
-	action func(ctx context.Context, id string) (agentwire.ServiceStatus, error),
+	action func(ctx context.Context, id string) (wire.ServiceStatus, error),
 ) {
 	id := r.PathValue("id")
 	if !sandbox.IsValidID(id) {
@@ -100,7 +100,7 @@ func (s *Server) handleServiceStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
-	var req agentwire.ServiceStopRequest
+	var req wire.ServiceStopRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
 		return

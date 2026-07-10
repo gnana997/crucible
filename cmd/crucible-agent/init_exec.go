@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // handleExecInit is the /exec handler when the agent runs as PID 1.
@@ -30,7 +30,7 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 	start := time.Now()
 
 	req.Body = http.MaxBytesReader(w, req.Body, maxExecRequestBody)
-	var er agentwire.ExecRequest
+	var er wire.ExecRequest
 	if err := json.NewDecoder(req.Body).Decode(&er); err != nil {
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
@@ -43,7 +43,7 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	fw := agentwire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
+	fw := wire.NewFrameWriter(flushOnWrite{w: w, flusher: flusher})
 
 	ctx, cancel := commandContext(req.Context(), er.TimeoutSec)
 	defer cancel()
@@ -51,9 +51,9 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 	// One-shot exec keeps today's semantics (agent env, root); Docker-
 	// exec-style per-user/env fidelity is a later refinement.
 	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil, nil,
-		fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr))
+		fw.Stream(wire.FrameStdout), fw.Stream(wire.FrameStderr))
 	if err != nil {
-		writeExitFrame(fw, agentwire.ExecResult{
+		writeExitFrame(fw, wire.ExecResult{
 			ExitCode:   -1,
 			Error:      err.Error(),
 			DurationMs: time.Since(start).Milliseconds(),
@@ -101,8 +101,8 @@ func (r *reaper) handleExecInit(w http.ResponseWriter, req *http.Request) {
 // both boot modes: a timeout reports ExitCode -1 + TimedOut, a signal
 // death reports ExitCode -1 + the Go signal name, a normal exit reports
 // its code.
-func execResultFromWait(res waitResult, io *procIOStats, elapsed time.Duration, timedOut, killedByCtx bool) agentwire.ExecResult {
-	r := agentwire.ExecResult{DurationMs: elapsed.Milliseconds()}
+func execResultFromWait(res waitResult, io *procIOStats, elapsed time.Duration, timedOut, killedByCtx bool) wire.ExecResult {
+	r := wire.ExecResult{DurationMs: elapsed.Milliseconds()}
 	switch {
 	case timedOut:
 		r.ExitCode = -1

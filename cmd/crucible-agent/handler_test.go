@@ -12,17 +12,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // collectFrames drains a /exec response body and returns the stdout
 // bytes, stderr bytes, and the terminal ExecResult.
-func collectFrames(t *testing.T, body io.Reader) (stdout, stderr []byte, result agentwire.ExecResult) {
+func collectFrames(t *testing.T, body io.Reader) (stdout, stderr []byte, result wire.ExecResult) {
 	t.Helper()
 	var stdoutBuf, stderrBuf bytes.Buffer
 	sawExit := false
 	for {
-		f, err := agentwire.ReadFrame(body)
+		f, err := wire.ReadFrame(body)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -30,11 +30,11 @@ func collectFrames(t *testing.T, body io.Reader) (stdout, stderr []byte, result 
 			t.Fatalf("ReadFrame: %v", err)
 		}
 		switch f.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			stdoutBuf.Write(f.Payload)
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			stderrBuf.Write(f.Payload)
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(f.Payload, &result); err != nil {
 				t.Fatalf("decode exit frame: %v", err)
 			}

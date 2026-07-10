@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // reaper is the single owner of wait4 when the agent runs as PID 1.
@@ -259,7 +259,7 @@ type initRunner struct {
 	reaper *reaper
 }
 
-func (ir initRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
+func (ir initRunner) start(spec *wire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
 	argv, env, cred, err := resolveLaunch(spec)
 	if err != nil {
 		return nil, err

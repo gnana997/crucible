@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/logstore"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // TestRelayExecFramesForwardsAndTees feeds a synthetic agent frame stream
@@ -22,10 +22,10 @@ func TestRelayExecFramesForwardsAndTees(t *testing.T) {
 
 	// Build the "agent" side of the stream.
 	var agentSide bytes.Buffer
-	_ = agentwire.WriteFrame(&agentSide, agentwire.FrameStdout, []byte("out-chunk"))
-	_ = agentwire.WriteFrame(&agentSide, agentwire.FrameStderr, []byte("err-chunk"))
-	exitPayload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 42})
-	_ = agentwire.WriteFrame(&agentSide, agentwire.FrameExit, exitPayload)
+	_ = wire.WriteFrame(&agentSide, wire.FrameStdout, []byte("out-chunk"))
+	_ = wire.WriteFrame(&agentSide, wire.FrameStderr, []byte("err-chunk"))
+	exitPayload, _ := json.Marshal(wire.ExecResult{ExitCode: 42})
+	_ = wire.WriteFrame(&agentSide, wire.FrameExit, exitPayload)
 
 	const id = "sbx-relaytest01"
 	var clientSide bytes.Buffer
@@ -39,17 +39,17 @@ func TestRelayExecFramesForwardsAndTees(t *testing.T) {
 	var gotOut, gotErr string
 	sawExit := false
 	for {
-		f, err := agentwire.ReadFrame(&clientSide)
+		f, err := wire.ReadFrame(&clientSide)
 		if err != nil {
 			break
 		}
 		switch f.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			gotOut += string(f.Payload)
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			gotErr += string(f.Payload)
-		case agentwire.FrameExit:
-			var res agentwire.ExecResult
+		case wire.FrameExit:
+			var res wire.ExecResult
 			if err := json.Unmarshal(f.Payload, &res); err != nil || res.ExitCode != 42 {
 				t.Errorf("forwarded exit frame = %q (err %v), want exit 42", f.Payload, err)
 			}
@@ -88,7 +88,7 @@ func TestRelayExecFramesNoExitFrame(t *testing.T) {
 	s := &Server{cfg: Config{Logger: logsTestLogger()}} // no LogStore
 
 	var agentSide bytes.Buffer
-	_ = agentwire.WriteFrame(&agentSide, agentwire.FrameStdout, []byte("partial"))
+	_ = wire.WriteFrame(&agentSide, wire.FrameStdout, []byte("partial"))
 	// no exit frame — stream just ends
 
 	var clientSide bytes.Buffer

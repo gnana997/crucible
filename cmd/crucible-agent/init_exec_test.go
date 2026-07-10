@@ -12,18 +12,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // readExecFrames drives an init-mode /exec response and returns the
 // concatenated stdout, stderr, and the terminal ExecResult.
-func readExecFrames(t *testing.T, body io.Reader) (string, string, agentwire.ExecResult) {
+func readExecFrames(t *testing.T, body io.Reader) (string, string, wire.ExecResult) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	var result agentwire.ExecResult
+	var result wire.ExecResult
 	gotExit := false
 	for {
-		frame, err := agentwire.ReadFrame(body)
+		frame, err := wire.ReadFrame(body)
 		if err == io.EOF {
 			break
 		}
@@ -31,11 +31,11 @@ func readExecFrames(t *testing.T, body io.Reader) (string, string, agentwire.Exe
 			t.Fatalf("read frame: %v", err)
 		}
 		switch frame.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			out.Write(frame.Payload)
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			errOut.Write(frame.Payload)
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(frame.Payload, &result); err != nil {
 				t.Fatalf("decode exit frame: %v", err)
 			}
@@ -58,7 +58,7 @@ func initExecServer(t *testing.T) *httptest.Server {
 	return ts
 }
 
-func postExec(t *testing.T, ts *httptest.Server, req agentwire.ExecRequest) *http.Response {
+func postExec(t *testing.T, ts *httptest.Server, req wire.ExecRequest) *http.Response {
 	t.Helper()
 	body, _ := json.Marshal(req)
 	resp, err := http.Post(ts.URL+"/exec", "application/json", bytes.NewReader(body))
@@ -70,7 +70,7 @@ func postExec(t *testing.T, ts *httptest.Server, req agentwire.ExecRequest) *htt
 
 func TestInitExecHelloAndExit(t *testing.T) {
 	ts := initExecServer(t)
-	resp := postExec(t, ts, agentwire.ExecRequest{Cmd: []string{"/bin/sh", "-c", "echo hi; echo oops 1>&2; exit 5"}})
+	resp := postExec(t, ts, wire.ExecRequest{Cmd: []string{"/bin/sh", "-c", "echo hi; echo oops 1>&2; exit 5"}})
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -89,7 +89,7 @@ func TestInitExecHelloAndExit(t *testing.T) {
 
 func TestInitExecTimeout(t *testing.T) {
 	ts := initExecServer(t)
-	resp := postExec(t, ts, agentwire.ExecRequest{Cmd: []string{"/bin/sleep", "10"}, TimeoutSec: 1})
+	resp := postExec(t, ts, wire.ExecRequest{Cmd: []string{"/bin/sleep", "10"}, TimeoutSec: 1})
 	defer func() { _ = resp.Body.Close() }()
 	_, _, res := readExecFrames(t, resp.Body)
 	if !res.TimedOut || res.ExitCode != -1 {
@@ -102,7 +102,7 @@ func TestInitExecTimeout(t *testing.T) {
 
 func TestInitExecCommandNotFound(t *testing.T) {
 	ts := initExecServer(t)
-	resp := postExec(t, ts, agentwire.ExecRequest{Cmd: []string{"/nope/missing"}})
+	resp := postExec(t, ts, wire.ExecRequest{Cmd: []string{"/nope/missing"}})
 	defer func() { _ = resp.Body.Close() }()
 	_, _, res := readExecFrames(t, resp.Body)
 	if res.ExitCode != -1 || res.Error == "" {
@@ -112,7 +112,7 @@ func TestInitExecCommandNotFound(t *testing.T) {
 
 func TestInitExecRejectsEmptyCmd(t *testing.T) {
 	ts := initExecServer(t)
-	resp := postExec(t, ts, agentwire.ExecRequest{})
+	resp := postExec(t, ts, wire.ExecRequest{})
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("empty cmd = %d, want 400", resp.StatusCode)
@@ -122,7 +122,7 @@ func TestInitExecRejectsEmptyCmd(t *testing.T) {
 func TestInitExecEnvAndCwd(t *testing.T) {
 	ts := initExecServer(t)
 	dir := t.TempDir()
-	resp := postExec(t, ts, agentwire.ExecRequest{
+	resp := postExec(t, ts, wire.ExecRequest{
 		Cmd: []string{"/bin/sh", "-c", `printf '%s %s' "$CRUCIBLE_E" "$PWD"`},
 		Env: map[string]string{"CRUCIBLE_E": "val"},
 		Cwd: dir,

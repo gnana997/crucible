@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // dialInteractiveExec opens a raw connection to an interactive /exec
@@ -53,20 +53,20 @@ func dialInteractiveExec(t *testing.T, addr, reqJSON string) net.Conn {
 }
 
 // collectInteractive reads response frames until the terminal exit frame.
-func collectInteractive(t *testing.T, conn net.Conn) (stdout, stderr []byte, result agentwire.ExecResult) {
+func collectInteractive(t *testing.T, conn net.Conn) (stdout, stderr []byte, result wire.ExecResult) {
 	t.Helper()
 	var stdoutBuf, stderrBuf bytes.Buffer
 	for {
-		f, err := agentwire.ReadFrame(conn)
+		f, err := wire.ReadFrame(conn)
 		if err != nil {
 			t.Fatalf("ReadFrame: %v", err)
 		}
 		switch f.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			stdoutBuf.Write(f.Payload)
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			stderrBuf.Write(f.Payload)
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(f.Payload, &result); err != nil {
 				t.Fatalf("decode exit frame: %v", err)
 			}
@@ -88,10 +88,10 @@ func TestHandleExecInteractiveStdinToExit(t *testing.T) {
 	conn := dialInteractiveExec(t, ts.Listener.Addr().String(), `{"cmd":["/bin/sh"]}`)
 	defer func() { _ = conn.Close() }()
 
-	if err := agentwire.WriteFrame(conn, agentwire.FrameStdin, []byte("echo hi\n")); err != nil {
+	if err := wire.WriteFrame(conn, wire.FrameStdin, []byte("echo hi\n")); err != nil {
 		t.Fatalf("write stdin: %v", err)
 	}
-	if err := agentwire.WriteFrame(conn, agentwire.FrameStdinClose, nil); err != nil {
+	if err := wire.WriteFrame(conn, wire.FrameStdinClose, nil); err != nil {
 		t.Fatalf("write stdin-close: %v", err)
 	}
 
@@ -117,11 +117,11 @@ func TestHandleExecInteractiveSharedState(t *testing.T) {
 	defer func() { _ = conn.Close() }()
 
 	for _, line := range []string{"cd /tmp\n", "pwd\n"} {
-		if err := agentwire.WriteFrame(conn, agentwire.FrameStdin, []byte(line)); err != nil {
+		if err := wire.WriteFrame(conn, wire.FrameStdin, []byte(line)); err != nil {
 			t.Fatalf("write stdin %q: %v", line, err)
 		}
 	}
-	if err := agentwire.WriteFrame(conn, agentwire.FrameStdinClose, nil); err != nil {
+	if err := wire.WriteFrame(conn, wire.FrameStdinClose, nil); err != nil {
 		t.Fatalf("write stdin-close: %v", err)
 	}
 
@@ -166,8 +166,8 @@ func (r *recordWriteCloser) Close() error                { r.closed = true; retu
 // preceding stdin payload.
 func TestPumpStdinDeliversAndClosesOnStdinClose(t *testing.T) {
 	var frames bytes.Buffer
-	_ = agentwire.WriteFrame(&frames, agentwire.FrameStdin, []byte("payload"))
-	_ = agentwire.WriteFrame(&frames, agentwire.FrameStdinClose, nil)
+	_ = wire.WriteFrame(&frames, wire.FrameStdin, []byte("payload"))
+	_ = wire.WriteFrame(&frames, wire.FrameStdinClose, nil)
 
 	wc := &recordWriteCloser{}
 	disconnected := false

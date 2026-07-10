@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestBuildServiceEnvProfileMerges(t *testing.T) {
 	t.Setenv("CRUCIBLE_TEST_AGENTENV", "present")
-	spec := &agentwire.ServiceSpec{Env: map[string]string{"APP": "1"}} // EnvExact false
+	spec := &wire.ServiceSpec{Env: map[string]string{"APP": "1"}} // EnvExact false
 	env := buildServiceEnv(spec, "")
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "APP=1") {
@@ -29,7 +29,7 @@ func TestBuildServiceEnvProfileMerges(t *testing.T) {
 
 func TestBuildServiceEnvExactNoAgentLeak(t *testing.T) {
 	t.Setenv("CRUCIBLE_TEST_AGENTENV", "present")
-	spec := &agentwire.ServiceSpec{Env: map[string]string{"APP": "1"}, EnvExact: true}
+	spec := &wire.ServiceSpec{Env: map[string]string{"APP": "1"}, EnvExact: true}
 	env := buildServiceEnv(spec, "/home/nginx")
 	joined := strings.Join(env, "\n")
 	if strings.Contains(joined, "CRUCIBLE_TEST_AGENTENV") {
@@ -47,7 +47,7 @@ func TestBuildServiceEnvExactNoAgentLeak(t *testing.T) {
 }
 
 func TestBuildServiceEnvExactKeepsExplicitPathAndHome(t *testing.T) {
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Env:      map[string]string{"PATH": "/only/here", "HOME": "/explicit"},
 		EnvExact: true,
 	}
@@ -111,7 +111,7 @@ func TestResolveUserUnknownNameErrors(t *testing.T) {
 
 func TestResolveLaunchCreatesWorkdir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "made", "by", "launch")
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd:      []string{"/bin/true"},
 		Cwd:      dir,
 		EnvExact: true,
@@ -126,7 +126,7 @@ func TestResolveLaunchCreatesWorkdir(t *testing.T) {
 
 func TestResolveLaunchProfileDoesNotCreateWorkdir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "should-not-exist")
-	spec := &agentwire.ServiceSpec{Cmd: []string{"/bin/true"}, Cwd: dir} // EnvExact false
+	spec := &wire.ServiceSpec{Cmd: []string{"/bin/true"}, Cwd: dir} // EnvExact false
 	if _, _, _, err := resolveLaunch(spec); err != nil {
 		t.Fatalf("resolveLaunch: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestResolveLaunchResolvesBareCommandOnPath(t *testing.T) {
 	if err := os.WriteFile(server, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd:      []string{"httpd-foreground"},
 		Env:      map[string]string{"PATH": dir},
 		EnvExact: true,
@@ -210,7 +210,7 @@ func TestInitRunnerDropsToUser(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "uid")
 	// Run as uid 1000; write our effective uid then idle.
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd:      []string{"/bin/sh", "-c", "id -u > " + out + "; sleep 60"},
 		User:     "1000:1000",
 		EnvExact: true,
@@ -228,7 +228,7 @@ func TestInitRunnerDropsToUser(t *testing.T) {
 		t.Errorf("service ran as uid %q, want 1000", strings.TrimSpace(string(data)))
 	}
 	_, _ = s.Stop(0)
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }
 
 func waitForFile(t *testing.T, path string) {

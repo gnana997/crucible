@@ -24,9 +24,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 var (
@@ -140,7 +140,7 @@ func (b *bench) latency(ctx context.Context) {
 	}
 	exec := b.measure("exec roundtrip (true)", func() time.Duration {
 		t0 := time.Now()
-		_, err := b.cl.Exec(ctx, warm.ID, agentwire.ExecRequest{Cmd: []string{"true"}}, io.Discard, io.Discard)
+		_, err := b.cl.Exec(ctx, warm.ID, wire.ExecRequest{Cmd: []string{"true"}}, io.Discard, io.Discard)
 		if err != nil {
 			fatal("exec", err)
 		}

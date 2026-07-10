@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 var ringT0 = time.Unix(1_700_000_000, 0)
@@ -19,17 +19,17 @@ func ringAppend(r *logRing, stream, s string) {
 
 func TestLogRingAppendAndRead(t *testing.T) {
 	r := newLogRing(1 << 20)
-	ringAppend(r, agentwire.ServiceLogStdout, "hello\n")
-	ringAppend(r, agentwire.ServiceLogStderr, "oops\n")
+	ringAppend(r, wire.ServiceLogStdout, "hello\n")
+	ringAppend(r, wire.ServiceLogStderr, "oops\n")
 
 	resp := r.read(0, 1<<20)
 	if len(resp.Records) != 2 {
 		t.Fatalf("records = %d, want 2", len(resp.Records))
 	}
-	if resp.Records[0].Stream != agentwire.ServiceLogStdout || string(resp.Records[0].Data) != "hello\n" {
+	if resp.Records[0].Stream != wire.ServiceLogStdout || string(resp.Records[0].Data) != "hello\n" {
 		t.Errorf("rec0 = %+v", resp.Records[0])
 	}
-	if resp.Records[1].Stream != agentwire.ServiceLogStderr || string(resp.Records[1].Data) != "oops\n" {
+	if resp.Records[1].Stream != wire.ServiceLogStderr || string(resp.Records[1].Data) != "oops\n" {
 		t.Errorf("rec1 = %+v", resp.Records[1])
 	}
 	if resp.Records[0].Seq != 0 || resp.Records[1].Seq != 1 {
@@ -45,8 +45,8 @@ func TestLogRingAppendAndRead(t *testing.T) {
 
 func TestLogRingCursorResume(t *testing.T) {
 	r := newLogRing(1 << 20)
-	ringAppend(r, agentwire.ServiceLogStdout, "one")
-	ringAppend(r, agentwire.ServiceLogStdout, "two")
+	ringAppend(r, wire.ServiceLogStdout, "one")
+	ringAppend(r, wire.ServiceLogStdout, "two")
 
 	first := r.read(0, 1<<20)
 	if first.NextSeq != 2 {
@@ -57,7 +57,7 @@ func TestLogRingCursorResume(t *testing.T) {
 	if len(again.Records) != 0 || again.NextSeq != 2 {
 		t.Fatalf("read at cursor = %d records, NextSeq %d", len(again.Records), again.NextSeq)
 	}
-	ringAppend(r, agentwire.ServiceLogStdout, "three")
+	ringAppend(r, wire.ServiceLogStdout, "three")
 	resumed := r.read(first.NextSeq, 1<<20)
 	if len(resumed.Records) != 1 || string(resumed.Records[0].Data) != "three" {
 		t.Fatalf("resume read = %+v", resumed.Records)
@@ -67,7 +67,7 @@ func TestLogRingCursorResume(t *testing.T) {
 func TestLogRingMaxBytesPaging(t *testing.T) {
 	r := newLogRing(1 << 20)
 	for i := 0; i < 10; i++ {
-		ringAppend(r, agentwire.ServiceLogStdout, strings.Repeat("x", 100))
+		ringAppend(r, wire.ServiceLogStdout, strings.Repeat("x", 100))
 	}
 	var got int
 	cursor := uint64(0)
@@ -87,7 +87,7 @@ func TestLogRingMaxBytesPaging(t *testing.T) {
 func TestLogRingOversizedWriteIsChunked(t *testing.T) {
 	r := newLogRing(1 << 20)
 	big := bytes.Repeat([]byte("a"), logChunkMax*2+10)
-	r.append(agentwire.ServiceLogStdout, ringT0, big)
+	r.append(wire.ServiceLogStdout, ringT0, big)
 
 	resp := r.read(0, 1<<20)
 	if len(resp.Records) != 3 {
@@ -111,7 +111,7 @@ func TestLogRingEvictionIsExplicit(t *testing.T) {
 	// Budget for roughly 3 records of 100 bytes + overhead.
 	r := newLogRing(3 * (100 + logRecordOverhead))
 	for i := 0; i < 10; i++ {
-		ringAppend(r, agentwire.ServiceLogStdout, strings.Repeat("x", 100))
+		ringAppend(r, wire.ServiceLogStdout, strings.Repeat("x", 100))
 	}
 	resp := r.read(0, 1<<20)
 	if resp.DroppedRecords == 0 || resp.DroppedBytes == 0 {
@@ -134,7 +134,7 @@ func TestLogRingCompaction(t *testing.T) {
 	// grow proportionally to total writes.
 	r := newLogRing(2 * (100 + logRecordOverhead))
 	for i := 0; i < 10_000; i++ {
-		ringAppend(r, agentwire.ServiceLogStdout, strings.Repeat("y", 100))
+		ringAppend(r, wire.ServiceLogStdout, strings.Repeat("y", 100))
 	}
 	r.mu.Lock()
 	backing := len(r.records)
@@ -154,7 +154,7 @@ func TestLogRingStats(t *testing.T) {
 	if first != 0 || next != 0 || dropped != 0 {
 		t.Fatalf("empty ring stats = %d,%d,%d", first, next, dropped)
 	}
-	ringAppend(r, agentwire.ServiceLogStdout, "a")
+	ringAppend(r, wire.ServiceLogStdout, "a")
 	first, next, _ = r.stats()
 	if first != 0 || next != 1 {
 		t.Fatalf("stats after one append = %d,%d, want 0,1", first, next)

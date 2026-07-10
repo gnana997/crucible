@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func newServiceCmd(o *globalOpts) *cobra.Command {
@@ -35,14 +35,14 @@ func newServiceCmd(o *globalOpts) *cobra.Command {
 
 // parseRestart turns "never", "always", "on-failure" or "on-failure:N"
 // into a RestartPolicy.
-func parseRestart(s string) (agentwire.RestartPolicy, error) {
+func parseRestart(s string) (wire.RestartPolicy, error) {
 	if s == "" {
-		return agentwire.RestartPolicy{}, nil
+		return wire.RestartPolicy{}, nil
 	}
 	policy, retries, ok := strings.Cut(s, ":")
-	rp := agentwire.RestartPolicy{Policy: policy}
+	rp := wire.RestartPolicy{Policy: policy}
 	if ok {
-		if policy != agentwire.RestartOnFailure {
+		if policy != wire.RestartOnFailure {
 			return rp, fmt.Errorf("--restart %q: max retries are only valid with on-failure", s)
 		}
 		if _, err := fmt.Sscanf(retries, "%d", &rp.MaxRetries); err != nil || rp.MaxRetries < 1 {
@@ -68,7 +68,7 @@ func newServiceSetCmd(o *globalOpts) *cobra.Command {
 			"and relaunched under the new spec. Use --start to launch it right away.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			spec := agentwire.ServiceSpec{
+			spec := wire.ServiceSpec{
 				Cmd:          args[1:],
 				Cwd:          cwd,
 				StopSignal:   stopSignal,
@@ -212,7 +212,7 @@ func runServiceLogs(ctx context.Context, cl *client.Client, cmd *cobra.Command, 
 		}
 		for _, rec := range resp.Records {
 			out := cmd.OutOrStdout()
-			if rec.Stream == agentwire.ServiceLogStderr {
+			if rec.Stream == wire.ServiceLogStderr {
 				out = cmd.ErrOrStderr()
 			}
 			_, _ = out.Write(rec.Data)
@@ -233,7 +233,7 @@ func runServiceLogs(ctx context.Context, cl *client.Client, cmd *cobra.Command, 
 	}
 }
 
-func printServiceStatus(cmd *cobra.Command, o *globalOpts, status agentwire.ServiceStatus) error {
+func printServiceStatus(cmd *cobra.Command, o *globalOpts, status wire.ServiceStatus) error {
 	if o.isJSON() {
 		return printJSON(cmd.OutOrStdout(), status)
 	}

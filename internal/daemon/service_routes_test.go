@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // stubServiceAgent is an in-memory stand-in for the guest agent's
@@ -26,14 +26,14 @@ import (
 // calls so tests can assert the daemon proxied faithfully.
 type stubServiceAgent struct {
 	mu    sync.Mutex
-	spec  *agentwire.ServiceSpec
+	spec  *wire.ServiceSpec
 	state string
 	calls []string
 }
 
-func (a *stubServiceAgent) status() agentwire.ServiceStatus {
-	st := agentwire.ServiceStatus{State: a.state, Spec: a.spec}
-	if a.state == agentwire.ServiceStateRunning {
+func (a *stubServiceAgent) status() wire.ServiceStatus {
+	st := wire.ServiceStatus{State: a.state, Spec: a.spec}
+	if a.state == wire.ServiceStateRunning {
 		st.Pid = 4242
 	}
 	return st
@@ -47,12 +47,12 @@ func (a *stubServiceAgent) register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /service", func(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		var spec agentwire.ServiceSpec
+		var spec wire.ServiceSpec
 		if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		a.spec, a.state = &spec, agentwire.ServiceStateStopped
+		a.spec, a.state = &spec, wire.ServiceStateStopped
 		a.calls = append(a.calls, "configure")
 		writeStatus(w)
 	})
@@ -69,9 +69,9 @@ func (a *stubServiceAgent) register(mux *http.ServeMux) {
 			writeStatus(w)
 		}
 	}
-	mux.HandleFunc("POST /service/start", action("start", agentwire.ServiceStateRunning))
-	mux.HandleFunc("POST /service/stop", action("stop", agentwire.ServiceStateStopped))
-	mux.HandleFunc("POST /service/restart", action("restart", agentwire.ServiceStateRunning))
+	mux.HandleFunc("POST /service/start", action("start", wire.ServiceStateRunning))
+	mux.HandleFunc("POST /service/stop", action("stop", wire.ServiceStateStopped))
+	mux.HandleFunc("POST /service/restart", action("restart", wire.ServiceStateRunning))
 	mux.HandleFunc("GET /service/status", func(w http.ResponseWriter, _ *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -86,9 +86,9 @@ func (a *stubServiceAgent) register(mux *http.ServeMux) {
 		}
 		a.calls = append(a.calls, "logs?"+r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(agentwire.ServiceLogsResponse{
-			Records: []agentwire.ServiceLogRecord{
-				{Seq: 0, Stream: agentwire.ServiceLogStdout, Data: []byte("hi\n")},
+		_ = json.NewEncoder(w).Encode(wire.ServiceLogsResponse{
+			Records: []wire.ServiceLogRecord{
+				{Seq: 0, Stream: wire.ServiceLogStdout, Data: []byte("hi\n")},
 			},
 			NextSeq: 1,
 		})
@@ -219,11 +219,11 @@ func TestServiceRoutesLifecycle(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("PUT service = %d: %s", resp.StatusCode, b)
 	}
-	var st agentwire.ServiceStatus
+	var st wire.ServiceStatus
 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopped || st.Spec == nil {
+	if st.State != wire.ServiceStateStopped || st.Spec == nil {
 		t.Fatalf("status after configure = %+v", st)
 	}
 
@@ -232,14 +232,14 @@ func TestServiceRoutesLifecycle(t *testing.T) {
 		t.Fatalf("start = %d", resp.StatusCode)
 	}
 	resp = serviceReq(t, http.MethodGet, base, "")
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil || st.State != agentwire.ServiceStateRunning {
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil || st.State != wire.ServiceStateRunning {
 		t.Fatalf("status = %+v (err %v), want running", st, err)
 	}
 	resp = serviceReq(t, http.MethodGet, base+"/logs?from_seq=0&max_bytes=512", "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("logs = %d", resp.StatusCode)
 	}
-	var logs agentwire.ServiceLogsResponse
+	var logs wire.ServiceLogsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&logs); err != nil || len(logs.Records) != 1 {
 		t.Fatalf("logs = %+v (err %v)", logs, err)
 	}
@@ -300,8 +300,8 @@ func TestCreateSandboxWithService(t *testing.T) {
 	}
 	// The service proxies work against the created sandbox.
 	resp := serviceReq(t, http.MethodGet, ts.URL+"/sandboxes/"+sb.ID+"/service", "")
-	var st agentwire.ServiceStatus
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil || st.State != agentwire.ServiceStateRunning {
+	var st wire.ServiceStatus
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil || st.State != wire.ServiceStateRunning {
 		t.Fatalf("status = %+v (err %v), want running", st, err)
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // logChunkMax bounds one ring record's payload. Larger writes are split;
@@ -81,11 +81,11 @@ func (r *logRing) append(stream string, at time.Time, p []byte) {
 
 // read returns records from fromSeq (clamped to the oldest available),
 // oldest first, up to maxBytes of payload. It never blocks.
-func (r *logRing) read(fromSeq uint64, maxBytes int) agentwire.ServiceLogsResponse {
+func (r *logRing) read(fromSeq uint64, maxBytes int) wire.ServiceLogsResponse {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	resp := agentwire.ServiceLogsResponse{
+	resp := wire.ServiceLogsResponse{
 		NextSeq:        r.nextSeq,
 		FirstSeq:       r.firstSeqLocked(),
 		DroppedRecords: r.droppedRecords,
@@ -105,7 +105,7 @@ func (r *logRing) read(fromSeq uint64, maxBytes int) agentwire.ServiceLogsRespon
 			resp.NextSeq = rec.seq
 			return resp
 		}
-		resp.Records = append(resp.Records, agentwire.ServiceLogRecord{
+		resp.Records = append(resp.Records, wire.ServiceLogRecord{
 			Seq:    rec.seq,
 			Stream: rec.stream,
 			UnixMs: rec.at.UnixMilli(),

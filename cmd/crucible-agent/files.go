@@ -16,7 +16,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // maxFilesBody caps the PUT /files tar body. A push carries a user's own
@@ -97,8 +97,8 @@ func handleFilesPut(w http.ResponseWriter, r *http.Request) {
 // entry is resolved against dest and refused if it escapes. Only regular
 // files, directories, and in-dest symlinks are materialized; other entry types
 // (devices, fifos, ...) are skipped.
-func extractTarInto(dest string, r io.Reader) (agentwire.FilesPutResult, error) {
-	var res agentwire.FilesPutResult
+func extractTarInto(dest string, r io.Reader) (wire.FilesPutResult, error) {
+	var res wire.FilesPutResult
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return res, fmt.Errorf("create dest %q: %w", dest, err)
 	}

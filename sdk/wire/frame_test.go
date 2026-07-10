@@ -1,4 +1,4 @@
-package agentwire
+package wire
 
 import (
 	"bytes"

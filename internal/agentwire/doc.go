@@ -1,5 +1,15 @@
-// Package agentwire defines the wire protocol between crucible's daemon
-// (host) and the guest agent that runs inside every sandbox.
+// Package agentwire defines the private half of the wire protocol between
+// crucible's daemon (host) and the guest agent that runs inside every
+// sandbox: the transport handshake and the host→guest control messages
+// that never leave the machine (fork identity refresh, static network
+// configuration).
+//
+// The shared, client-visible half — the exec frame stream and the JSON
+// types for exec, supervised services, and file transfer — lives in the
+// public sdk/wire package, which both this protocol and the daemon's
+// REST API speak. Types here are free to evolve with the agent (it is
+// baked into rootfs images and versioned with the daemon); types in
+// sdk/wire are frozen wire contract.
 //
 // # Transport
 //
@@ -14,40 +24,12 @@
 // bridges the two. From Go's perspective both sides are using net/http
 // with a non-default dialer.
 //
-// # Request
+// # Endpoints
 //
-// POST /exec with ExecRequest as the JSON body. Exactly one command per
-// request.
-//
-// Two modes share this endpoint:
-//
-//   - One-shot (default): the request body is the JSON ExecRequest and
-//     nothing more; the response is the frame stream described below.
-//   - Interactive (POST /exec?stdin=1): after the JSON ExecRequest body,
-//     the connection is hijacked into a full-duplex framed stream. The
-//     host sends FrameStdin / FrameStdinClose frames; the guest replies
-//     with FrameStdout / FrameStderr / FrameExit frames as usual. This is
-//     what backs a live shell into a running sandbox — a functional (no
-//     PTY) session with persistent cwd/env.
-//
-// # Response
-//
-// The response body is a sequence of length-prefixed frames. Each frame
-// is one header (FrameHeaderSize bytes) followed by a payload:
-//
-//	offset 0 : frame type (1 byte)      FrameStdout | FrameStderr | FrameExit
-//	offset 1 : reserved, zeroed         3 bytes
-//	offset 4 : payload size in bytes    uint32, big-endian
-//	offset 8 : payload                  size bytes
-//
-// The stream always ends with exactly one FrameExit frame whose payload is
-// an ExecResult JSON object. Framing lets stdout and stderr share a single
-// HTTP response body without either one corrupting the other — no delimiter
-// escaping needed because sizes are explicit.
-//
-// This format is deliberately the same shape Docker uses for its container
-// attach/logs API. Inbound stdin frames (FrameStdin/FrameStdinClose) use
-// the same header layout and are parsed with ReadFrame on the guest side.
+// POST /exec (one-shot and ?stdin=1 interactive), PUT /service and the
+// service lifecycle routes, and PUT /files all use the sdk/wire shapes.
+// POST /identity/refresh and POST /network/configure are private to this
+// package.
 package agentwire
 
 // AgentVSockPort is the fixed guest-side vsock port the agent listens on.

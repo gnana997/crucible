@@ -1,4 +1,4 @@
-package agentwire
+package wire
 
 // ExecRequest is the JSON body of POST /exec. All fields except Cmd are
 // optional; the agent fills in sensible defaults for the rest.
@@ -22,22 +22,6 @@ type ExecRequest struct {
 	// with TimedOut=true. Zero means no deadline (the request's HTTP
 	// connection is still bounded by the host's context).
 	TimeoutSec int `json:"timeout_s,omitempty"`
-}
-
-// IdentityRefreshRequest is the JSON body of POST /identity/refresh.
-// Sent by the host to a freshly-forked VM so it wakes with unique
-// state instead of a byte-for-byte copy of the snapshot's.
-type IdentityRefreshRequest struct {
-	// Seed is 32 bytes of host-CSPRNG entropy, unique per fork
-	// (encoding/json carries []byte as base64 on the wire). The agent
-	// credits it to the guest kernel's entropy pool and forces a CRNG
-	// reseed, so per-fork RNG divergence holds on any guest kernel,
-	// with or without VMGenID support.
-	Seed []byte `json:"seed"`
-
-	// SandboxID is the fork's sandbox ID. Becomes the guest's hostname
-	// and the content of the /run/crucible/fork-id marker.
-	SandboxID string `json:"sandbox_id"`
 }
 
 // ExecResult is the payload of the terminal FrameExit frame on the

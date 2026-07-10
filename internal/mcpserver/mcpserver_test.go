@@ -12,9 +12,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // connect wires a client to a server built with cfg over an in-memory
@@ -141,10 +141,10 @@ func TestRunToolCreatesExecsDeletes(t *testing.T) {
 	})
 	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fw := agentwire.NewFrameWriter(w)
-		_, _ = fw.Stream(agentwire.FrameStdout).Write([]byte("hello\n"))
-		payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 7, DurationMs: 12})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		_, _ = fw.Stream(wire.FrameStdout).Write([]byte("hello\n"))
+		payload, _ := json.Marshal(wire.ExecResult{ExitCode: 7, DurationMs: 12})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		deletedID = r.PathValue("id")
@@ -257,9 +257,9 @@ func TestRunToolImage(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "sbx_run"})
 	})
 	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, _ *http.Request) {
-		fw := agentwire.NewFrameWriter(w)
-		payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 0})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		payload, _ := json.Marshal(wire.ExecResult{ExitCode: 0})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -318,7 +318,7 @@ func TestStopSandboxTool(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /sandboxes/{id}/service/stop", func(w http.ResponseWriter, r *http.Request) {
 		stopped = r.PathValue("id")
-		_ = json.NewEncoder(w).Encode(agentwire.ServiceStatus{})
+		_ = json.NewEncoder(w).Encode(wire.ServiceStatus{})
 	})
 	cs := connect(t, Config{Client: daemonClient(t, mux)})
 

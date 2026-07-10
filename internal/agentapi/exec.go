@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // maxErrorBody caps how much of a non-2xx response body we include in
@@ -35,11 +35,11 @@ const maxErrorBody = 8 << 10
 // notices and kills the command (its handler observes r.Context done).
 func (c *Client) Exec(
 	ctx context.Context,
-	req agentwire.ExecRequest,
+	req wire.ExecRequest,
 	stdout, stderr io.Writer,
-) (agentwire.ExecResult, error) {
+) (wire.ExecResult, error) {
 	if len(req.Cmd) == 0 {
-		return agentwire.ExecResult{}, errors.New("agentapi: ExecRequest.Cmd is required")
+		return wire.ExecResult{}, errors.New("agentapi: ExecRequest.Cmd is required")
 	}
 	if stdout == nil {
 		stdout = io.Discard
@@ -50,19 +50,19 @@ func (c *Client) Exec(
 
 	body, err := json.Marshal(req)
 	if err != nil {
-		return agentwire.ExecResult{}, fmt.Errorf("agentapi: marshal: %w", err)
+		return wire.ExecResult{}, fmt.Errorf("agentapi: marshal: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/exec", bytes.NewReader(body))
 	if err != nil {
-		return agentwire.ExecResult{}, err
+		return wire.ExecResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/octet-stream")
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return agentwire.ExecResult{}, fmt.Errorf("agentapi: exec: %w", err)
+		return wire.ExecResult{}, fmt.Errorf("agentapi: exec: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -70,7 +70,7 @@ func (c *Client) Exec(
 		// Headers came back non-2xx — no streamed body, just a JSON
 		// error or plain text from the agent. Surface it verbatim.
 		limited, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
-		return agentwire.ExecResult{}, fmt.Errorf(
+		return wire.ExecResult{}, fmt.Errorf(
 			"agentapi: exec returned %d: %s",
 			resp.StatusCode, bytes.TrimSpace(limited),
 		)
@@ -90,7 +90,7 @@ func (c *Client) Exec(
 // frames to it, read FrameStdout / FrameStderr / FrameExit frames from it,
 // and Close it when done. Closing the conn terminates the command on the
 // guest (its handler observes the read error).
-func (c *Client) ExecInteractive(ctx context.Context, req agentwire.ExecRequest) (net.Conn, error) {
+func (c *Client) ExecInteractive(ctx context.Context, req wire.ExecRequest) (net.Conn, error) {
 	if len(req.Cmd) == 0 {
 		return nil, errors.New("agentapi: ExecRequest.Cmd is required")
 	}
@@ -198,16 +198,16 @@ func readCRLFLine(r io.Reader) (string, error) {
 	return "", errors.New("header line exceeded maximum length")
 }
 
-// readFramedStream consumes an agentwire frame stream, dispatching
+// readFramedStream consumes a wire frame stream, dispatching
 // stdout / stderr bytes to the given writers and returning the final
 // ExecResult from the exit frame. Unknown frame types are ignored for
 // forward compatibility.
-func readFramedStream(r io.Reader, stdout, stderr io.Writer) (agentwire.ExecResult, error) {
-	var result agentwire.ExecResult
+func readFramedStream(r io.Reader, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	var result wire.ExecResult
 	sawExit := false
 
 	for {
-		f, err := agentwire.ReadFrame(r)
+		f, err := wire.ReadFrame(r)
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -215,15 +215,15 @@ func readFramedStream(r io.Reader, stdout, stderr io.Writer) (agentwire.ExecResu
 			return result, fmt.Errorf("agentapi: read frame: %w", err)
 		}
 		switch f.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			if _, err := stdout.Write(f.Payload); err != nil {
 				return result, fmt.Errorf("agentapi: write stdout: %w", err)
 			}
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			if _, err := stderr.Write(f.Payload); err != nil {
 				return result, fmt.Errorf("agentapi: write stderr: %w", err)
 			}
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(f.Payload, &result); err != nil {
 				return result, fmt.Errorf("agentapi: decode exit frame: %w", err)
 			}

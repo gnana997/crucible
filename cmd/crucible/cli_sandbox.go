@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func newSandboxCmd(o *globalOpts) *cobra.Command {
@@ -214,7 +214,7 @@ func newSandboxExecCmd(o *globalOpts) *cobra.Command {
 			"session, not a full terminal. See `crucible shell` for a shortcut.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := agentwire.ExecRequest{Cmd: args[1:], Cwd: cwd, TimeoutSec: timeout}
+			req := wire.ExecRequest{Cmd: args[1:], Cwd: cwd, TimeoutSec: timeout}
 			if len(env) > 0 {
 				req.Env = make(map[string]string, len(env))
 				for _, kv := range env {
@@ -244,7 +244,7 @@ func newSandboxExecCmd(o *globalOpts) *cobra.Command {
 
 // runExec dispatches to the one-shot or interactive client exec path,
 // wiring the cobra command's stdio.
-func runExec(cmd *cobra.Command, o *globalOpts, id string, req agentwire.ExecRequest, interactive bool) (agentwire.ExecResult, error) {
+func runExec(cmd *cobra.Command, o *globalOpts, id string, req wire.ExecRequest, interactive bool) (wire.ExecResult, error) {
 	if interactive {
 		return o.client().ExecInteractive(cmd.Context(), id, req, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
@@ -265,7 +265,7 @@ func newShellCmd(o *globalOpts) *cobra.Command {
 			"it is a functional shell for exploring untrusted code.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := agentwire.ExecRequest{Cmd: []string{shellPath}}
+			req := wire.ExecRequest{Cmd: []string{shellPath}}
 			res, err := o.client().ExecInteractive(cmd.Context(), args[0], req, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 			if err != nil {
 				return err

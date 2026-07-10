@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // ioPollInterval is how often the I/O collector re-reads
@@ -119,8 +119,8 @@ func pollIO(pid int, last *atomic.Pointer[procIOStats], stop <-chan struct{}, do
 // non-nil on Linux whenever the process has been reaped). ioStats
 // may be nil when the process finished before any poll succeeded;
 // we treat that as "unknown, leave zero."
-func buildUsage(ru *syscall.Rusage, ioStats *procIOStats) *agentwire.ResourceUsage {
-	u := &agentwire.ResourceUsage{
+func buildUsage(ru *syscall.Rusage, ioStats *procIOStats) *wire.ResourceUsage {
+	u := &wire.ResourceUsage{
 		CPUUserMs:                  timevalToMs(ru.Utime),
 		CPUSysMs:                   timevalToMs(ru.Stime),
 		PeakMemoryBytes:            int64(ru.Maxrss) * 1024, // Linux reports Maxrss in KiB.

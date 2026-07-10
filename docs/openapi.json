@@ -1,0 +1,1984 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "crucible",
+    "description": "REST API for the crucible daemon, a Firecracker microVM sandbox runtime. The daemon is the contract every SDK mirrors. Auth is a bearer token (`Authorization: Bearer \u003ckey\u003e`); `/healthz` is always exempt, and a loopback daemon with no keys configured serves unauthenticated. The exec and service-log endpoints stream a binary frame protocol OpenAPI cannot model — see the guides for the frame format.",
+    "version": "0.3.2"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Liveness check",
+        "description": "Always returns 200 and is exempt from auth, so probes work without a key.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images": {
+      "get": {
+        "tags": [
+          "images"
+        ],
+        "summary": "List cached images",
+        "operationId": "listImages",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Pull and convert an OCI image",
+        "description": "Experimental. Pulls a registry image and converts it to a bootable rootfs. Returns 501 when image support is not enabled (set --image-dir).",
+        "operationId": "pullImage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PullImageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images/import": {
+      "post": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Import a docker-save archive",
+        "description": "Experimental. Imports an image from a docker-save tar on the request body (application/octet-stream); ?tag selects one image in a multi-image archive.",
+        "operationId": "importImage",
+        "parameters": [
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Which image inside a multi-image docker-save archive to import.",
+            "schema": {
+              "type": "string",
+              "description": "Which image inside a multi-image docker-save archive to import."
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/images/{ref}": {
+      "delete": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Delete a cached image",
+        "operationId": "deleteImage",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "Image reference (nginx:alpine) or converted digest.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Image reference (nginx:alpine) or converted digest."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "images"
+        ],
+        "summary": "Get a cached image",
+        "operationId": "getImage",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "path",
+            "description": "Image reference (nginx:alpine) or converted digest.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Image reference (nginx:alpine) or converted digest."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/profiles": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "List rootfs profiles",
+        "description": "The rootfs profiles the daemon can boot sandboxes from.",
+        "operationId": "listProfiles",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfilesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes": {
+      "get": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "List sandboxes",
+        "operationId": "listSandboxes",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Create a sandbox",
+        "description": "Boots a Firecracker microVM. All fields are optional; an empty body uses the daemon defaults. `image` is a frozen wire lock returning 501 until the image builder ships.",
+        "operationId": "createSandbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSandboxRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}": {
+      "delete": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Destroy a sandbox",
+        "operationId": "deleteSandbox",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Get a sandbox",
+        "operationId": "getSandbox",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SandboxResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/exec": {
+      "post": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Run a command (streams frames)",
+        "description": "Runs a command in the guest and streams the result as length-prefixed frames ([type:1][reserved:3][size:4 BE][payload]) where type is stdout, stderr, or exit; the exit payload is a JSON ExecResult. Set ?stdin=1 for a hijacked, full-duplex interactive exec.",
+        "operationId": "execSandbox",
+        "parameters": [
+          {
+            "name": "stdin",
+            "in": "query",
+            "description": "Set to \"1\" for an interactive, full-duplex exec (hijacked stream).",
+            "schema": {
+              "type": "string",
+              "description": "Set to \"1\" for an interactive, full-duplex exec (hijacked stream)."
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "base64"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/files": {
+      "get": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Read a single guest file",
+        "description": "Returns the raw bytes of one guest file (?path), capped at ?max_bytes. Content only, guest → host; nothing is written host-side.",
+        "operationId": "getFile",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Guest file path to read.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Guest file path to read."
+            }
+          },
+          {
+            "name": "max_bytes",
+            "in": "query",
+            "description": "Cap on bytes returned (default 10 MiB).",
+            "schema": {
+              "type": "integer",
+              "description": "Cap on bytes returned (default 10 MiB)."
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "base64"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Push files into a sandbox",
+        "description": "Extracts a tar stream (the request body, application/octet-stream) beneath ?path in the guest filesystem; the `crucible cp` push path. Rejects entries that escape the destination.",
+        "operationId": "putFiles",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Guest destination directory the tar is extracted beneath.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Guest destination directory the tar is extracted beneath."
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireFilesPutResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/logs": {
+      "get": {
+        "tags": [
+          "logs"
+        ],
+        "summary": "Read durable sandbox logs",
+        "description": "Durable per-sandbox logs (service output + exec activity) that survive the sandbox. Returns 501 when the daemon has no log store configured.",
+        "operationId": "sandboxLogs",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Byte offset to read from; -1 (default) tails the recent log.",
+            "schema": {
+              "type": "integer",
+              "description": "Byte offset to read from; -1 (default) tails the recent log.",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Filter by source: service | exec | all (default all).",
+            "schema": {
+              "type": "string",
+              "description": "Filter by source: service | exec | all (default all)."
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/service": {
+      "get": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Service status",
+        "operationId": "serviceStatus",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireServiceStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Configure the supervised service",
+        "description": "Experimental. Sets and (re)starts the guest's supervised long-lived entrypoint.",
+        "operationId": "configureService",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfigureServiceReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireServiceStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/service/logs": {
+      "get": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Stream service logs",
+        "description": "Experimental. Streams the supervised service's stdout/stderr as it is produced.",
+        "operationId": "serviceLogs",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "base64"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/service/restart": {
+      "post": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Restart the service",
+        "operationId": "restartService",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireServiceStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/service/start": {
+      "post": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Start the service",
+        "operationId": "startService",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireServiceStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/service/stop": {
+      "post": {
+        "tags": [
+          "service"
+        ],
+        "summary": "Stop the service",
+        "operationId": "stopService",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceStopReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WireServiceStatus"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{id}/snapshot": {
+      "post": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Snapshot a sandbox",
+        "operationId": "createSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/snapshots": {
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "List snapshots",
+        "operationId": "listSnapshots",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotListResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/snapshots/{id}": {
+      "delete": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Delete a snapshot",
+        "operationId": "deleteSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Snapshot ID, e.g. snap_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Snapshot ID, e.g. snap_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Get a snapshot",
+        "operationId": "getSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Snapshot ID, e.g. snap_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Snapshot ID, e.g. snap_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/snapshots/{id}/fork": {
+      "post": {
+        "tags": [
+          "snapshots"
+        ],
+        "summary": "Fork sandboxes from a snapshot",
+        "description": "Creates ?count sandboxes from the snapshot. All-or-nothing: a mid-fork failure rolls back.",
+        "operationId": "forkSnapshot",
+        "parameters": [
+          {
+            "name": "count",
+            "in": "query",
+            "description": "Number of sandboxes to fork from the snapshot (default 1).",
+            "schema": {
+              "type": "integer",
+              "description": "Number of sandboxes to fork from the snapshot (default 1)."
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Snapshot ID, e.g. snap_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Snapshot ID, e.g. snap_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ForkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/whoami": {
+      "get": {
+        "tags": [
+          "meta"
+        ],
+        "summary": "Effective policy for the caller",
+        "description": "Reports whether the token is scoped and, if so, the policy the daemon enforces for it.",
+        "operationId": "whoami",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Whoami"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ConfigureServiceReq": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "env_exact": {
+            "type": "boolean"
+          },
+          "log_buffer_bytes": {
+            "type": "integer"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/WireRestartPolicy"
+          },
+          "stop_grace_s": {
+            "type": "integer"
+          },
+          "stop_signal": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateSandboxRequest": {
+        "type": "object",
+        "properties": {
+          "boot_args": {
+            "type": "string"
+          },
+          "disk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
+          },
+          "memory_mib": {
+            "type": "integer"
+          },
+          "network": {
+            "$ref": "#/components/schemas/NetworkRequest"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "publish": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortMapping"
+            }
+          },
+          "pull": {
+            "type": "string"
+          },
+          "service": {
+            "$ref": "#/components/schemas/WireServiceSpec"
+          },
+          "timeout_s": {
+            "type": "integer"
+          },
+          "vcpus": {
+            "type": "integer"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecReq": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "timeout_s": {
+            "type": "integer"
+          }
+        }
+      },
+      "ForkResponse": {
+        "type": "object",
+        "properties": {
+          "sandboxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SandboxResponse"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          }
+        }
+      },
+      "ImageListResponse": {
+        "type": "object",
+        "properties": {
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImageResponse"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "ImageRef": {
+        "type": "object",
+        "properties": {
+          "oci": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "ImageResponse": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "content_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "convert_mode": {
+            "type": "string"
+          },
+          "converted_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "entries": {
+            "type": "integer"
+          },
+          "entrypoint": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exposed_ports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source_ref": {
+            "type": "string"
+          }
+        }
+      },
+      "ListResponse": {
+        "type": "object",
+        "properties": {
+          "sandboxes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SandboxResponse"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "LogRecord": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "time_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LogsResponse": {
+        "type": "object",
+        "properties": {
+          "next_offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "records": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogRecord"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "NetworkRequest": {
+        "type": "object",
+        "properties": {
+          "allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "NetworkResponse": {
+        "type": "object",
+        "properties": {
+          "allowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "gateway": {
+            "type": "string"
+          },
+          "guest_ip": {
+            "type": "string"
+          }
+        }
+      },
+      "Policy": {
+        "type": "object",
+        "properties": {
+          "allow_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "max_fork": {
+            "type": "integer"
+          },
+          "max_memory_mib": {
+            "type": "integer"
+          },
+          "max_sandboxes": {
+            "type": "integer"
+          },
+          "max_timeout_s": {
+            "type": "integer"
+          },
+          "max_vcpus": {
+            "type": "integer"
+          },
+          "net_allow_max": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "PortMapping": {
+        "type": "object",
+        "properties": {
+          "guest_port": {
+            "type": "integer"
+          },
+          "host_ip": {
+            "type": "string"
+          },
+          "host_port": {
+            "type": "integer"
+          },
+          "protocol": {
+            "type": "string"
+          }
+        }
+      },
+      "ProfilesResponse": {
+        "type": "object",
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "PullImageRequest": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          }
+        }
+      },
+      "SandboxResponse": {
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "type": "integer"
+          },
+          "network": {
+            "$ref": "#/components/schemas/NetworkResponse"
+          },
+          "profile": {
+            "type": "string"
+          },
+          "published": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortMapping"
+            }
+          },
+          "source_snapshot_id": {
+            "type": "string"
+          },
+          "vcpus": {
+            "type": "integer"
+          },
+          "workdir": {
+            "type": "string"
+          }
+        }
+      },
+      "ServiceStopReq": {
+        "type": "object",
+        "properties": {
+          "grace_s": {
+            "type": "integer"
+          }
+        }
+      },
+      "SnapshotListResponse": {
+        "type": "object",
+        "properties": {
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SnapshotResponse"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "SnapshotResponse": {
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "dir": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "mem_path": {
+            "type": "string"
+          },
+          "memory_mib": {
+            "type": "integer"
+          },
+          "rootfs_path": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string"
+          },
+          "state_path": {
+            "type": "string"
+          },
+          "vcpus": {
+            "type": "integer"
+          }
+        }
+      },
+      "Whoami": {
+        "type": "object",
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/Policy"
+          },
+          "scoped": {
+            "type": "boolean"
+          }
+        }
+      },
+      "WireExecResult": {
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "error": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "oom_killed": {
+            "type": "boolean"
+          },
+          "signal": {
+            "type": "string"
+          },
+          "timed_out": {
+            "type": "boolean"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/WireResourceUsage"
+          }
+        }
+      },
+      "WireFilesPutResult": {
+        "type": "object",
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "files": {
+            "type": "integer"
+          }
+        }
+      },
+      "WireResourceUsage": {
+        "type": "object",
+        "properties": {
+          "context_switches_involuntary": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cpu_sys_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cpu_user_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "io_read_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "io_write_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "page_faults_major": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "peak_memory_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "WireRestartPolicy": {
+        "type": "object",
+        "properties": {
+          "max_retries": {
+            "type": "integer"
+          },
+          "policy": {
+            "type": "string"
+          }
+        }
+      },
+      "WireServiceSpec": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "env_exact": {
+            "type": "boolean"
+          },
+          "log_buffer_bytes": {
+            "type": "integer"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/WireRestartPolicy"
+          },
+          "stop_grace_s": {
+            "type": "integer"
+          },
+          "stop_signal": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          }
+        }
+      },
+      "WireServiceStatus": {
+        "type": "object",
+        "properties": {
+          "last_exit": {
+            "$ref": "#/components/schemas/WireExecResult"
+          },
+          "last_exit_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_exit_requested": {
+            "type": "boolean"
+          },
+          "live_peak_rss_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "live_rss_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "log_dropped_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_first_seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "log_next_seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "restarts": {
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/WireServiceSpec"
+          },
+          "started_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "state": {
+            "type": "string"
+          },
+          "uptime_ms": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Daemon API key. Omit on a keyless loopback daemon."
+      }
+    }
+  }
+}

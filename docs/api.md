@@ -206,7 +206,7 @@ Because the `200` is committed before the command finishes, a failure *after* st
 - `exit_code` is `-1` when the process was killed by a signal or never started.
 - `signal` is the signal name (e.g. `"SIGKILL"`) when the process was signalled; empty on a clean exit.
 - `oom_killed` is a best-effort heuristic (SIGKILL not from our timeout + peak RSS ≥ 95% of guest memory), not a precise cgroup reading.
-- `usage` is `null` when the agent collected no stats (e.g. the process never started), so callers can tell "no data" from "zeroes". I/O counters are per-process and approximate for sub-100 ms commands (see the field docs in `internal/agentwire/messages.go`).
+- `usage` is `null` when the agent collected no stats (e.g. the process never started), so callers can tell "no data" from "zeroes". I/O counters are per-process and approximate for sub-100 ms commands (see the field docs in `sdk/wire/exec.go`).
 
 ---
 
@@ -277,4 +277,4 @@ SNP=$(curl -s -XPOST localhost:7878/sandboxes/$SBX/snapshot | jq -r .id)
 curl -s -XPOST "localhost:7878/snapshots/$SNP/fork?count=4" | jq '.sandboxes[].id'
 ```
 
-The exec response is a binary frame stream; a real client parses the frames (see `internal/agentwire` for the reference reader/writer). The Python SDK on the roadmap wraps all of this.
+The exec response is a binary frame stream; a real client parses the frames (see `sdk/wire` for the reference reader/writer). The Python SDK on the roadmap wraps all of this.

@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // maxServiceRequestBody bounds service request bodies. Specs are JSON —
@@ -76,7 +76,7 @@ func (a *serviceAPI) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 func (a *serviceAPI) handleConfigure(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxServiceRequestBody)
-	var spec agentwire.ServiceSpec
+	var spec wire.ServiceSpec
 	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil {
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
@@ -92,7 +92,7 @@ func (a *serviceAPI) handleStart(w http.ResponseWriter, _ *http.Request) {
 
 func (a *serviceAPI) handleStop(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxServiceRequestBody)
-	var req agentwire.ServiceStopRequest
+	var req wire.ServiceStopRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return
@@ -119,7 +119,7 @@ func (a *serviceAPI) handleStatus(w http.ResponseWriter, _ *http.Request) {
 // (nothing configured) are 409, validation problems 400, and a
 // shut-down supervisor 503. Success returns the ServiceStatus JSON so
 // every mutation shows the caller the state it produced.
-func (a *serviceAPI) respond(w http.ResponseWriter, status agentwire.ServiceStatus, err error) {
+func (a *serviceAPI) respond(w http.ResponseWriter, status wire.ServiceStatus, err error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, errNoServiceSpec):

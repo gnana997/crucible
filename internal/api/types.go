@@ -1,7 +1,7 @@
 // Package api holds the crucible daemon's REST wire types — the request
 // and response shapes exchanged over HTTP. They are pure data with no
 // behavior and no dependencies beyond the standard library and
-// internal/agentwire (itself pure wire data, shared for the exec and
+// sdk/wire (itself pure wire data, shared for the exec and
 // service contracts), so both the daemon (server) and internal/client
 // (and, later, the TUI, an MCP server, and the SDK) can share one
 // source of truth for the contract.
@@ -14,7 +14,7 @@ package api
 import (
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // CreateSandboxRequest is the JSON body for POST /sandboxes. All fields
@@ -50,11 +50,11 @@ type CreateSandboxRequest struct {
 	// Service, when non-nil, configures and starts a supervised
 	// long-lived entrypoint in the guest right after the agent is ready
 	// — the sandbox arrives with the service already running, or the
-	// create fails. EXPERIMENTAL: the field shape (agentwire.ServiceSpec,
+	// create fails. EXPERIMENTAL: the field shape (wire.ServiceSpec,
 	// same package that carries the exec contract) may still change
 	// before it is declared stable. Pair with timeout_s = 0 for a
 	// service that outlives the default sandbox lifetime.
-	Service *agentwire.ServiceSpec `json:"service,omitempty"`
+	Service *wire.ServiceSpec `json:"service,omitempty"`
 
 	// Publish maps host ports to guest ports so a service inside the
 	// sandbox is reachable from the host (and, by default, the LAN) —

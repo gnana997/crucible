@@ -9,9 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 const execTimeout = 5 * time.Minute
@@ -22,7 +22,7 @@ type execEvent struct {
 	out  []byte
 	errb []byte
 	done bool
-	res  agentwire.ExecResult
+	res  wire.ExecResult
 	fail error
 }
 
@@ -51,7 +51,7 @@ func runExec(cl *client.Client, id, cmdline string, ch chan execEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), execTimeout)
 	defer cancel()
 	res, err := cl.Exec(ctx, id,
-		agentwire.ExecRequest{Cmd: []string{"sh", "-c", cmdline}},
+		wire.ExecRequest{Cmd: []string{"sh", "-c", cmdline}},
 		&chanWriter{ch: ch}, &chanWriter{ch: ch, stderr: true})
 	ch <- execEvent{done: true, res: res, fail: err}
 }
@@ -66,7 +66,7 @@ func attachShell(cl *client.Client, id string, ch chan execEvent) *io.PipeWriter
 	pr, pw := io.Pipe()
 	go func() {
 		res, err := cl.ExecInteractive(context.Background(), id,
-			agentwire.ExecRequest{Cmd: []string{"/bin/sh"}},
+			wire.ExecRequest{Cmd: []string{"/bin/sh"}},
 			pr, &chanWriter{ch: ch}, &chanWriter{ch: ch, stderr: true})
 		ch <- execEvent{done: true, res: res, fail: err}
 	}()
@@ -91,7 +91,7 @@ func waitExec(ch chan execEvent) tea.Cmd {
 
 // exitLine renders the summary shown when an exec finishes: a filled exit chip
 // (green on success, red otherwise) followed by the duration in dim meta.
-func exitLine(res agentwire.ExecResult, fail error) string {
+func exitLine(res wire.ExecResult, fail error) string {
 	if fail != nil {
 		return exitBadChip.Render("error") + " " + metaStyle.Render(fail.Error())
 	}

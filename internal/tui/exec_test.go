@@ -8,9 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/client"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // openDetail drives the model to the detail view for the first sandbox row.
@@ -70,7 +70,7 @@ func TestExecEventStream(t *testing.T) {
 	if !strings.Contains(m.execOut, "oops") {
 		t.Errorf("stderr not accumulated: %q", m.execOut)
 	}
-	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0, DurationMs: 12}})
+	m = step(m, execEvent{done: true, res: wire.ExecResult{ExitCode: 0, DurationMs: 12}})
 	if m.execing {
 		t.Error("execing should be false after the done event")
 	}
@@ -90,14 +90,14 @@ func TestScrollbackRetainsPriorCommands(t *testing.T) {
 	m.execing = true
 	m.appendExec("$ echo one\n")
 	m = step(m, execEvent{out: []byte("one\n")})
-	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+	m = step(m, execEvent{done: true, res: wire.ExecResult{ExitCode: 0}})
 
 	// Second command block appends; the first must survive.
 	m.execCh = make(chan execEvent, 8)
 	m.execing = true
 	m.appendExec("$ echo two\n")
 	m = step(m, execEvent{out: []byte("two\n")})
-	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+	m = step(m, execEvent{done: true, res: wire.ExecResult{ExitCode: 0}})
 
 	for _, want := range []string{"echo one", "one", "echo two", "two"} {
 		if !strings.Contains(m.execOut, want) {
@@ -155,7 +155,7 @@ func TestAttachDoneResetsState(t *testing.T) {
 	m.attachIn = pw
 	m.execCh = make(chan execEvent, 4)
 
-	m = step(m, execEvent{done: true, res: agentwire.ExecResult{ExitCode: 0}})
+	m = step(m, execEvent{done: true, res: wire.ExecResult{ExitCode: 0}})
 
 	if m.attached {
 		t.Error("attached should be false after the shell exits")
@@ -240,16 +240,16 @@ func TestTabFromListOpensDetailAndAttaches(t *testing.T) {
 }
 
 func TestExitLine(t *testing.T) {
-	if got := exitLine(agentwire.ExecResult{ExitCode: 0, DurationMs: 5}, nil); !strings.Contains(got, "exit 0") {
+	if got := exitLine(wire.ExecResult{ExitCode: 0, DurationMs: 5}, nil); !strings.Contains(got, "exit 0") {
 		t.Errorf("ok exit = %q", got)
 	}
-	if got := exitLine(agentwire.ExecResult{ExitCode: 1, DurationMs: 5}, nil); !strings.Contains(got, "exit 1") {
+	if got := exitLine(wire.ExecResult{ExitCode: 1, DurationMs: 5}, nil); !strings.Contains(got, "exit 1") {
 		t.Errorf("bad exit = %q", got)
 	}
-	if got := exitLine(agentwire.ExecResult{ExitCode: -1, Signal: "SIGKILL"}, nil); !strings.Contains(got, "SIGKILL") {
+	if got := exitLine(wire.ExecResult{ExitCode: -1, Signal: "SIGKILL"}, nil); !strings.Contains(got, "SIGKILL") {
 		t.Errorf("signal missing from = %q", got)
 	}
-	if got := exitLine(agentwire.ExecResult{}, errTest); !strings.Contains(got, "error") {
+	if got := exitLine(wire.ExecResult{}, errTest); !strings.Contains(got, "error") {
 		t.Errorf("transport failure = %q", got)
 	}
 }

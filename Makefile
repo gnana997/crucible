@@ -20,7 +20,7 @@ CLIENT_GOARCH ?= $(shell go env GOARCH)
 CLIENT_EXT    := $(if $(filter windows,$(CLIENT_GOOS)),.exe,)
 CLIENT_PLATFORMS ?= darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help
+.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help openapi
 
 all: fmt vet test build
 
@@ -100,6 +100,11 @@ profile: agent
 
 test:
 	go test $(PKG)
+
+# Regenerate the OpenAPI spec (docs/openapi.json) from the Go wire types. The
+# coverage test (go test ./cmd/openapi-gen) fails if a route is undocumented.
+openapi:
+	go run ./cmd/openapi-gen -out docs/openapi.json
 
 race:
 	go test -race $(PKG)

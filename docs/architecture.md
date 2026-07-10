@@ -75,7 +75,8 @@ flowchart TD
 | `internal/tokenstore` | API-key store (SHA-256-hashed bearer keys) + runtime verifier |
 | `internal/policy` | Scoped-token policy model + enforcement (operations, egress, profiles, resource caps) |
 | `internal/metrics` | Prometheus `/metrics` collectors |
-| `internal/agentwire` | The exec wire protocol: request/result messages + the binary frame stream |
+| `sdk/wire` | The public wire contract: exec request/result messages, service + file-transfer shapes, and the binary frame codec — shared by the REST API, SDK clients, the daemon, and the guest agent |
+| `internal/agentwire` | The private half of the daemon↔guest-agent protocol: vsock transport handshake, fork identity refresh, static network config |
 | `internal/agentapi` | Host-side client that speaks to the guest agent over vsock |
 
 ## Request lifecycles

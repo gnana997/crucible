@@ -2,7 +2,7 @@
 // API. It is the single place that knows how to speak to the daemon over
 // HTTP, shared by the CLI today and — by design — the TUI, an MCP server,
 // and the SDK later. Everything is expressed in internal/api wire types
-// plus agentwire for the exec frame stream, so consumers never hand-roll
+// plus sdk/wire for the exec frame stream, so consumers never hand-roll
 // requests or parse frames themselves.
 package client
 
@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // DefaultAddr is the daemon's default listen address.
@@ -127,8 +127,8 @@ func (c *Client) DeleteSandbox(ctx context.Context, id string) error {
 // CopyTo streams a tar archive into a sandbox (POST /sandboxes/{id}/files),
 // extracted beneath dest (an absolute guest directory). The tar reader is sent
 // as the raw request body, so a large project streams without being buffered.
-func (c *Client) CopyTo(ctx context.Context, sandboxID, dest string, tar io.Reader) (agentwire.FilesPutResult, error) {
-	var res agentwire.FilesPutResult
+func (c *Client) CopyTo(ctx context.Context, sandboxID, dest string, tar io.Reader) (wire.FilesPutResult, error) {
+	var res wire.FilesPutResult
 	u := c.base + "/sandboxes/" + url.PathEscape(sandboxID) + "/files?path=" + url.QueryEscape(dest)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, tar)
 	if err != nil {
@@ -142,7 +142,7 @@ func (c *Client) CopyTo(ctx context.Context, sandboxID, dest string, tar io.Read
 	if err != nil {
 		return res, fmt.Errorf("connect to daemon at %s: %w", c.base, err)
 	}
-	return decodeInto[agentwire.FilesPutResult](resp)
+	return decodeInto[wire.FilesPutResult](resp)
 }
 
 // ReadFile reads a single file at path inside a sandbox
@@ -252,8 +252,8 @@ func (c *Client) Whoami(ctx context.Context) (policy.Whoami, error) {
 // ExecResult carries the exit code and usage. A validation failure before
 // streaming comes back as an error; a failure mid-stream is delivered by
 // the daemon as an exit frame with ExitCode -1 (see handleExecSandbox).
-func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecRequest, stdout, stderr io.Writer) (agentwire.ExecResult, error) {
-	var result agentwire.ExecResult
+func (c *Client) Exec(ctx context.Context, sandboxID string, req wire.ExecRequest, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	var result wire.ExecResult
 	resp, err := c.do(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/exec", req)
 	if err != nil {
 		return result, err
@@ -265,7 +265,7 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecR
 
 	gotExit := false
 	for {
-		frame, err := agentwire.ReadFrame(resp.Body)
+		frame, err := wire.ReadFrame(resp.Body)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -273,19 +273,19 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecR
 			return result, fmt.Errorf("read exec frame: %w", err)
 		}
 		switch frame.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			if stdout != nil {
 				if _, err := stdout.Write(frame.Payload); err != nil {
 					return result, err
 				}
 			}
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			if stderr != nil {
 				if _, err := stderr.Write(frame.Payload); err != nil {
 					return result, err
 				}
 			}
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(frame.Payload, &result); err != nil {
 				return result, fmt.Errorf("decode exit frame: %w", err)
 			}
@@ -307,8 +307,8 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req agentwire.ExecR
 //
 // There is no PTY — this is a functional shell (line-buffered, no raw mode
 // or terminal control), suitable for exploring a running sandbox.
-func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agentwire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (agentwire.ExecResult, error) {
-	var result agentwire.ExecResult
+func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req wire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	var result wire.ExecResult
 
 	conn, host, err := c.dialRaw(ctx)
 	if err != nil {
@@ -364,19 +364,19 @@ func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agen
 
 	// Pump stdin → frames. On stdin EOF/error, send FrameStdinClose so the
 	// guest process sees its stdin closed without dropping the connection.
-	fw := agentwire.NewFrameWriter(conn)
+	fw := wire.NewFrameWriter(conn)
 	if stdin != nil {
 		go func() {
 			buf := make([]byte, 32*1024)
 			for {
 				n, rerr := stdin.Read(buf)
 				if n > 0 {
-					if werr := fw.WriteFrame(agentwire.FrameStdin, buf[:n]); werr != nil {
+					if werr := fw.WriteFrame(wire.FrameStdin, buf[:n]); werr != nil {
 						return
 					}
 				}
 				if rerr != nil {
-					_ = fw.WriteFrame(agentwire.FrameStdinClose, nil)
+					_ = fw.WriteFrame(wire.FrameStdinClose, nil)
 					return
 				}
 			}
@@ -385,7 +385,7 @@ func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agen
 
 	gotExit := false
 	for {
-		frame, err := agentwire.ReadFrame(conn)
+		frame, err := wire.ReadFrame(conn)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -393,19 +393,19 @@ func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req agen
 			return result, fmt.Errorf("read exec frame: %w", err)
 		}
 		switch frame.Type {
-		case agentwire.FrameStdout:
+		case wire.FrameStdout:
 			if stdout != nil {
 				if _, err := stdout.Write(frame.Payload); err != nil {
 					return result, err
 				}
 			}
-		case agentwire.FrameStderr:
+		case wire.FrameStderr:
 			if stderr != nil {
 				if _, err := stderr.Write(frame.Payload); err != nil {
 					return result, err
 				}
 			}
-		case agentwire.FrameExit:
+		case wire.FrameExit:
 			if err := json.Unmarshal(frame.Payload, &result); err != nil {
 				return result, fmt.Errorf("decode exit frame: %w", err)
 			}

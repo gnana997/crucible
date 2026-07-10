@@ -9,8 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
@@ -111,14 +111,14 @@ func TestListProfiles(t *testing.T) {
 func TestExecStreamsAndReturnsResult(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fw := agentwire.NewFrameWriter(w)
-		_, _ = fw.Stream(agentwire.FrameStdout).Write([]byte("hello"))
-		_, _ = fw.Stream(agentwire.FrameStderr).Write([]byte("warn"))
-		payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 7, DurationMs: 5})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		_, _ = fw.Stream(wire.FrameStdout).Write([]byte("hello"))
+		_, _ = fw.Stream(wire.FrameStderr).Write([]byte("warn"))
+		payload, _ := json.Marshal(wire.ExecResult{ExitCode: 7, DurationMs: 5})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	var out, errb bytes.Buffer
-	res, err := c.Exec(context.Background(), "sbx_1", agentwire.ExecRequest{Cmd: []string{"x"}}, &out, &errb)
+	res, err := c.Exec(context.Background(), "sbx_1", wire.ExecRequest{Cmd: []string{"x"}}, &out, &errb)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestExecPreStreamErrorNotStreamed(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: "cmd is required"})
 	})
-	_, err := c.Exec(context.Background(), "sbx_1", agentwire.ExecRequest{}, nil, nil)
+	_, err := c.Exec(context.Background(), "sbx_1", wire.ExecRequest{}, nil, nil)
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("cmd is required")) {
 		t.Fatalf("err = %v, want cmd-required error", err)
 	}

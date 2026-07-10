@@ -62,7 +62,8 @@ what's next.
   push. CI runs the same checks; keep them green.
 - **The guest agent is a separate binary** (`cmd/crucible-agent`), built static
   for `linux/amd64` (`make agent`) and baked into the rootfs. Host↔guest
-  communication is over vsock (`internal/agentapi` / `internal/agentwire`).
+  communication is over vsock (`internal/agentapi` / `internal/agentwire`);
+  the shared wire shapes + frame codec live in the public `sdk/wire` package.
 
 ## Verifying
 

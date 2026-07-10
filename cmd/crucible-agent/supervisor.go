@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // errNoServiceSpec is returned by start/restart before any spec has
@@ -44,13 +44,13 @@ const (
 
 type svcCommand struct {
 	kind  svcCmdKind
-	spec  *agentwire.ServiceSpec // configure only
-	grace time.Duration          // stop only; 0 = use the spec's grace
+	spec  *wire.ServiceSpec // configure only
+	grace time.Duration     // stop only; 0 = use the spec's grace
 	reply chan svcReply
 }
 
 type svcReply struct {
-	status agentwire.ServiceStatus
+	status wire.ServiceStatus
 	err    error
 }
 
@@ -89,7 +89,7 @@ type supervisor struct {
 // svcState is the loop-owned state. Nothing outside the loop goroutine
 // may touch it.
 type svcState struct {
-	spec    *agentwire.ServiceSpec
+	spec    *wire.ServiceSpec
 	stopSig syscall.Signal
 
 	state  string
@@ -108,12 +108,12 @@ type svcState struct {
 
 	// deferred work applied when the current process exits
 	pendingStart bool
-	pendingSpec  *agentwire.ServiceSpec
+	pendingSpec  *wire.ServiceSpec
 	pendingSig   syscall.Signal
 
 	startedAt         time.Time
 	restarts          int
-	lastExit          *agentwire.ExecResult
+	lastExit          *wire.ExecResult
 	lastExitRequested bool
 	lastExitAt        time.Time
 
@@ -138,45 +138,45 @@ func newSupervisor(runner childRunner, clk clock, log *slog.Logger, pidfilePath 
 // running it is stopped (with its old grace) and relaunched under the
 // new spec; in any other state the spec is swapped in place and the
 // service is left stopped for an explicit start.
-func (s *supervisor) Configure(spec *agentwire.ServiceSpec) (agentwire.ServiceStatus, error) {
+func (s *supervisor) Configure(spec *wire.ServiceSpec) (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcConfigure, spec: spec})
 }
 
 // Start launches the configured service. No-op if already running.
-func (s *supervisor) Start() (agentwire.ServiceStatus, error) {
+func (s *supervisor) Start() (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcStart})
 }
 
 // Stop stops the service: StopSignal to the process group, grace, then
 // SIGKILL. grace == 0 means the spec's StopGraceSec. No-op if not
 // running.
-func (s *supervisor) Stop(grace time.Duration) (agentwire.ServiceStatus, error) {
+func (s *supervisor) Stop(grace time.Duration) (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcStop, grace: grace})
 }
 
 // Restart stops the service (if running) and starts it again.
-func (s *supervisor) Restart() (agentwire.ServiceStatus, error) {
+func (s *supervisor) Restart() (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcRestart})
 }
 
 // Status reports the current state. Never errors while the supervisor
 // is alive.
-func (s *supervisor) Status() (agentwire.ServiceStatus, error) {
+func (s *supervisor) Status() (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcStatus})
 }
 
 // Shutdown stops the service (spec grace) and terminates the loop.
 // Blocks until done. Further calls on the supervisor error.
-func (s *supervisor) Shutdown() (agentwire.ServiceStatus, error) {
+func (s *supervisor) Shutdown() (wire.ServiceStatus, error) {
 	return s.do(svcCommand{kind: svcShutdown})
 }
 
-func (s *supervisor) do(cmd svcCommand) (agentwire.ServiceStatus, error) {
+func (s *supervisor) do(cmd svcCommand) (wire.ServiceStatus, error) {
 	cmd.reply = make(chan svcReply, 1)
 	select {
 	case s.cmds <- cmd:
 	case <-s.done:
-		return agentwire.ServiceStatus{}, errSupervisorDown
+		return wire.ServiceStatus{}, errSupervisorDown
 	}
 	select {
 	case r := <-cmd.reply:
@@ -189,14 +189,14 @@ func (s *supervisor) do(cmd svcCommand) (agentwire.ServiceStatus, error) {
 		case r := <-cmd.reply:
 			return r.status, r.err
 		default:
-			return agentwire.ServiceStatus{}, errSupervisorDown
+			return wire.ServiceStatus{}, errSupervisorDown
 		}
 	}
 }
 
 func (s *supervisor) loop() {
 	defer close(s.done)
-	st := &svcState{state: agentwire.ServiceStateIdle}
+	st := &svcState{state: wire.ServiceStateIdle}
 	for {
 		select {
 		case cmd := <-s.cmds:
@@ -249,12 +249,12 @@ func (s *supervisor) cmdConfigure(st *svcState, cmd svcCommand) {
 	}
 
 	switch st.state {
-	case agentwire.ServiceStateRunning, agentwire.ServiceStateStarting:
+	case wire.ServiceStateRunning, wire.ServiceStateStarting:
 		// Re-spec while running: stop under the old spec's grace, swap
 		// and relaunch when the old process is gone.
 		st.pendingSpec, st.pendingSig = spec, sig
 		s.beginStop(st, stopRespec, s.specGrace(st))
-	case agentwire.ServiceStateStopping:
+	case wire.ServiceStateStopping:
 		// A stop is already in flight; swap the spec once it lands.
 		// Whether the service comes back up is decided by the reason
 		// that stop was started with (restart/respec yes, stop no).
@@ -266,7 +266,7 @@ func (s *supervisor) cmdConfigure(st *svcState, cmd svcCommand) {
 		resetPolicy(st)
 		s.installSpec(st, spec, sig)
 		st.restarts = 0
-		st.state = agentwire.ServiceStateStopped
+		st.state = wire.ServiceStateStopped
 	}
 	s.reply(st, cmd, nil)
 }
@@ -287,7 +287,7 @@ func resetPolicy(st *svcState) {
 // installSpec makes spec the active one and gives it a fresh log ring.
 // Restarts under an unchanged spec keep their ring (history spans
 // process restarts); a new spec starts clean.
-func (s *supervisor) installSpec(st *svcState, spec *agentwire.ServiceSpec, sig syscall.Signal) {
+func (s *supervisor) installSpec(st *svcState, spec *wire.ServiceSpec, sig syscall.Signal) {
 	st.spec, st.stopSig = spec, sig
 	s.ring.Store(newLogRing(spec.LogBufferBytes))
 }
@@ -298,10 +298,10 @@ func (s *supervisor) cmdStart(st *svcState, cmd svcCommand) {
 		return
 	}
 	switch st.state {
-	case agentwire.ServiceStateRunning, agentwire.ServiceStateStarting:
+	case wire.ServiceStateRunning, wire.ServiceStateStarting:
 		// Idempotent: already running is success, so a caller (or a
 		// future reconciler) can retry blindly.
-	case agentwire.ServiceStateStopping:
+	case wire.ServiceStateStopping:
 		st.pendingStart = true
 	default:
 		// Includes backing_off (the relaunch happens now, not after
@@ -316,22 +316,22 @@ func (s *supervisor) cmdStart(st *svcState, cmd svcCommand) {
 
 func (s *supervisor) cmdStop(st *svcState, cmd svcCommand) {
 	switch st.state {
-	case agentwire.ServiceStateRunning, agentwire.ServiceStateStarting:
+	case wire.ServiceStateRunning, wire.ServiceStateStarting:
 		grace := cmd.grace
 		if grace <= 0 {
 			grace = s.specGrace(st)
 		}
 		s.beginStop(st, stopRequested, grace)
-	case agentwire.ServiceStateStopping:
+	case wire.ServiceStateStopping:
 		// Already stopping: an explicit stop cancels any pending
 		// relaunch (a stop must win over a restart in flight).
 		st.pendingStart = false
 		st.reason = stopRequested
-	case agentwire.ServiceStateBackingOff:
+	case wire.ServiceStateBackingOff:
 		// Stop cancels the scheduled policy relaunch.
 		cancelBackoff(st)
 		resetPolicy(st)
-		st.state = agentwire.ServiceStateStopped
+		st.state = wire.ServiceStateStopped
 	default:
 		// Idempotent: not running is what the caller asked for.
 	}
@@ -344,9 +344,9 @@ func (s *supervisor) cmdRestart(st *svcState, cmd svcCommand) {
 		return
 	}
 	switch st.state {
-	case agentwire.ServiceStateRunning, agentwire.ServiceStateStarting:
+	case wire.ServiceStateRunning, wire.ServiceStateStarting:
 		s.beginStop(st, stopRestart, s.specGrace(st))
-	case agentwire.ServiceStateStopping:
+	case wire.ServiceStateStopping:
 		st.pendingStart = true
 	default:
 		cancelBackoff(st)
@@ -359,9 +359,9 @@ func (s *supervisor) cmdRestart(st *svcState, cmd svcCommand) {
 
 func (s *supervisor) cmdShutdown(st *svcState, cmd svcCommand) {
 	if st.child == nil {
-		st.state = agentwire.ServiceStateStopped
+		st.state = wire.ServiceStateStopped
 		if st.spec == nil {
-			st.state = agentwire.ServiceStateIdle
+			st.state = wire.ServiceStateIdle
 		}
 		st.terminate = true
 		s.reply(st, cmd, nil)
@@ -369,14 +369,14 @@ func (s *supervisor) cmdShutdown(st *svcState, cmd svcCommand) {
 	}
 	st.shutdownReply = cmd.reply
 	st.pendingStart = false
-	if st.state != agentwire.ServiceStateStopping {
+	if st.state != wire.ServiceStateStopping {
 		s.beginStop(st, stopRequested, s.specGrace(st))
 	}
 }
 
 func (s *supervisor) specGrace(st *svcState) time.Duration {
 	if st.spec == nil {
-		return time.Duration(agentwire.DefaultStopGraceSec) * time.Second
+		return time.Duration(wire.DefaultStopGraceSec) * time.Second
 	}
 	return time.Duration(st.spec.StopGraceSec) * time.Second
 }
@@ -385,7 +385,7 @@ func (s *supervisor) specGrace(st *svcState) time.Duration {
 // goes to failed — there is no process, so nothing else can happen
 // until the host intervenes.
 func (s *supervisor) launch(st *svcState) {
-	st.state = agentwire.ServiceStateStarting
+	st.state = wire.ServiceStateStarting
 	ring := s.ring.Load()
 	if ring == nil {
 		// Unreachable — installSpec always precedes launch — but a nil
@@ -393,11 +393,11 @@ func (s *supervisor) launch(st *svcState) {
 		ring = newLogRing(st.spec.LogBufferBytes)
 		s.ring.Store(ring)
 	}
-	stdout := ringWriter{ring: ring, stream: agentwire.ServiceLogStdout, now: s.clk.Now}
-	stderr := ringWriter{ring: ring, stream: agentwire.ServiceLogStderr, now: s.clk.Now}
+	stdout := ringWriter{ring: ring, stream: wire.ServiceLogStdout, now: s.clk.Now}
+	stderr := ringWriter{ring: ring, stream: wire.ServiceLogStderr, now: s.clk.Now}
 	child, err := s.runner.start(st.spec, stdout, stderr)
 	if err != nil {
-		st.lastExit = &agentwire.ExecResult{ExitCode: -1, Error: err.Error()}
+		st.lastExit = &wire.ExecResult{ExitCode: -1, Error: err.Error()}
 		st.lastExitRequested = false
 		st.lastExitAt = s.clk.Now()
 		s.log.Error("service start failed", "cmd", st.spec.Cmd, "err", err)
@@ -412,7 +412,7 @@ func (s *supervisor) launch(st *svcState) {
 	st.killedByUs = false
 	st.graceCh = nil
 	st.exitCh = make(chan childExit, 1)
-	st.state = agentwire.ServiceStateRunning
+	st.state = wire.ServiceStateRunning
 	if s.pidfilePath != "" {
 		if err := writeServicePidFile(s.pidfilePath, child.pid()); err != nil {
 			s.log.Warn("write service pidfile failed", "err", err)
@@ -426,7 +426,7 @@ func (s *supervisor) launch(st *svcState) {
 
 func (s *supervisor) beginStop(st *svcState, reason stopReason, grace time.Duration) {
 	st.reason = reason
-	st.state = agentwire.ServiceStateStopping
+	st.state = wire.ServiceStateStopping
 	if err := st.child.signalGroup(st.stopSig); err != nil {
 		// A real signalling failure (not ESRCH). The grace timer still
 		// runs; SIGKILL follows if the process doesn't exit.
@@ -442,7 +442,7 @@ func (s *supervisor) beginStop(st *svcState, reason stopReason, grace time.Durat
 // died on its own inside the grace window, which only suppresses the
 // (already inapplicable) OOM heuristic for that exit.
 func (s *supervisor) onGraceExpired(st *svcState) {
-	if st.state != agentwire.ServiceStateStopping || st.child == nil {
+	if st.state != wire.ServiceStateStopping || st.child == nil {
 		return
 	}
 	st.killedByUs = true
@@ -475,7 +475,7 @@ func (s *supervisor) onChildExit(st *svcState, exit childExit) {
 	)
 
 	if st.shutdownReply != nil {
-		st.state = agentwire.ServiceStateStopped
+		st.state = wire.ServiceStateStopped
 		st.terminate = true
 		st.shutdownReply <- svcReply{status: s.buildStatus(st)}
 		return
@@ -494,7 +494,7 @@ func (s *supervisor) onChildExit(st *svcState, exit childExit) {
 		resetPolicy(st)
 		s.launch(st)
 	case reason == stopRequested:
-		st.state = agentwire.ServiceStateStopped
+		st.state = wire.ServiceStateStopped
 		resetPolicy(st)
 	default:
 		// The process exited on its own: the restart policy decides.
@@ -512,27 +512,27 @@ func (s *supervisor) applyRestartPolicy(st *svcState, startFailure bool) {
 		resetPolicy(st)
 	}
 
-	idleState := agentwire.ServiceStateStopped
+	idleState := wire.ServiceStateStopped
 	if startFailure {
 		// No process ever existed; "stopped" would misreport.
-		idleState = agentwire.ServiceStateFailed
+		idleState = wire.ServiceStateFailed
 	}
 
 	policy := st.spec.Restart
 	failure := st.lastExit == nil || st.lastExit.ExitCode != 0
 	var restart bool
 	switch policy.Policy {
-	case agentwire.RestartAlways:
+	case wire.RestartAlways:
 		restart = true
-	case agentwire.RestartOnFailure:
+	case wire.RestartOnFailure:
 		restart = failure
 	}
 	if !restart {
 		st.state = idleState
 		return
 	}
-	if policy.Policy == agentwire.RestartOnFailure && policy.MaxRetries > 0 && st.retries >= policy.MaxRetries {
-		st.state = agentwire.ServiceStateFailed
+	if policy.Policy == wire.RestartOnFailure && policy.MaxRetries > 0 && st.retries >= policy.MaxRetries {
+		st.state = wire.ServiceStateFailed
 		s.log.Error("service restart budget exhausted", "retries", st.retries, "max_retries", policy.MaxRetries)
 		return
 	}
@@ -543,7 +543,7 @@ func (s *supervisor) applyRestartPolicy(st *svcState, startFailure bool) {
 	}
 	st.backoffCur = min(2*delay, restartBackoffMax)
 	st.retries++
-	st.state = agentwire.ServiceStateBackingOff
+	st.state = wire.ServiceStateBackingOff
 	st.backoffCh = s.clk.After(delay)
 	s.log.Info("service restart scheduled", "delay", delay, "consecutive_retries", st.retries)
 }
@@ -552,7 +552,7 @@ func (s *supervisor) applyRestartPolicy(st *svcState, startFailure bool) {
 // applyRestartPolicy. A stale timer (state moved on via an explicit
 // command) is ignored.
 func (s *supervisor) onBackoffFired(st *svcState) {
-	if st.state != agentwire.ServiceStateBackingOff {
+	if st.state != wire.ServiceStateBackingOff {
 		return
 	}
 	st.backoffCh = nil
@@ -560,8 +560,8 @@ func (s *supervisor) onBackoffFired(st *svcState) {
 	s.launch(st)
 }
 
-func (s *supervisor) buildStatus(st *svcState) agentwire.ServiceStatus {
-	out := agentwire.ServiceStatus{
+func (s *supervisor) buildStatus(st *svcState) wire.ServiceStatus {
+	out := wire.ServiceStatus{
 		State:    st.state,
 		Spec:     st.spec,
 		Restarts: st.restarts,
@@ -586,10 +586,10 @@ func (s *supervisor) buildStatus(st *svcState) agentwire.ServiceStatus {
 // Logs reads captured output from the log ring. Reads bypass the loop —
 // the ring synchronizes internally — so a busy supervisor never delays
 // a log tail.
-func (s *supervisor) Logs(fromSeq uint64, maxBytes int) (agentwire.ServiceLogsResponse, error) {
+func (s *supervisor) Logs(fromSeq uint64, maxBytes int) (wire.ServiceLogsResponse, error) {
 	ring := s.ring.Load()
 	if ring == nil {
-		return agentwire.ServiceLogsResponse{}, errNoServiceSpec
+		return wire.ServiceLogsResponse{}, errNoServiceSpec
 	}
 	return ring.read(fromSeq, maxBytes), nil
 }
@@ -598,8 +598,8 @@ func (s *supervisor) Logs(fromSeq uint64, maxBytes int) (agentwire.ServiceLogsRe
 // exec's resultFromError, signal deaths report ExitCode 128+signal (the
 // Docker convention — a supervised service's exit code is part of the
 // operator contract) alongside the SIGNAME-style signal name.
-func serviceResult(exit childExit, killedByUs bool) agentwire.ExecResult {
-	r := agentwire.ExecResult{DurationMs: exit.elapsed.Milliseconds()}
+func serviceResult(exit childExit, killedByUs bool) wire.ExecResult {
+	r := wire.ExecResult{DurationMs: exit.elapsed.Milliseconds()}
 
 	switch {
 	case exit.startErr != nil:

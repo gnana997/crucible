@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // ---- fakes ----------------------------------------------------------------
@@ -143,13 +143,13 @@ func (c *fakeChild) gotSignal(sig syscall.Signal) bool {
 type fakeRunner struct {
 	mu         sync.Mutex
 	queue      []*fakeChild
-	started    []agentwire.ServiceSpec
+	started    []wire.ServiceSpec
 	startErr   error
 	lastStdout io.Writer
 	lastStderr io.Writer
 }
 
-func (r *fakeRunner) start(spec *agentwire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
+func (r *fakeRunner) start(spec *wire.ServiceSpec, stdout, stderr io.Writer) (serviceChild, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.startErr != nil {
@@ -189,7 +189,7 @@ func (r *fakeRunner) startCount() int {
 	return len(r.started)
 }
 
-func (r *fakeRunner) startedSpec(i int) agentwire.ServiceSpec {
+func (r *fakeRunner) startedSpec(i int) wire.ServiceSpec {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.started[i]
@@ -231,15 +231,15 @@ func newTestSupervisor(t *testing.T, runner childRunner, clk clock) *supervisor 
 	return s
 }
 
-func specWith(cmd ...string) *agentwire.ServiceSpec {
-	return &agentwire.ServiceSpec{Cmd: cmd}
+func specWith(cmd ...string) *wire.ServiceSpec {
+	return &wire.ServiceSpec{Cmd: cmd}
 }
 
 // waitForState polls Status until the state matches or a deadline
 // passes. Exits from the child are delivered asynchronously through the
 // watcher goroutine, so tests can't assert the post-exit state
 // synchronously.
-func waitForState(t *testing.T, s *supervisor, state string) agentwire.ServiceStatus {
+func waitForState(t *testing.T, s *supervisor, state string) wire.ServiceStatus {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
@@ -278,13 +278,13 @@ func TestSupervisorConfigureNormalizesAndStops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopped {
+	if st.State != wire.ServiceStateStopped {
 		t.Errorf("state = %q, want stopped", st.State)
 	}
 	if st.Spec == nil || st.Spec.StopSignal != "SIGTERM" || st.Spec.StopGraceSec != 10 {
 		t.Errorf("spec not normalized: %+v", st.Spec)
 	}
-	if st.Spec.Restart.Policy != agentwire.RestartNever {
+	if st.Spec.Restart.Policy != wire.RestartNever {
 		t.Errorf("restart policy = %q, want never", st.Spec.Restart.Policy)
 	}
 }
@@ -292,10 +292,10 @@ func TestSupervisorConfigureNormalizesAndStops(t *testing.T) {
 func TestSupervisorConfigureRejectsBadSpec(t *testing.T) {
 	s := newTestSupervisor(t, &fakeRunner{}, newFakeClock())
 
-	if _, err := s.Configure(&agentwire.ServiceSpec{}); err == nil {
+	if _, err := s.Configure(&wire.ServiceSpec{}); err == nil {
 		t.Error("empty cmd accepted")
 	}
-	if _, err := s.Configure(&agentwire.ServiceSpec{Cmd: []string{"/x"}, StopSignal: "SIGNOPE"}); err == nil {
+	if _, err := s.Configure(&wire.ServiceSpec{Cmd: []string{"/x"}, StopSignal: "SIGNOPE"}); err == nil {
 		t.Error("unknown stop signal accepted")
 	}
 }
@@ -325,14 +325,14 @@ func TestSupervisorStartStopLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateRunning || st.Pid != 101 {
+	if st.State != wire.ServiceStateRunning || st.Pid != 101 {
 		t.Fatalf("after start: state=%q pid=%d", st.State, st.Pid)
 	}
 
 	if _, err := s.Stop(0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	st = waitForState(t, s, agentwire.ServiceStateStopped)
+	st = waitForState(t, s, wire.ServiceStateStopped)
 	if !st.LastExitRequested {
 		t.Error("LastExitRequested = false, want true")
 	}
@@ -364,7 +364,7 @@ func TestSupervisorIdempotentStartAndStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateRunning {
+	if st.State != wire.ServiceStateRunning {
 		t.Errorf("state = %q, want running", st.State)
 	}
 	if got := fr.startCount(); got != 1 {
@@ -381,7 +381,7 @@ func TestSupervisorSelfExitIsNotRequested(t *testing.T) {
 	mustConfigureStart(t, s, specWith("/bin/app"))
 	fc.exitNow(childExit{ws: exitStatusT(42), elapsed: time.Second})
 
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if st.LastExitRequested {
 		t.Error("LastExitRequested = true for a self-exit")
 	}
@@ -428,7 +428,7 @@ func TestSupervisorGraceEscalation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopping {
+	if st.State != wire.ServiceStateStopping {
 		t.Fatalf("state = %q, want stopping", st.State)
 	}
 	waitForSignal(t, fc, syscall.SIGTERM)
@@ -437,7 +437,7 @@ func TestSupervisorGraceEscalation(t *testing.T) {
 	waitForSignal(t, fc, syscall.SIGKILL)
 
 	fc.exitNow(childExit{})
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }
 
 func TestSupervisorRestartRelaunches(t *testing.T) {
@@ -451,7 +451,7 @@ func TestSupervisorRestartRelaunches(t *testing.T) {
 	if _, err := s.Restart(); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateRunning)
+	st := waitForState(t, s, wire.ServiceStateRunning)
 	if st.Pid != 102 {
 		t.Errorf("pid = %d after restart, want 102", st.Pid)
 	}
@@ -475,10 +475,10 @@ func TestSupervisorRespecWhileRunningRelaunchesWithNewSpec(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-Configure: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopping {
+	if st.State != wire.ServiceStateStopping {
 		t.Fatalf("state = %q, want stopping", st.State)
 	}
-	st = waitForState(t, s, agentwire.ServiceStateRunning)
+	st = waitForState(t, s, wire.ServiceStateRunning)
 	if st.Pid != 102 {
 		t.Errorf("pid = %d, want 102", st.Pid)
 	}
@@ -498,7 +498,7 @@ func TestSupervisorRespecWhileStoppedSwapsInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-Configure: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopped {
+	if st.State != wire.ServiceStateStopped {
 		t.Errorf("state = %q, want stopped", st.State)
 	}
 	if got := st.Spec.Cmd[1]; got != "v2" {
@@ -523,7 +523,7 @@ func TestSupervisorStopCancelsPendingRestart(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 	fc.exitNow(childExit{})
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if got := fr.startCount(); got != 1 {
 		t.Errorf("runner.start called %d times, want 1 (restart cancelled)", got)
 	}
@@ -544,7 +544,7 @@ func TestSupervisorStartFailureIsFailedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateFailed {
+	if st.State != wire.ServiceStateFailed {
 		t.Fatalf("state = %q, want failed", st.State)
 	}
 	if st.LastExit == nil || st.LastExit.Error == "" {
@@ -558,7 +558,7 @@ func TestSupervisorStartFailureIsFailedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateRunning {
+	if st.State != wire.ServiceStateRunning {
 		t.Errorf("state = %q after retry, want running", st.State)
 	}
 }
@@ -575,7 +575,7 @@ func TestSupervisorShutdownStopsService(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if st.State != agentwire.ServiceStateStopped {
+	if st.State != wire.ServiceStateStopped {
 		t.Errorf("state = %q, want stopped", st.State)
 	}
 	if _, err := s.Status(); !errors.Is(err, errSupervisorDown) {
@@ -589,7 +589,7 @@ func TestSupervisorShutdownWhenIdle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
-	if st.State != agentwire.ServiceStateIdle {
+	if st.State != wire.ServiceStateIdle {
 		t.Errorf("state = %q, want idle", st.State)
 	}
 	if _, err := s.Start(); !errors.Is(err, errSupervisorDown) {
@@ -597,7 +597,7 @@ func TestSupervisorShutdownWhenIdle(t *testing.T) {
 	}
 }
 
-func mustConfigureStart(t *testing.T, s *supervisor, spec *agentwire.ServiceSpec) {
+func mustConfigureStart(t *testing.T, s *supervisor, spec *wire.ServiceSpec) {
 	t.Helper()
 	if _, err := s.Configure(spec); err != nil {
 		t.Fatalf("Configure: %v", err)
@@ -606,7 +606,7 @@ func mustConfigureStart(t *testing.T, s *supervisor, spec *agentwire.ServiceSpec
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateRunning {
+	if st.State != wire.ServiceStateRunning {
 		t.Fatalf("state after start = %q, want running", st.State)
 	}
 }
@@ -623,7 +623,7 @@ func newRealSupervisor(t *testing.T) *supervisor {
 func TestServiceRealExitCode(t *testing.T) {
 	s := newRealSupervisor(t)
 	mustConfigureStart(t, s, specWith("/bin/sh", "-c", "exit 3"))
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if st.LastExit == nil || st.LastExit.ExitCode != 3 {
 		t.Errorf("LastExit = %+v, want exit code 3", st.LastExit)
 	}
@@ -635,7 +635,7 @@ func TestServiceRealExitCode(t *testing.T) {
 func TestServiceRealSignalDeathReports128PlusN(t *testing.T) {
 	s := newRealSupervisor(t)
 	mustConfigureStart(t, s, specWith("/bin/sh", "-c", "kill -9 $$"))
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if st.LastExit == nil {
 		t.Fatal("no LastExit")
 	}
@@ -654,7 +654,7 @@ func startTrapService(t *testing.T, s *supervisor, trap string) {
 	t.Helper()
 	ready := filepath.Join(t.TempDir(), "ready")
 	script := trap + `; : > "$CRUCIBLE_TEST_READY"; while :; do sleep 0.05; done`
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd: []string{"/bin/sh", "-c", script},
 		Env: map[string]string{"CRUCIBLE_TEST_READY": ready},
 	}
@@ -677,7 +677,7 @@ func TestServiceRealGracefulStop(t *testing.T) {
 	if _, err := s.Stop(0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if !st.LastExitRequested {
 		t.Error("stop exit not marked requested")
 	}
@@ -692,7 +692,7 @@ func TestServiceRealGraceEscalationKillsGroup(t *testing.T) {
 	if _, err := s.Stop(100 * time.Millisecond); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if st.LastExit == nil || st.LastExit.Signal != "SIGKILL" {
 		t.Errorf("LastExit = %+v, want SIGKILL death", st.LastExit)
 	}
@@ -708,13 +708,13 @@ func TestServiceRealEnvAndCwd(t *testing.T) {
 	dir := t.TempDir()
 	out := filepath.Join(dir, "out")
 	s := newRealSupervisor(t)
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd: []string{"/bin/sh", "-c", `printf '%s %s' "$CRUCIBLE_TEST_FOO" "$PWD" > out`},
 		Env: map[string]string{"CRUCIBLE_TEST_FOO": "bar"},
 		Cwd: dir,
 	}
 	mustConfigureStart(t, s, spec)
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 	data, err := os.ReadFile(out)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
@@ -744,5 +744,5 @@ func TestServiceRealStatusReportsLiveRSS(t *testing.T) {
 	if _, err := s.Stop(time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }

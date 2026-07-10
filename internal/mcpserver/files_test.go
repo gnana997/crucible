@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // TestWriteFilesTool drives write_files end-to-end against a stub daemon and
@@ -38,7 +38,7 @@ func TestWriteFilesTool(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(agentwire.FilesPutResult{Files: files, Bytes: 12})
+		_ = json.NewEncoder(w).Encode(wire.FilesPutResult{Files: files, Bytes: 12})
 	})
 
 	cs := connect(t, Config{Client: daemonClient(t, mux)})

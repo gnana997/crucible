@@ -3,8 +3,8 @@ package daemon
 import (
 	"testing"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/oci"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestEffectiveServiceSpecImageOnly(t *testing.T) {
@@ -47,11 +47,11 @@ func TestEffectiveServiceSpecOverrideReplacesCmd(t *testing.T) {
 		Env:        []string{"A=1", "B=2"},
 		User:       "root",
 	}
-	override := &agentwire.ServiceSpec{
+	override := &wire.ServiceSpec{
 		Cmd:     []string{"/bin/sh", "-c", "echo hi"},
 		Env:     map[string]string{"B": "override", "C": "3"},
 		User:    "1000:1000",
-		Restart: agentwire.RestartPolicy{Policy: agentwire.RestartAlways},
+		Restart: wire.RestartPolicy{Policy: wire.RestartAlways},
 	}
 	spec := effectiveServiceSpec(rc, override)
 	if len(spec.Cmd) != 3 || spec.Cmd[0] != "/bin/sh" {
@@ -64,7 +64,7 @@ func TestEffectiveServiceSpecOverrideReplacesCmd(t *testing.T) {
 	if spec.User != "1000:1000" {
 		t.Errorf("user = %q, want the override", spec.User)
 	}
-	if spec.Restart.Policy != agentwire.RestartAlways {
+	if spec.Restart.Policy != wire.RestartAlways {
 		t.Errorf("restart policy not carried from override: %+v", spec.Restart)
 	}
 }
@@ -79,7 +79,7 @@ func TestEffectiveServiceSpecNoCommandIsNil(t *testing.T) {
 		t.Errorf("spec = %+v, want nil", spec)
 	}
 	// A cmd-only override against an entrypoint-less image runs.
-	spec := effectiveServiceSpec(nil, &agentwire.ServiceSpec{Cmd: []string{"/bin/true"}})
+	spec := effectiveServiceSpec(nil, &wire.ServiceSpec{Cmd: []string{"/bin/true"}})
 	if spec == nil || spec.Cmd[0] != "/bin/true" {
 		t.Errorf("override-only spec = %+v", spec)
 	}

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // dockerDefaultPath is the PATH Docker gives a container process when
@@ -30,7 +30,7 @@ const dockerDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sb
 // The executable is resolved against the effective PATH here because
 // os.StartProcess (the init-mode spawn) does no PATH search, and Docker
 // resolves a bare ENTRYPOINT/CMD[0] against the image's PATH.
-func resolveLaunch(spec *agentwire.ServiceSpec) (argv []string, env []string, cred *syscall.Credential, err error) {
+func resolveLaunch(spec *wire.ServiceSpec) (argv []string, env []string, cred *syscall.Credential, err error) {
 	var home string
 	if spec.User != "" {
 		cred, home, err = resolveUser(spec.User)
@@ -116,7 +116,7 @@ func pathFromEnv(env []string) string {
 // merge onto the agent's environ (buildEnv). OCI services get exactly
 // the spec's env, plus Docker's default PATH when unset and HOME from
 // the resolved user when unset — no agent-environ leakage.
-func buildServiceEnv(spec *agentwire.ServiceSpec, home string) []string {
+func buildServiceEnv(spec *wire.ServiceSpec, home string) []string {
 	if !spec.EnvExact {
 		return buildEnv(spec.Env)
 	}

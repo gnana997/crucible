@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // handleExecInteractive is the profile-mode (systemd is PID 1) interactive
@@ -39,7 +39,7 @@ func handleExecInteractive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	fw := agentwire.NewFrameWriter(conn)
+	fw := wire.NewFrameWriter(conn)
 
 	// The request context is no longer managed once the conn is hijacked, so
 	// derive a fresh command context (with the optional deadline) here. A
@@ -57,8 +57,8 @@ func handleExecInteractive(w http.ResponseWriter, r *http.Request) {
 		cmd.Dir = req.Cwd
 	}
 	cmd.Stdin = stdinR
-	cmd.Stdout = fw.Stream(agentwire.FrameStdout)
-	cmd.Stderr = fw.Stream(agentwire.FrameStderr)
+	cmd.Stdout = fw.Stream(wire.FrameStdout)
+	cmd.Stderr = fw.Stream(wire.FrameStderr)
 	configureExecProcess(cmd)
 
 	if err := cmd.Start(); err != nil {
@@ -99,14 +99,14 @@ func (r *reaper) handleExecInitInteractive(w http.ResponseWriter, req *http.Requ
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	fw := agentwire.NewFrameWriter(conn)
+	fw := wire.NewFrameWriter(conn)
 
 	ctx, cancel := commandContext(context.Background(), er.TimeoutSec)
 	defer cancel()
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
-		writeExitFrame(fw, agentwire.ExecResult{
+		writeExitFrame(fw, wire.ExecResult{
 			ExitCode: -1, Error: err.Error(), DurationMs: time.Since(start).Milliseconds(),
 		})
 		return
@@ -115,11 +115,11 @@ func (r *reaper) handleExecInitInteractive(w http.ResponseWriter, req *http.Requ
 	// spawn closes stdinR (the child's end) on success; on failure we own
 	// both ends and must close them ourselves.
 	rp, err := r.spawn(er.Cmd, buildEnv(er.Env), er.Cwd, nil, stdinR,
-		fw.Stream(agentwire.FrameStdout), fw.Stream(agentwire.FrameStderr))
+		fw.Stream(wire.FrameStdout), fw.Stream(wire.FrameStderr))
 	if err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
-		writeExitFrame(fw, agentwire.ExecResult{
+		writeExitFrame(fw, wire.ExecResult{
 			ExitCode: -1, Error: err.Error(), DurationMs: time.Since(start).Milliseconds(),
 		})
 		return
@@ -156,9 +156,9 @@ func (r *reaper) handleExecInitInteractive(w http.ResponseWriter, req *http.Requ
 // every exec path. It writes a plain 4xx and returns ok=false on failure —
 // safe to call before any hijack, while normal HTTP error responses still
 // work.
-func decodeExecRequest(w http.ResponseWriter, r *http.Request) (agentwire.ExecRequest, bool) {
+func decodeExecRequest(w http.ResponseWriter, r *http.Request) (wire.ExecRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxExecRequestBody)
-	var req agentwire.ExecRequest
+	var req wire.ExecRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid json: %v", err), http.StatusBadRequest)
 		return req, false
@@ -198,14 +198,14 @@ func hijackExec(w http.ResponseWriter) (net.Conn, *bufio.Reader, error) {
 // stdin is closed and onDisconnect fires so the caller can kill the process.
 func pumpStdin(r *bufio.Reader, stdin io.WriteCloser, onDisconnect func()) {
 	for {
-		f, err := agentwire.ReadFrame(r)
+		f, err := wire.ReadFrame(r)
 		if err != nil {
 			_ = stdin.Close()
 			onDisconnect()
 			return
 		}
 		switch f.Type {
-		case agentwire.FrameStdin:
+		case wire.FrameStdin:
 			if len(f.Payload) > 0 {
 				if _, err := stdin.Write(f.Payload); err != nil {
 					// Process stdin is gone (exited/closed). Nothing more we
@@ -214,7 +214,7 @@ func pumpStdin(r *bufio.Reader, stdin io.WriteCloser, onDisconnect func()) {
 					return
 				}
 			}
-		case agentwire.FrameStdinClose:
+		case wire.FrameStdinClose:
 			_ = stdin.Close()
 			return
 		default:

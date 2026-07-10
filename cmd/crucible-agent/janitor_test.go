@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // The reaper waits on wait4(-1), which reaps ALL of the calling
@@ -208,7 +208,7 @@ func TestInitRunnerSupervisesRealService(t *testing.T) {
 	if _, err := s.Stop(0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if !st.LastExitRequested {
 		t.Error("stop not marked requested")
 	}
@@ -235,7 +235,7 @@ func TestInitRunnerBareCommandResolvesOnPath(t *testing.T) {
 	s := newSupervisor(initRunner{reaper: r}, realClock{}, testLogger(), "")
 	t.Cleanup(func() { _, _ = s.Shutdown() })
 
-	spec := &agentwire.ServiceSpec{
+	spec := &wire.ServiceSpec{
 		Cmd: []string{"myserver"}, // bare name, not a path
 		// A realistic image PATH: the binary's dir plus the standard
 		// ones (the script itself needs touch/sleep).
@@ -257,7 +257,7 @@ func TestInitRunnerBareCommandResolvesOnPath(t *testing.T) {
 	if _, err := s.Stop(0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }
 
 func TestInitRunnerRestartPolicy(t *testing.T) {
@@ -265,14 +265,14 @@ func TestInitRunnerRestartPolicy(t *testing.T) {
 	s := newSupervisor(initRunner{reaper: r}, realClock{}, testLogger(), "")
 	t.Cleanup(func() { _, _ = s.Shutdown() })
 
-	spec := specWithPolicy(agentwire.RestartOnFailure, 1, "/bin/sh", "-c", "exit 1")
+	spec := specWithPolicy(wire.RestartOnFailure, 1, "/bin/sh", "-c", "exit 1")
 	if _, err := s.Configure(spec); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	if _, err := s.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateFailed)
+	st := waitForState(t, s, wire.ServiceStateFailed)
 	if st.Restarts != 1 {
 		t.Errorf("Restarts = %d, want 1", st.Restarts)
 	}
@@ -308,5 +308,5 @@ func TestInitRunnerServiceLogsCaptured(t *testing.T) {
 	if _, err := s.Stop(time.Second); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	waitForState(t, s, agentwire.ServiceStateStopped)
+	waitForState(t, s, wire.ServiceStateStopped)
 }

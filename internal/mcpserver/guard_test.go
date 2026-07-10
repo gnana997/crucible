@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestToolMirrorByPolicy(t *testing.T) {
@@ -168,9 +168,9 @@ func TestDefaultProfileReachesDaemon(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "s"})
 	})
 	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, _ *http.Request) {
-		fw := agentwire.NewFrameWriter(w)
-		payload, _ := json.Marshal(agentwire.ExecResult{})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		payload, _ := json.Marshal(wire.ExecResult{})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 
@@ -189,12 +189,12 @@ func TestMaxTimeoutClampReachesDaemon(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(api.SandboxResponse{ID: "s"})
 	})
 	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
-		var req agentwire.ExecRequest
+		var req wire.ExecRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		seenTimeout = req.TimeoutSec
-		fw := agentwire.NewFrameWriter(w)
-		payload, _ := json.Marshal(agentwire.ExecResult{})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		payload, _ := json.Marshal(wire.ExecResult{})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })
 

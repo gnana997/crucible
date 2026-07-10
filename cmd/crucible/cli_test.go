@@ -12,8 +12,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 func TestCLISandboxLsTable(t *testing.T) {
@@ -70,10 +70,10 @@ func stubDaemon(t *testing.T, exitCode int, deleted *string) *httptest.Server {
 	})
 	mux.HandleFunc("POST /sandboxes/{id}/exec", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		fw := agentwire.NewFrameWriter(w)
-		_, _ = fw.Stream(agentwire.FrameStdout).Write([]byte("hi\n"))
-		payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: exitCode})
-		_ = fw.WriteFrame(agentwire.FrameExit, payload)
+		fw := wire.NewFrameWriter(w)
+		_, _ = fw.Stream(wire.FrameStdout).Write([]byte("hi\n"))
+		payload, _ := json.Marshal(wire.ExecResult{ExitCode: exitCode})
+		_ = fw.WriteFrame(wire.FrameExit, payload)
 	})
 	mux.HandleFunc("DELETE /sandboxes/{id}", func(w http.ResponseWriter, r *http.Request) {
 		if deleted != nil {
@@ -212,7 +212,7 @@ func TestCLIStopGracefullyStopsService(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /sandboxes/{id}/service/stop", func(w http.ResponseWriter, r *http.Request) {
 		stopped = r.PathValue("id")
-		_ = json.NewEncoder(w).Encode(agentwire.ServiceStatus{})
+		_ = json.NewEncoder(w).Encode(wire.ServiceStatus{})
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()

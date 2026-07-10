@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
-func specWithPolicy(policy string, maxRetries int, cmd ...string) *agentwire.ServiceSpec {
-	return &agentwire.ServiceSpec{
+func specWithPolicy(policy string, maxRetries int, cmd ...string) *wire.ServiceSpec {
+	return &wire.ServiceSpec{
 		Cmd:     cmd,
-		Restart: agentwire.RestartPolicy{Policy: policy, MaxRetries: maxRetries},
+		Restart: wire.RestartPolicy{Policy: policy, MaxRetries: maxRetries},
 	}
 }
 
@@ -41,24 +41,24 @@ func TestSupervisorAlwaysPolicyRestartsWithDoublingBackoff(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartAlways, 0, "/bin/app"))
 
 	// Crash #1: relaunch after the initial 100ms.
 	fc1.exitNow(childExit{ws: exitStatusT(1)})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
-	st := waitForState(t, s, agentwire.ServiceStateRunning)
+	st := waitForState(t, s, wire.ServiceStateRunning)
 	if st.Pid != 102 {
 		t.Fatalf("pid = %d after policy restart, want 102", st.Pid)
 	}
 
 	// Crash #2 (quick): the delay doubled, so 100ms is not enough.
 	fc2.exitNow(childExit{ws: exitStatusT(1)})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
-	requireStateStays(t, s, agentwire.ServiceStateBackingOff)
+	requireStateStays(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial) // total 200ms
-	st = waitForState(t, s, agentwire.ServiceStateRunning)
+	st = waitForState(t, s, wire.ServiceStateRunning)
 	if st.Pid != 103 {
 		t.Fatalf("pid = %d, want 103", st.Pid)
 	}
@@ -74,11 +74,11 @@ func TestSupervisorAlwaysPolicyRestartsCleanExit(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartAlways, 0, "/bin/app"))
 	fc1.exitNow(childExit{}) // clean exit — always restarts anyway
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
-	waitForState(t, s, agentwire.ServiceStateRunning)
+	waitForState(t, s, wire.ServiceStateRunning)
 }
 
 func TestSupervisorOnFailureIgnoresCleanExit(t *testing.T) {
@@ -87,9 +87,9 @@ func TestSupervisorOnFailureIgnoresCleanExit(t *testing.T) {
 	fr.enqueue(fc)
 	s := newTestSupervisor(t, fr, newFakeClock())
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartOnFailure, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartOnFailure, 0, "/bin/app"))
 	fc.exitNow(childExit{}) // exit 0
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
+	st := waitForState(t, s, wire.ServiceStateStopped)
 	if st.Restarts != 0 {
 		t.Errorf("Restarts = %d, want 0", st.Restarts)
 	}
@@ -105,17 +105,17 @@ func TestSupervisorOnFailureBudgetExhausts(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartOnFailure, 2, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartOnFailure, 2, "/bin/app"))
 
 	for _, fc := range []*fakeChild{fc1, fc2} {
 		fc.exitNow(childExit{ws: exitStatusT(1)})
-		waitForState(t, s, agentwire.ServiceStateBackingOff)
+		waitForState(t, s, wire.ServiceStateBackingOff)
 		clk.Advance(restartBackoffMax) // generous: fires whatever is armed
-		waitForState(t, s, agentwire.ServiceStateRunning)
+		waitForState(t, s, wire.ServiceStateRunning)
 	}
 	// Third consecutive failure: budget (2) exhausted.
 	fc3.exitNow(childExit{ws: exitStatusT(1)})
-	st := waitForState(t, s, agentwire.ServiceStateFailed)
+	st := waitForState(t, s, wire.ServiceStateFailed)
 	if st.Restarts != 2 {
 		t.Errorf("Restarts = %d, want 2", st.Restarts)
 	}
@@ -128,20 +128,20 @@ func TestSupervisorStableRunResetsBackoff(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartAlways, 0, "/bin/app"))
 
 	// Quick crash: delay consumed, next would be 200ms.
 	fc1.exitNow(childExit{ws: exitStatusT(1), elapsed: 50 * time.Millisecond})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
-	waitForState(t, s, agentwire.ServiceStateRunning)
+	waitForState(t, s, wire.ServiceStateRunning)
 
 	// This run "survives" past the stability window (reported via its
 	// exit duration), so the delay resets to 100ms.
 	fc2.exitNow(childExit{ws: exitStatusT(1), elapsed: restartStableAfter + time.Second})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 	clk.Advance(restartBackoffInitial)
-	waitForState(t, s, agentwire.ServiceStateRunning)
+	waitForState(t, s, wire.ServiceStateRunning)
 }
 
 func TestSupervisorStopCancelsBackoff(t *testing.T) {
@@ -151,19 +151,19 @@ func TestSupervisorStopCancelsBackoff(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartAlways, 0, "/bin/app"))
 	fc.exitNow(childExit{ws: exitStatusT(1)})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 
 	if _, err := s.Stop(0); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	st := waitForState(t, s, agentwire.ServiceStateStopped)
-	if st.State != agentwire.ServiceStateStopped {
+	st := waitForState(t, s, wire.ServiceStateStopped)
+	if st.State != wire.ServiceStateStopped {
 		t.Fatalf("state = %q", st.State)
 	}
 	clk.Advance(time.Hour)
-	requireStateStays(t, s, agentwire.ServiceStateStopped)
+	requireStateStays(t, s, wire.ServiceStateStopped)
 	if got := fr.startCount(); got != 1 {
 		t.Errorf("start called %d times after cancelled backoff, want 1", got)
 	}
@@ -175,15 +175,15 @@ func TestSupervisorStartDuringBackoffLaunchesNow(t *testing.T) {
 	fr.enqueue(fc1, fc2)
 	s := newTestSupervisor(t, fr, newFakeClock())
 
-	mustConfigureStart(t, s, specWithPolicy(agentwire.RestartAlways, 0, "/bin/app"))
+	mustConfigureStart(t, s, specWithPolicy(wire.RestartAlways, 0, "/bin/app"))
 	fc1.exitNow(childExit{ws: exitStatusT(1)})
-	waitForState(t, s, agentwire.ServiceStateBackingOff)
+	waitForState(t, s, wire.ServiceStateBackingOff)
 
 	st, err := s.Start() // no clock advance needed: explicit start is immediate
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateRunning || st.Pid != 102 {
+	if st.State != wire.ServiceStateRunning || st.Pid != 102 {
 		t.Fatalf("state=%q pid=%d, want running/102", st.State, st.Pid)
 	}
 }
@@ -194,19 +194,19 @@ func TestSupervisorStartFailureRetriedByPolicy(t *testing.T) {
 	clk := newFakeClock()
 	s := newTestSupervisor(t, fr, clk)
 
-	if _, err := s.Configure(specWithPolicy(agentwire.RestartOnFailure, 1, "/bin/missing")); err != nil {
+	if _, err := s.Configure(specWithPolicy(wire.RestartOnFailure, 1, "/bin/missing")); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
 	st, err := s.Start()
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if st.State != agentwire.ServiceStateBackingOff {
+	if st.State != wire.ServiceStateBackingOff {
 		t.Fatalf("state = %q after failing start with policy, want backing_off", st.State)
 	}
 	clk.Advance(restartBackoffInitial)
 	// Second start failure exhausts max_retries=1.
-	st = waitForState(t, s, agentwire.ServiceStateFailed)
+	st = waitForState(t, s, wire.ServiceStateFailed)
 	if st.LastExit == nil || st.LastExit.Error == "" {
 		t.Errorf("LastExit = %+v, want start error", st.LastExit)
 	}
@@ -214,7 +214,7 @@ func TestSupervisorStartFailureRetriedByPolicy(t *testing.T) {
 
 func TestServiceRealOnFailureExhaustsToFailed(t *testing.T) {
 	s := newRealSupervisor(t)
-	spec := specWithPolicy(agentwire.RestartOnFailure, 1, "/bin/sh", "-c", "exit 1")
+	spec := specWithPolicy(wire.RestartOnFailure, 1, "/bin/sh", "-c", "exit 1")
 	if _, err := s.Configure(spec); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestServiceRealOnFailureExhaustsToFailed(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 	// crash → 100ms backoff → relaunch → crash → budget exhausted.
-	st := waitForState(t, s, agentwire.ServiceStateFailed)
+	st := waitForState(t, s, wire.ServiceStateFailed)
 	if st.Restarts != 1 {
 		t.Errorf("Restarts = %d, want 1", st.Restarts)
 	}

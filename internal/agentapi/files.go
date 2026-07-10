@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // PushFiles streams a tar archive to the guest agent's PUT /files handler,
@@ -17,8 +17,8 @@ import (
 // The body is streamed straight from r, so nothing is buffered whole.
 //
 // Returns the agent's summary (files written, bytes).
-func (c *Client) PushFiles(ctx context.Context, dest string, tar io.Reader) (agentwire.FilesPutResult, error) {
-	var res agentwire.FilesPutResult
+func (c *Client) PushFiles(ctx context.Context, dest string, tar io.Reader) (wire.FilesPutResult, error) {
+	var res wire.FilesPutResult
 	u := "http://agent/files?path=" + url.QueryEscape(dest)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, tar)
 	if err != nil {

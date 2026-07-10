@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // TestExecInteractiveRoundTrip drives client.ExecInteractive against a
@@ -30,7 +30,7 @@ func TestExecInteractiveRoundTrip(t *testing.T) {
 		}
 		gotAuth <- r.Header.Get("Authorization")
 
-		var req agentwire.ExecRequest
+		var req wire.ExecRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Cmd) == 0 {
 			http.Error(w, "bad body", http.StatusBadRequest)
 			return
@@ -42,18 +42,18 @@ func TestExecInteractiveRoundTrip(t *testing.T) {
 		}
 		defer func() { _ = conn.Close() }()
 		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n")
-		fw := agentwire.NewFrameWriter(conn)
+		fw := wire.NewFrameWriter(conn)
 		for {
-			f, err := agentwire.ReadFrame(buf.Reader)
+			f, err := wire.ReadFrame(buf.Reader)
 			if err != nil {
 				return
 			}
 			switch f.Type {
-			case agentwire.FrameStdin:
-				_ = fw.WriteFrame(agentwire.FrameStdout, f.Payload)
-			case agentwire.FrameStdinClose:
-				payload, _ := json.Marshal(agentwire.ExecResult{ExitCode: 0})
-				_ = fw.WriteFrame(agentwire.FrameExit, payload)
+			case wire.FrameStdin:
+				_ = fw.WriteFrame(wire.FrameStdout, f.Payload)
+			case wire.FrameStdinClose:
+				payload, _ := json.Marshal(wire.ExecResult{ExitCode: 0})
+				_ = fw.WriteFrame(wire.FrameExit, payload)
 				return
 			}
 		}
@@ -66,7 +66,7 @@ func TestExecInteractiveRoundTrip(t *testing.T) {
 	stdin := strings.NewReader("hello-shell\n")
 	var stdout, stderr bytes.Buffer
 	res, err := c.ExecInteractive(context.Background(), "sbx-clienttest01",
-		agentwire.ExecRequest{Cmd: []string{"sh"}}, stdin, &stdout, &stderr)
+		wire.ExecRequest{Cmd: []string{"sh"}}, stdin, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("ExecInteractive: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestExecInteractiveCancelUnblocks(t *testing.T) {
 	returned := make(chan error, 1)
 	go func() {
 		_, err := c.ExecInteractive(ctx, "sbx_x",
-			agentwire.ExecRequest{Cmd: []string{"/bin/sh"}}, strings.NewReader(""), io.Discard, io.Discard)
+			wire.ExecRequest{Cmd: []string{"/bin/sh"}}, strings.NewReader(""), io.Discard, io.Discard)
 		returned <- err
 	}()
 
@@ -126,7 +126,7 @@ func TestExecInteractivePreStreamError(t *testing.T) {
 	c := New(ts.URL)
 
 	_, err := c.ExecInteractive(context.Background(), "sbx-missing00001",
-		agentwire.ExecRequest{Cmd: []string{"sh"}}, strings.NewReader(""), io.Discard, io.Discard)
+		wire.ExecRequest{Cmd: []string{"sh"}}, strings.NewReader(""), io.Discard, io.Discard)
 	if err == nil {
 		t.Fatal("want error for 404 response, got nil")
 	}

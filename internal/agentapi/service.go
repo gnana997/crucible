@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // ErrServiceUnsupported reports that the guest agent predates the
@@ -27,13 +27,13 @@ var ErrNoServiceConfigured = errors.New("agentapi: no service configured")
 // ConfigureService installs (or replaces) the supervised service spec.
 // If the service is running it is stopped under the old spec's grace
 // and relaunched under the new one.
-func (c *Client) ConfigureService(ctx context.Context, spec *agentwire.ServiceSpec) (agentwire.ServiceStatus, error) {
+func (c *Client) ConfigureService(ctx context.Context, spec *wire.ServiceSpec) (wire.ServiceStatus, error) {
 	return c.serviceCall(ctx, http.MethodPut, "http://agent/service", spec)
 }
 
 // StartService launches the configured service. Idempotent: starting a
 // running service is a no-op success.
-func (c *Client) StartService(ctx context.Context) (agentwire.ServiceStatus, error) {
+func (c *Client) StartService(ctx context.Context) (wire.ServiceStatus, error) {
 	return c.serviceCall(ctx, http.MethodPost, "http://agent/service/start", nil)
 }
 
@@ -41,38 +41,38 @@ func (c *Client) StartService(ctx context.Context) (agentwire.ServiceStatus, err
 // graceSec > 0 overrides the spec's grace for this stop. The call
 // returns as soon as the stop is initiated; poll ServiceStatus for the
 // terminal state.
-func (c *Client) StopService(ctx context.Context, graceSec int) (agentwire.ServiceStatus, error) {
+func (c *Client) StopService(ctx context.Context, graceSec int) (wire.ServiceStatus, error) {
 	var body any
 	if graceSec > 0 {
-		body = agentwire.ServiceStopRequest{GraceSec: graceSec}
+		body = wire.ServiceStopRequest{GraceSec: graceSec}
 	}
 	return c.serviceCall(ctx, http.MethodPost, "http://agent/service/stop", body)
 }
 
 // RestartService stops (if running) and relaunches the service.
-func (c *Client) RestartService(ctx context.Context) (agentwire.ServiceStatus, error) {
+func (c *Client) RestartService(ctx context.Context) (wire.ServiceStatus, error) {
 	return c.serviceCall(ctx, http.MethodPost, "http://agent/service/restart", nil)
 }
 
 // ServiceStatus reports the supervisor's current state.
-func (c *Client) ServiceStatus(ctx context.Context) (agentwire.ServiceStatus, error) {
+func (c *Client) ServiceStatus(ctx context.Context) (wire.ServiceStatus, error) {
 	return c.serviceCall(ctx, http.MethodGet, "http://agent/service/status", nil)
 }
 
 // ServiceLogs reads captured service output from the agent's ring
 // buffer, starting at fromSeq. maxBytes <= 0 uses the agent default.
-func (c *Client) ServiceLogs(ctx context.Context, fromSeq uint64, maxBytes int) (agentwire.ServiceLogsResponse, error) {
+func (c *Client) ServiceLogs(ctx context.Context, fromSeq uint64, maxBytes int) (wire.ServiceLogsResponse, error) {
 	url := "http://agent/service/logs?from_seq=" + strconv.FormatUint(fromSeq, 10)
 	if maxBytes > 0 {
 		url += "&max_bytes=" + strconv.Itoa(maxBytes)
 	}
-	var out agentwire.ServiceLogsResponse
+	var out wire.ServiceLogsResponse
 	err := c.serviceDo(ctx, http.MethodGet, url, nil, &out)
 	return out, err
 }
 
-func (c *Client) serviceCall(ctx context.Context, method, url string, body any) (agentwire.ServiceStatus, error) {
-	var out agentwire.ServiceStatus
+func (c *Client) serviceCall(ctx context.Context, method, url string, body any) (wire.ServiceStatus, error) {
+	var out wire.ServiceStatus
 	err := c.serviceDo(ctx, method, url, body, &out)
 	return out, err
 }

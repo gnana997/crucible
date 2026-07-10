@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // --- test stubs -------------------------------------------------------
@@ -641,17 +641,17 @@ func TestExecSandboxRouteStubAgentSynthesizesExitFrame(t *testing.T) {
 	}
 
 	// Read frames; expect exactly one FrameExit with Error populated.
-	var result agentwire.ExecResult
+	var result wire.ExecResult
 	sawExit := false
 	for {
-		f, err := agentwire.ReadFrame(resp.Body)
+		f, err := wire.ReadFrame(resp.Body)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			t.Fatalf("ReadFrame: %v", err)
 		}
-		if f.Type == agentwire.FrameExit {
+		if f.Type == wire.FrameExit {
 			if err := json.Unmarshal(f.Payload, &result); err != nil {
 				t.Fatalf("decode exit: %v", err)
 			}

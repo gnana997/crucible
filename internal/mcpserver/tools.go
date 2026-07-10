@@ -15,8 +15,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // --- tool input types: the stable contract an agent's tools/list sees -------
@@ -188,7 +188,7 @@ func toSnapshotOutput(s api.SnapshotResponse) snapshotOutput {
 	}
 }
 
-func toExecOutput(r agentwire.ExecResult, stdout, stderr string) execOutput {
+func toExecOutput(r wire.ExecResult, stdout, stderr string) execOutput {
 	return execOutput{
 		ExitCode: r.ExitCode, Stdout: stdout, Stderr: stderr,
 		TimedOut: r.TimedOut, OomKilled: r.OomKilled,
@@ -306,7 +306,7 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 	defer func() { _ = h.cfg.Client.DeleteSandbox(context.Background(), sb.ID) }()
 
 	var stdout, stderr bytes.Buffer
-	res, err := h.cfg.Client.Exec(ctx, sb.ID, agentwire.ExecRequest{
+	res, err := h.cfg.Client.Exec(ctx, sb.ID, wire.ExecRequest{
 		Cmd: in.Command, Env: env, TimeoutSec: timeout,
 	}, &stdout, &stderr)
 	if err != nil {
@@ -407,7 +407,7 @@ func (h *handlers) exec(ctx context.Context, _ *mcp.CallToolRequest, in execInpu
 		return nil, execOutput{}, err
 	}
 	var stdout, stderr bytes.Buffer
-	res, err := h.cfg.Client.Exec(ctx, in.SandboxID, agentwire.ExecRequest{
+	res, err := h.cfg.Client.Exec(ctx, in.SandboxID, wire.ExecRequest{
 		Cmd: in.Command, Cwd: in.Cwd, Env: env, TimeoutSec: h.cfg.clampTimeout(in.TimeoutS),
 	}, &stdout, &stderr)
 	if err != nil {

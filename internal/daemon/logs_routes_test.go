@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gnana997/crucible/internal/agentwire"
 	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // A literal id of valid sandbox shape (sbx_ + base32hex), so the /logs
@@ -117,7 +117,7 @@ func TestAppendLogNilStoreIsNoop(t *testing.T) {
 
 // runDrain runs a drain to completion with a fast tick, failing if it
 // doesn't terminate.
-func runDrain(t *testing.T, s *Server, poll func(context.Context, uint64) (agentwire.ServiceLogsResponse, error)) {
+func runDrain(t *testing.T, s *Server, poll func(context.Context, uint64) (wire.ServiceLogsResponse, error)) {
 	t.Helper()
 	old := logDrainInterval
 	logDrainInterval = time.Millisecond
@@ -135,18 +135,18 @@ func TestDrainServiceLogsPersistsAndStops(t *testing.T) {
 	ls, _ := logstore.New(t.TempDir())
 	s := &Server{cfg: Config{LogStore: ls, Logger: logsTestLogger()}}
 	calls := 0
-	runDrain(t, s, func(context.Context, uint64) (agentwire.ServiceLogsResponse, error) {
+	runDrain(t, s, func(context.Context, uint64) (wire.ServiceLogsResponse, error) {
 		calls++
 		if calls == 1 {
-			return agentwire.ServiceLogsResponse{
-				Records: []agentwire.ServiceLogRecord{
+			return wire.ServiceLogsResponse{
+				Records: []wire.ServiceLogRecord{
 					{Seq: 0, Stream: "stdout", UnixMs: 1, Data: []byte("hello ")},
 					{Seq: 1, Stream: "stdout", UnixMs: 2, Data: []byte("world\n")},
 				},
 				NextSeq: 2, FirstSeq: 0,
 			}, nil
 		}
-		return agentwire.ServiceLogsResponse{}, sandbox.ErrNotFound // sandbox gone → stop
+		return wire.ServiceLogsResponse{}, sandbox.ErrNotFound // sandbox gone → stop
 	})
 	recs, _, _ := ls.Read(logTestSbxID, -1, 1<<20, 0)
 	var got string
@@ -164,16 +164,16 @@ func TestDrainServiceLogsRecordsEvictionGap(t *testing.T) {
 	ls, _ := logstore.New(t.TempDir())
 	s := &Server{cfg: Config{LogStore: ls, Logger: logsTestLogger()}}
 	calls := 0
-	runDrain(t, s, func(context.Context, uint64) (agentwire.ServiceLogsResponse, error) {
+	runDrain(t, s, func(context.Context, uint64) (wire.ServiceLogsResponse, error) {
 		calls++
 		if calls == 1 {
 			// cursor starts at 0 but the oldest surviving is seq 5 → a gap.
-			return agentwire.ServiceLogsResponse{
-				Records: []agentwire.ServiceLogRecord{{Seq: 5, Stream: "stdout", UnixMs: 1, Data: []byte("late\n")}},
+			return wire.ServiceLogsResponse{
+				Records: []wire.ServiceLogRecord{{Seq: 5, Stream: "stdout", UnixMs: 1, Data: []byte("late\n")}},
 				NextSeq: 6, FirstSeq: 5,
 			}, nil
 		}
-		return agentwire.ServiceLogsResponse{}, sandbox.ErrNotFound
+		return wire.ServiceLogsResponse{}, sandbox.ErrNotFound
 	})
 	recs, _, _ := ls.Read(logTestSbxID, -1, 1<<20, 0)
 	sawGap := false
