@@ -10,6 +10,19 @@ settles.
 
 ### Added
 
+- **Durable apps (v0.4) — workloads that survive a daemon restart and
+  self-heal.** `crucible app create <name> --image … -p H:G --restart always
+  --health http:PORT[:PATH]` promotes a workload to a named app the daemon keeps
+  a healthy instance of: it restarts the instance on failure with exponential
+  backoff and a crash-loop guard, health-checks it (http/tcp) and restarts on
+  sustained failure, and — the headline — **re-creates it from persisted desired
+  state after a daemon restart or host reboot** (a bbolt control-plane store +
+  a reconcile loop; the ephemeral `sandbox` primitive is unchanged). Full
+  surface: `app ls|get|rm|logs|exec|shell`, REST `/apps`, Go SDK (`CreateApp`/
+  `ListApps`/`GetApp`/`DeleteApp` + an `App` handle), and four MCP tools
+  (`create_app`/`list_apps`/`get_app`/`delete_app`), bringing the MCP surface to
+  **19 tools**. Durability is desired-state reconcile (re-create), not live-VM
+  re-attach — see the updated threat-model INV-6.
 - **`crucible fork -p HOST:GUEST`** — publish a host port on a fork (`docker
   run -p` semantics for copies). The fork API accepts an optional JSON body
   (`{"count", "publish"}`); publishing requires count 1 since host ports are

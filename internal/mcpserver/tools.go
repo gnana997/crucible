@@ -245,6 +245,14 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.snapshot) })
 	add("fork", "Create N independent, clone-safe sandboxes from a snapshot.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.fork) })
+	add("create_app", "Create a durable app: a named workload the daemon keeps a healthy instance of, restarting it on failure and re-creating it after a daemon restart. Publish a port to reach it.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createApp) })
+	add("list_apps", "List durable apps with their phase, health, and restart count.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listApps) })
+	add("get_app", "Get one app's desired state and observed status (instance id, phase, health, restarts).",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.getApp) })
+	add("delete_app", "Delete a durable app and tear down its instance.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteApp) })
 	add("list_sandboxes", "List the live sandboxes.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listSandboxes) })
 	add("inspect_sandbox", "Return full detail for one sandbox.",

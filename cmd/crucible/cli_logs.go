@@ -33,30 +33,37 @@ func newLogsCmd(o *globalOpts) *cobra.Command {
 			default:
 				return fmt.Errorf("--source must be service, exec, or all")
 			}
-			id := args[0]
-			out := cmd.OutOrStdout()
-
-			// First read tails the recent log (since < 0 → server tails).
-			resp, err := o.client().Logs(cmd.Context(), id, -1, source)
-			if err != nil {
-				return err
-			}
-			if o.isJSON() {
-				// JSON is a one-shot snapshot; follow is a text-mode affordance.
-				return printJSON(out, resp)
-			}
-			for _, rec := range resp.Records {
-				renderLogRecord(out, rec)
-			}
-			if !follow {
-				return nil
-			}
-			return followLogs(cmd.Context(), o, id, source, resp.NextOffset, out)
+			return runLogs(cmd, o, args[0], source, follow)
 		},
 	}
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log output as it arrives")
 	cmd.Flags().StringVar(&source, "source", "all", "filter logs: service|exec|all")
 	return cmd
+}
+
+// runLogs prints a sandbox's recent logs and, when follow is set, tails
+// new output. Shared by `sandbox logs` and `app logs`.
+func runLogs(cmd *cobra.Command, o *globalOpts, id, source string, follow bool) error {
+	switch source {
+	case "", "all", "service", "exec":
+	default:
+		return fmt.Errorf("--source must be service, exec, or all")
+	}
+	out := cmd.OutOrStdout()
+	resp, err := o.client().Logs(cmd.Context(), id, -1, source)
+	if err != nil {
+		return err
+	}
+	if o.isJSON() {
+		return printJSON(out, resp)
+	}
+	for _, rec := range resp.Records {
+		renderLogRecord(out, rec)
+	}
+	if !follow {
+		return nil
+	}
+	return followLogs(cmd.Context(), o, id, source, resp.NextOffset, out)
 }
 
 // followLogs polls from the given cursor, printing new records until the
