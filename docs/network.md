@@ -117,7 +117,7 @@ sequenceDiagram
     participant NET as Internet
     G->>NFT: DNS query "pypi.org" → 10.20.255.254:53
     NFT->>DNS: accept (udp/53)
-    Note over DNS: src-IP → allowlist;<br/>"pypi.org" matches
+    Note over DNS: src-IP → allowlist<br/>"pypi.org" matches
     DNS->>UP: forward query
     UP-->>DNS: A 151.101.0.223
     Note over DNS,NFT: add 151.101.0.223 to<br/>@sandbox-allowed (DNS TTL)
