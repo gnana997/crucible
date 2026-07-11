@@ -17,6 +17,7 @@ require (
 	github.com/swaggest/jsonschema-go v0.3.78
 	github.com/swaggest/openapi-go v0.2.61
 	github.com/vishvananda/netlink v1.3.1
+	go.etcd.io/bbolt v1.5.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/sys v0.46.0
 )
