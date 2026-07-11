@@ -131,10 +131,11 @@ func (sn Snapshot) Delete(ctx context.Context) error {
 }
 
 // Fork creates count sandboxes from the snapshot and returns handles on
-// them. Use the flat Client.Fork when you need the full SandboxResponses
-// (IP addresses etc.) instead of handles.
-func (sn Snapshot) Fork(ctx context.Context, count int) ([]Sandbox, error) {
-	resps, err := sn.c.Fork(ctx, sn.ID, count)
+// them. Optional publish mappings expose the fork's ports on the host
+// (count must be 1). Use the flat Client.Fork when you need the full
+// SandboxResponses (IP addresses etc.) instead of handles.
+func (sn Snapshot) Fork(ctx context.Context, count int, publish ...api.PortMapping) ([]Sandbox, error) {
+	resps, err := sn.c.Fork(ctx, sn.ID, count, publish...)
 	if err != nil {
 		return nil, err
 	}

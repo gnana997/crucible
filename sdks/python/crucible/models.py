@@ -180,6 +180,11 @@ class CreateSandboxRequest(BaseModel):
     vcpus: int | None = None
 
 
+class ForkReq(BaseModel):
+    count: int | None = None
+    publish: list[PortMapping] | None = None
+
+
 class ForkResponse(BaseModel):
     sandboxes: list[SandboxResponse] | None = None
 

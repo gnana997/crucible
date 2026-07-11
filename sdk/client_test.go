@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -168,5 +169,43 @@ func TestTypedErrors(t *testing.T) {
 		if !errors.As(err, &de) || de.Status != tc.status || de.Message != "nope" {
 			t.Fatalf("status %d: not a structured *Error: %v", tc.status, err)
 		}
+	}
+}
+
+func TestForkPublishSendsBody(t *testing.T) {
+	var gotBody api.ForkRequest
+	var gotQuery string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.ForkResponse{Sandboxes: []api.SandboxResponse{{ID: "f1"}}})
+	})
+	_, err := c.Fork(context.Background(), "snap_1", 1,
+		api.PortMapping{HostPort: 8081, GuestPort: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "" {
+		t.Errorf("publish form must not use the query param, got %q", gotQuery)
+	}
+	if gotBody.Count != 1 || len(gotBody.Publish) != 1 || gotBody.Publish[0].HostPort != 8081 {
+		t.Errorf("body = %+v", gotBody)
+	}
+}
+
+func TestForkWithoutPublishKeepsQueryForm(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("count"); got != "3" {
+			t.Errorf("count query = %q, want 3 (legacy form must survive)", got)
+		}
+		if n, _ := io.Copy(io.Discard, r.Body); n != 0 {
+			t.Errorf("body-less form sent %d body bytes", n)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(api.ForkResponse{})
+	})
+	if _, err := c.Fork(context.Background(), "snap_1", 3); err != nil {
+		t.Fatal(err)
 	}
 }

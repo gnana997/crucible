@@ -365,7 +365,7 @@ export interface paths {
         put?: never;
         /**
          * Fork sandboxes from a snapshot
-         * @description Creates ?count sandboxes from the snapshot. All-or-nothing: a mid-fork failure rolls back.
+         * @description Creates count sandboxes from the snapshot (query param or body; body wins). All-or-nothing: a mid-fork failure rolls back. The optional body's publish maps host ports onto the fork (docker -p semantics); publish requires count 1 because host ports are exclusive.
          */
         post: operations["forkSnapshot"];
         delete?: never;
@@ -435,6 +435,10 @@ export interface components {
                 [key: string]: string;
             };
             timeout_s?: number;
+        };
+        ForkReq: {
+            count?: number;
+            publish?: components["schemas"]["PortMapping"][];
         };
         ForkResponse: {
             sandboxes?: components["schemas"]["SandboxResponse"][] | null;
@@ -1619,7 +1623,7 @@ export interface operations {
     forkSnapshot: {
         parameters: {
             query?: {
-                /** @description Number of sandboxes to fork from the snapshot (default 1). */
+                /** @description Number of sandboxes to fork (default 1). The body's count wins when both are set. */
                 count?: number;
             };
             header?: never;
@@ -1629,7 +1633,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ForkReq"];
+            };
+        };
         responses: {
             /** @description Created */
             201: {

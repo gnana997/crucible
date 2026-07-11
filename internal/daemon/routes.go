@@ -942,6 +942,37 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 		count = n
 	}
+
+	// Optional JSON body (api.ForkRequest): body count wins over the query
+	// param; publish maps host ports onto the fork. An empty body keeps the
+	// legacy query-only form working.
+	var publish []sandbox.PortMapping
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var freq api.ForkRequest
+	if err := json.NewDecoder(r.Body).Decode(&freq); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("invalid json body: %w", err))
+		return
+	}
+	if freq.Count != 0 {
+		if freq.Count < 1 {
+			writeError(w, http.StatusBadRequest, fmt.Errorf("invalid count %d (want a positive integer)", freq.Count))
+			return
+		}
+		count = freq.Count
+	}
+	if len(freq.Publish) > 0 {
+		if count != 1 {
+			writeError(w, http.StatusBadRequest,
+				errors.New("publish requires count 1: host ports are exclusive, a fan-out cannot share them"))
+			return
+		}
+		pm, err := validatePublish(freq.Publish)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		publish = pm
+	}
 	// Reject an oversized fan-out here so we never even hand a huge count to
 	// Fork (which allocates proportional to it). Fork enforces the same
 	// bound as defense-in-depth.
@@ -971,7 +1002,7 @@ func (s *Server) handleForkSnapshot(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	forks, err := s.cfg.Manager.Fork(r.Context(), id, count, tokenID)
+	forks, err := s.cfg.Manager.Fork(r.Context(), id, count, tokenID, publish)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrSnapshotNotFound) {
 			writeError(w, http.StatusNotFound, err)

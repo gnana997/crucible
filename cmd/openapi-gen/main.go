@@ -82,7 +82,8 @@ type logsReq struct {
 }
 type forkReq struct {
 	snapIDParam
-	Count int `query:"count" description:"Number of sandboxes to fork from the snapshot (default 1)."`
+	Count int `query:"count" description:"Number of sandboxes to fork (default 1). The body's count wins when both are set."`
+	api.ForkRequest
 }
 type importReq struct {
 	Tag string `query:"tag" description:"Which image inside a multi-image docker-save archive to import."`
@@ -109,7 +110,7 @@ func buildReflector() *openapi3.Reflector {
 	spec := r.SpecEns()
 	spec.Info.
 		WithTitle("crucible").
-		WithVersion("0.3.3").
+		WithVersion("0.3.4").
 		WithDescription("REST API for the crucible daemon, a Firecracker microVM sandbox runtime. " +
 			"The daemon is the contract every SDK mirrors. Auth is a bearer token " +
 			"(`Authorization: Bearer <key>`); `/healthz` is always exempt, and a loopback daemon " +
@@ -253,7 +254,7 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodDelete, "/snapshots/{id}", "deleteSnapshot", "snapshots", "Delete a snapshot",
 		"", snapIDParam{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotFound)
 	jsonOp(http.MethodPost, "/snapshots/{id}/fork", "forkSnapshot", "snapshots", "Fork sandboxes from a snapshot",
-		"Creates ?count sandboxes from the snapshot. All-or-nothing: a mid-fork failure rolls back.",
+		"Creates count sandboxes from the snapshot (query param or body; body wins). All-or-nothing: a mid-fork failure rolls back. The optional body's publish maps host ports onto the fork (docker -p semantics); publish requires count 1 because host ports are exclusive.",
 		forkReq{}, api.ForkResponse{}, http.StatusCreated, http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound)
 
 	// --- images (experimental) ---

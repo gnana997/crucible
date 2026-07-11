@@ -2,13 +2,13 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.3.2](https://img.shields.io/badge/status-v0.3.2-orange)
+![Status: v0.3.4](https://img.shields.io/badge/status-v0.3.4-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-![crucible: build, run, and observe a sandbox](demo/hero.gif)
+![crucible: run nginx in a microVM, push content in, snapshot the running server, fork it onto its own port, and watch the two VMs serve different answers](demo/landing.gif)
 
-<p align="center"><em>Build a Dockerfile into a microVM and publish a port with <code>docker run</code> ergonomics, then drop into a <strong>k9s-style TUI</strong> to watch it and tail its logs live (<a href="docs/cli.md">CLI</a> · <a href="docs/tui.md">TUI</a>).</em></p>
+<p align="center"><em>Boot nginx in a microVM with <code>docker run</code> ergonomics, <code>cp</code> content in, then snapshot the <strong>running</strong> server and fork it onto its own port: two VMs, two answers, zero interference (<a href="docs/cli.md">CLI</a> · <a href="docs/architecture.md">how fork works</a>).</em></p>
 
 AI coding agents write code and want to run it: check it compiles, run the tests they just wrote, try three approaches in parallel. Today's options are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, usage-priced), or rolling your own Firecracker stack (months of operational work).
 

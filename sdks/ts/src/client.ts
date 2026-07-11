@@ -7,6 +7,7 @@ import { FrameDecoder, FrameType } from "./frames.ts";
 import { errorFrom } from "./errors.ts";
 import type {
   CreateSandboxRequest,
+  PortMapping,
   ErrorResponse,
   ExecRequest,
   ExecResult,
@@ -162,9 +163,12 @@ export class Crucible {
     await this.#req("DELETE", `/snapshots/${encodeURIComponent(id)}`);
   }
 
-  async fork(snapshotID: string, count = 1): Promise<SandboxResponse[]> {
-    const path = `/snapshots/${encodeURIComponent(snapshotID)}/fork?count=${count}`;
-    const out = await this.#json<{ sandboxes: SandboxResponse[] }>("POST", path);
+  /** fork creates count copies; publish (host→guest ports, count must be 1) needs daemon >= v0.3.4. */
+  async fork(snapshotID: string, count = 1, publish?: PortMapping[]): Promise<SandboxResponse[]> {
+    const path = `/snapshots/${encodeURIComponent(snapshotID)}/fork`;
+    const out = publish?.length
+      ? await this.#json<{ sandboxes: SandboxResponse[] }>("POST", path, { count, publish })
+      : await this.#json<{ sandboxes: SandboxResponse[] }>("POST", `${path}?count=${count}`);
     return out.sandboxes ?? [];
   }
 

@@ -71,12 +71,21 @@ func newDaemonCmd() *cobra.Command {
 
 func newForkCmd(o *globalOpts) *cobra.Command {
 	var count int
+	var publishSpecs []string
 	cmd := &cobra.Command{
 		Use:   "fork <snapshot-id>",
 		Short: "Fork one or more sandboxes from a snapshot",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			forks, err := o.client().Fork(cmd.Context(), args[0], count)
+			var publish []api.PortMapping
+			for _, spec := range publishSpecs {
+				pm, err := api.ParsePublish(spec)
+				if err != nil {
+					return err
+				}
+				publish = append(publish, pm)
+			}
+			forks, err := o.client().Fork(cmd.Context(), args[0], count, publish...)
 			if err != nil {
 				return err
 			}
@@ -90,6 +99,7 @@ func newForkCmd(o *globalOpts) *cobra.Command {
 		},
 	}
 	cmd.Flags().IntVar(&count, "count", 1, "number of forks to create")
+	cmd.Flags().StringArrayVarP(&publishSpecs, "publish", "p", nil, "publish a fork port [HOST_IP:]HOST:GUEST[/tcp] (requires --count 1)")
 	return cmd
 }
 

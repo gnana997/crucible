@@ -213,12 +213,19 @@ func (c *Client) DeleteSnapshot(ctx context.Context, id string) error {
 }
 
 // Fork creates count sandboxes from a snapshot (POST /snapshots/{id}/fork).
-func (c *Client) Fork(ctx context.Context, snapshotID string, count int) ([]api.SandboxResponse, error) {
+// Optional publish mappings expose the fork's guest ports on the host
+// (`docker run -p` semantics); publishing requires count 1 and a daemon
+// >= v0.3.4 (older daemons ignore the request body).
+func (c *Client) Fork(ctx context.Context, snapshotID string, count int, publish ...api.PortMapping) ([]api.SandboxResponse, error) {
 	path := "/snapshots/" + snapshotID + "/fork"
-	if count > 0 {
+	var body any
+	if len(publish) > 0 {
+		body = api.ForkRequest{Count: count, Publish: publish}
+	} else if count > 0 {
+		// Query-only form: understood by every daemon version.
 		path += "?count=" + strconv.Itoa(count)
 	}
-	resp, err := c.do(ctx, http.MethodPost, path, nil)
+	resp, err := c.do(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}

@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [Unreleased]
+
+### Added
+
+- **`crucible fork -p HOST:GUEST`** — publish a host port on a fork (`docker
+  run -p` semantics for copies). The fork API accepts an optional JSON body
+  (`{"count", "publish"}`); publishing requires count 1 since host ports are
+  exclusive. Forwarders roll back with the fork, close on delete, and appear
+  in the fork's `published` field. Go SDK: `Fork(ctx, id, count, publish...)`
+  (variadic, source-compatible).
+
 ## [0.3.3] — 2026-07-11
 
 **The SDK foundation release.** The typed client and wire types are now a

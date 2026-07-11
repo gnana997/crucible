@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/coder/websocket v1.8.15
-	github.com/gnana997/crucible/sdk v0.2.0
+	github.com/gnana997/crucible/sdk v0.3.0
 	github.com/google/go-containerregistry v0.21.7
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72

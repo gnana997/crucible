@@ -145,3 +145,93 @@ func TestCreatePublishFailureRollsBack(t *testing.T) {
 		t.Errorf("List has %d sandboxes after a rolled-back create, want 0", got)
 	}
 }
+
+// newForkPublishManager is newPublishManager with the fork-capable stub
+// runner (Restore + in-process agent), so the fork path runs for real.
+func newForkPublishManager(t *testing.T, pub PortPublisher) *Manager {
+	t.Helper()
+	tmpl := filepath.Join(t.TempDir(), "rootfs.ext4")
+	if err := os.WriteFile(tmpl, []byte("fake"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	m, err := NewManager(ManagerConfig{
+		Runner:        &stubRunner{t: t},
+		WorkBase:      t.TempDir(),
+		Kernel:        "/fake/vmlinux",
+		Rootfs:        tmpl,
+		Network:       staticNetProvisioner{},
+		PortPublisher: pub,
+	})
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { m.Shutdown(context.Background()) })
+	return m
+}
+
+func TestForkPublishesPorts(t *testing.T) {
+	pub := &fakePublisher{}
+	m := newForkPublishManager(t, pub)
+
+	src, err := m.Create(context.Background(), CreateConfig{
+		Network: &NetworkConfig{Allowlist: stubAllowlist{}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	snap, err := m.Snapshot(context.Background(), src.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	forks, err := m.Fork(context.Background(), snap.ID, 1, "",
+		[]PortMapping{{HostPort: 8081, GuestPort: 80, Protocol: "tcp"}})
+	if err != nil {
+		t.Fatalf("Fork with publish: %v", err)
+	}
+	fork := forks[0]
+
+	call := pub.last()
+	if call.sandboxID != fork.ID {
+		t.Errorf("published for %q, want fork %q", call.sandboxID, fork.ID)
+	}
+	if fork.Network == nil || call.guestIP != fork.Network.GuestIP {
+		t.Errorf("published to %q, want the fork's guest IP %q", call.guestIP, fork.Network.GuestIP)
+	}
+	if len(call.ports) != 1 || call.ports[0].HostPort != 8081 || call.ports[0].GuestPort != 80 {
+		t.Errorf("published ports = %+v", call.ports)
+	}
+	if len(fork.Published) != 1 {
+		t.Errorf("fork.Published = %+v", fork.Published)
+	}
+
+	// Delete closes the fork's forwarders, same as a created sandbox's.
+	if err := m.Delete(context.Background(), fork.ID); err != nil {
+		t.Fatalf("Delete fork: %v", err)
+	}
+	if !call.handle.closed {
+		t.Error("fork forwarder not closed on delete")
+	}
+}
+
+func TestForkPublishRequiresSingleFork(t *testing.T) {
+	pub := &fakePublisher{}
+	m := newForkPublishManager(t, pub)
+
+	src, err := m.Create(context.Background(), CreateConfig{
+		Network: &NetworkConfig{Allowlist: stubAllowlist{}},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	snap, err := m.Snapshot(context.Background(), src.ID)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	_, err = m.Fork(context.Background(), snap.ID, 2, "",
+		[]PortMapping{{HostPort: 8081, GuestPort: 80, Protocol: "tcp"}})
+	if !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("Fork(count=2, publish) err = %v, want ErrInvalidConfig", err)
+	}
+}

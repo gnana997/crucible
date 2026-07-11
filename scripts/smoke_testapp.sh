@@ -14,6 +14,7 @@
 #   05  a second sandbox on a different host port serves independently
 #   06  delete releases the host port (re-publish on the same port works)
 #   07  --publish 127.0.0.1:PORT:80 binds localhost-only
+#   08  fork -p exposes a forked copy of a running server on its own port
 #
 # Requires: root + KVM, firecracker + jailer + vmlinux, crucible built
 # (make build), docker (to build/save the test image), and a host with a
@@ -217,6 +218,25 @@ if SBX4="$(cli sandbox create --image "$DIGEST" --memory 256 --publish 127.0.0.1
   cli sandbox rm "$SBX4" >/dev/null 2>&1
 else
   fail "localhost-pinned create failed"
+fi
+
+# ---- 08 fork -p publishes the fork on its own host port ---------------------
+
+echo "== 08 fork -p 8083:80 exposes the forked copy"
+if [[ -n "${SBX4:-}" ]]; then
+  if SNP="$(cli snapshot create "$SBX4")" && [[ "$SNP" == snap_* ]] &&
+     FORK="$(cli fork "$SNP" -p 8083:80)" && [[ "$FORK" == sbx_* ]]; then
+    if hit_host "http://localhost:8083/" >/dev/null; then
+      pass "fork of a running server reachable on its own port 8083"
+    else
+      fail "fork published on 8083 but unreachable"
+    fi
+    cli sandbox rm "$FORK" >/dev/null 2>&1
+  else
+    fail "snapshot+fork -p failed (snap=$SNP fork=${FORK:-})"
+  fi
+else
+  fail "no SBX4 to fork (check 07 failed earlier)"
 fi
 
 # ---- cleanup + summary ------------------------------------------------------

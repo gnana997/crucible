@@ -1247,9 +1247,14 @@ func (m *Manager) MaxForkCount() int {
 // succeeded is torn down before returning — Fork remains
 // all-or-nothing. The first observed error is returned (indexed by
 // its fork position for readability).
-func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenID string) ([]*Sandbox, error) {
+func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenID string, publish []PortMapping) ([]*Sandbox, error) {
 	if count <= 0 {
 		return nil, errors.New("sandbox: Fork count must be > 0")
+	}
+	// Host ports are exclusive, so a fan-out cannot share a publish
+	// mapping — publishing is only meaningful for a single fork.
+	if len(publish) > 0 && count != 1 {
+		return nil, fmt.Errorf("%w: publish requires count 1 (host ports are exclusive, got count %d)", ErrInvalidConfig, count)
 	}
 	// Reject an oversized count *before* allocating results/goroutines
 	// proportional to it — the concurrency semaphore below bounds only how
@@ -1287,7 +1292,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			sb, err := m.forkOne(ctx, snap, tokenID)
+			sb, err := m.forkOne(ctx, snap, tokenID, publish)
 			results[idx] = forkResult{sb: sb, err: err}
 		}(i)
 	}
@@ -1324,7 +1329,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 
 // forkOne creates a single fork. Split out so Fork's all-or-nothing
 // loop stays readable.
-func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (*Sandbox, error) {
+func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, publish []PortMapping) (*Sandbox, error) {
 	// Bound the restore to guest memory, for the same reason Snapshot does:
 	// LoadSnapshot carries no fcapi wall-clock cap and r.Context() no
 	// deadline, so a wedged firecracker must not hang this goroutine. Forks
@@ -1466,6 +1471,27 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string) (
 			_ = err
 		}
 		cancel()
+	}
+
+	// Host port publish, mirroring Create: forwarders start only once the
+	// fork's guest is reachable on its fresh /30, and a bind failure rolls
+	// the fork back (Publish closes any listeners it opened).
+	if len(publish) > 0 {
+		if netHandle == nil || netHandle.GuestIP == "" {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: publish requires a networked sandbox (a guest IP to forward to)", ErrInvalidConfig)
+		}
+		if m.cfg.PortPublisher == nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: port publishing is not enabled on this daemon", ErrInvalidConfig)
+		}
+		ph, err := m.cfg.PortPublisher.Publish(ctx, s.ID, netHandle.GuestIP, publish)
+		if err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("fork %s: publish ports: %w", id, err)
+		}
+		s.publish = ph
+		s.Published = publish
 	}
 
 	m.registerSandbox(s)

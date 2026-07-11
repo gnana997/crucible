@@ -171,6 +171,21 @@ type SnapshotListResponse struct {
 	Snapshots []SnapshotResponse `json:"snapshots"`
 }
 
+// ForkRequest is the optional JSON body of POST /snapshots/{id}/fork.
+// Both fields are optional; count may also be given as the ?count query
+// parameter (the body wins when both are set).
+type ForkRequest struct {
+	// Count is how many sandboxes to fork (default 1).
+	Count int `json:"count,omitempty"`
+
+	// Publish maps host ports to guest ports on the forked sandbox,
+	// exactly like CreateSandboxRequest.Publish. Only valid with
+	// count 1: host ports are exclusive, so a fan-out cannot share
+	// them. Requires a daemon >= v0.3.4; older daemons ignore the
+	// request body entirely.
+	Publish []PortMapping `json:"publish,omitempty"`
+}
+
 // ForkResponse is returned by POST /snapshots/{id}/fork.
 type ForkResponse struct {
 	Sandboxes []SandboxResponse `json:"sandboxes"`

@@ -137,13 +137,16 @@ Use `--` to separate the guest command from crucible's own flags.
 | `inspect <id>` | full snapshot JSON |
 | `rm <id>...` | delete snapshots |
 
-### `crucible fork <snapshot-id> [--count N]`
+### `crucible fork <snapshot-id> [--count N] [-p HOST:GUEST]`
 
 Create `N` sandboxes (default 1) from a snapshot; prints the new sandbox ids. Each child is fully independent (its own network and, via clone-safety, its own RNG/machine identity).
+
+`-p/--publish` maps a host port onto the fork (`[HOST_IP:]HOST:GUEST[/tcp]`, same as `run -p`) — fork a running server and expose the copy. Publishing requires `--count 1`: host ports are exclusive, so a fan-out cannot share them.
 
 ```bash
 SNP=$(crucible snapshot create $SBX)
 crucible fork $SNP --count 5
+crucible fork $SNP -p 8081:80   # one fork, reachable on host port 8081
 ```
 
 ### `crucible profile ls`
