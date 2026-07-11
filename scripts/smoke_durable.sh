@@ -10,6 +10,8 @@
 #   04  RESTART the daemon → the app's instance is re-created and serves again
 #   05  a second app coexists; both survive
 #   06  delete an app → its instance is torn down
+#   07  --env is delivered to the app entrypoint (v0.4.1)
+#   08  -P auto-publishes the image's EXPOSEd port (v0.4.1)
 #
 # The daemon-restart step is the whole point: v0.3 dropped every running
 # sandbox on restart; a v0.4 app comes back because its desired state lives
@@ -81,6 +83,7 @@ PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "   PASS: $*"; }
 fail() { FAIL=$((FAIL+1)); echo "   FAIL: $*"; }
 api()  { curl -s "$@"; }
+cli()  { "$CRUCIBLE_BIN" --addr "$LISTEN" "$@"; }
 
 # ---- daemon -----------------------------------------------------------------
 
@@ -214,6 +217,41 @@ else
   pass "deleted app no longer served"
 fi
 api -X DELETE "$BASE_URL/apps/web" >/dev/null
+
+# ---- 07 app with --env boots and serves (v0.4.1 V2) -------------------------
+# --env KEY=VALUE merges onto the entrypoint's environment. Observing the
+# entrypoint's env from `app exec` is unreliable (the guest's ptrace_scope
+# blocks reading a sibling process's /proc/<pid>/environ), so the exact
+# delivery is asserted by unit tests instead — the daemon merge
+# (TestMergeAppEnv) and the agent apply (TestBuildServiceEnvExact*). Here we
+# just confirm an app created WITH env still boots and serves (env didn't break
+# the entrypoint launch).
+echo "== 07 --env: app with env boots and serves (delivery is unit-tested)"
+cli app create envapp --image "$IMAGE" -p 8082:80 \
+  -e CRUCIBLE_ENV_PROBE=marker-xyz -e LOG_LEVEL=info --restart always >/dev/null 2>&1
+if wait_serving 8082; then
+  pass "app created with --env booted and served on :8082"
+else
+  fail "app with --env failed to serve on :8082"
+fi
+cli app rm envapp >/dev/null 2>&1
+
+# ---- 08 -P auto-publishes the image's EXPOSE (v0.4.1 V4) --------------------
+# nginx:alpine declares EXPOSE 80, so `-P` (no explicit -p) must publish guest
+# 80 → host 80 and the app is reachable there.
+echo "== 08 -P publishes the image's EXPOSEd port (guest 80 → host 80)"
+if curl -sf http://localhost:80/ >/dev/null 2>&1; then
+  echo "   (note: something already answering :80 — skipping the -P check)"
+else
+  cli app create exposeapp --image "$IMAGE" -P --restart always >/dev/null 2>&1
+  if wait_serving 80; then
+    pass "-P published the EXPOSEd port; served on host :80 with no explicit -p"
+  else
+    fail "-P did not publish the EXPOSEd port (:80 unreachable)"
+    api "$BASE_URL/apps/exposeapp"
+  fi
+  cli app rm exposeapp >/dev/null 2>&1
+fi
 
 # ---- summary ----------------------------------------------------------------
 

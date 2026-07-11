@@ -20,6 +20,8 @@ type createAppInput struct {
 	Image      string   `json:"image" jsonschema:"OCI image the app boots from, e.g. \"nginx:alpine\"; the daemon pulls+converts on a store miss"`
 	Pull       string   `json:"pull,omitempty" jsonschema:"image pull policy: missing (default), always, or never"`
 	Publish    []string `json:"publish,omitempty" jsonschema:"host port mappings [HOST_IP:]HOST:GUEST[/tcp]"`
+	PublishAll bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win"`
+	Env        []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings for the app's entrypoint"`
 	Restart    string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
 	VCPUs      int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
 	MemoryMiB  int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB; omit for the daemon default"`
@@ -65,13 +67,19 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 	if restart == "" {
 		restart = wire.RestartAlways
 	}
+	envMap, err := api.ParseEnv(in.Env)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
 	spec := api.AppSpec{
-		Name:      in.Name,
-		Image:     &api.ImageRef{OCI: in.Image},
-		Pull:      in.Pull,
-		VCPUs:     in.VCPUs,
-		MemoryMiB: in.MemoryMiB,
-		Restart:   wire.RestartPolicy{Policy: restart},
+		Name:       in.Name,
+		Image:      &api.ImageRef{OCI: in.Image},
+		Pull:       in.Pull,
+		VCPUs:      in.VCPUs,
+		MemoryMiB:  in.MemoryMiB,
+		Env:        envMap,
+		PublishAll: in.PublishAll,
+		Restart:    wire.RestartPolicy{Policy: restart},
 	}
 	for _, p := range in.Publish {
 		pm, err := api.ParsePublish(p)

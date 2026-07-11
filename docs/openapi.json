@@ -1648,6 +1648,9 @@
               "$ref": "#/components/schemas/PortMapping"
             }
           },
+          "publish_all": {
+            "type": "boolean"
+          },
           "pull": {
             "type": "string"
           },
@@ -1765,6 +1768,9 @@
               "$ref": "#/components/schemas/PortMapping"
             }
           },
+          "publish_all": {
+            "type": "boolean"
+          },
           "pull": {
             "type": "string"
           },
@@ -1806,6 +1812,9 @@
             "items": {
               "$ref": "#/components/schemas/PortMapping"
             }
+          },
+          "publish_all": {
+            "type": "boolean"
           },
           "pull": {
             "type": "string"

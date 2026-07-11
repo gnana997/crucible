@@ -147,6 +147,48 @@ func validatePublish(mappings []api.PortMapping) ([]sandbox.PortMapping, error) 
 	return out, nil
 }
 
+// exposedPortPublish expands an image's declared EXPOSE ports into publish
+// mappings for `-P` (docker's publish-all, but deterministic: guest port N →
+// host port N). Only tcp ports are published — crucible publish is tcp-only, so
+// a udp EXPOSE is skipped. A guest port already covered by an explicit -p is
+// left to that mapping (explicit wins). rc == nil (a profile, not an image)
+// yields nothing.
+func exposedPortPublish(rc *oci.RunConfig, explicit []api.PortMapping) ([]api.PortMapping, error) {
+	if rc == nil || len(rc.ExposedPorts) == 0 {
+		return nil, nil
+	}
+	haveGuest := make(map[int]bool, len(explicit))
+	for _, m := range explicit {
+		haveGuest[m.GuestPort] = true
+	}
+	var out []api.PortMapping
+	for _, e := range rc.ExposedPorts {
+		port, proto, err := parseExposedPort(e)
+		if err != nil {
+			return nil, err
+		}
+		if proto != "tcp" || haveGuest[port] {
+			continue
+		}
+		out = append(out, api.PortMapping{HostPort: port, GuestPort: port, Protocol: "tcp"})
+	}
+	return out, nil
+}
+
+// parseExposedPort parses an OCI ExposedPorts entry ("8080/tcp", or a bare
+// "8080" which OCI treats as tcp) into a port number and protocol.
+func parseExposedPort(s string) (int, string, error) {
+	numStr, proto := s, "tcp"
+	if i := strings.IndexByte(s, '/'); i >= 0 {
+		numStr, proto = s[:i], strings.ToLower(s[i+1:])
+	}
+	port, err := strconv.Atoi(numStr)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, "", fmt.Errorf("exposed port %q: bad port number", s)
+	}
+	return port, proto, nil
+}
+
 // ociInitBootArgs is the kernel command line for a converted OCI image:
 // the runtime defaults plus init=<injected agent>, so the guest boots
 // crucible-agent as PID 1 instead of the (absent) /sbin/init.
@@ -232,6 +274,17 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 		if al != nil {
 			netCfg = &sandbox.NetworkConfig{Allowlist: al}
 		}
+	}
+
+	// -P / publish-all: expand the image's declared EXPOSE ports into
+	// publish mappings (guest N → host N). Only an OCI image carries EXPOSE
+	// metadata; an explicit -p for a guest port wins over the auto-mapping.
+	if req.PublishAll && imgRec != nil {
+		exposed, err := exposedPortPublish(imgRec.RunConfig, req.Publish)
+		if err != nil {
+			return sandbox.CreateConfig{}, &imageErr{http.StatusBadRequest, err}
+		}
+		req.Publish = append(req.Publish, exposed...)
 	}
 
 	// Port publish: ensure a NIC to forward to; synthesize an

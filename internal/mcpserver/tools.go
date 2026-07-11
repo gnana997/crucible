@@ -39,15 +39,16 @@ type runInput struct {
 }
 
 type createSandboxInput struct {
-	Profile   string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
-	Image     string   `json:"image,omitempty" jsonschema:"OCI image to boot instead of a profile, e.g. \"nginx:alpine\" or a converted digest; the daemon pulls+converts on a store miss and runs its entrypoint. Mutually exclusive with profile."`
-	Pull      string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
-	Vcpus     int      `json:"vcpus,omitempty" jsonschema:"number of vCPUs"`
-	MemoryMib int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB"`
-	DiskMib   int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
-	TimeoutS  int      `json:"timeout_s,omitempty" jsonschema:"sandbox idle timeout in seconds"`
-	NetAllow  []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
-	Publish   []string `json:"publish,omitempty" jsonschema:"host port publishes so a guest service is reachable from the host, e.g. [\"8080:80\"] or [\"127.0.0.1:8080:80\"]"`
+	Profile    string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
+	Image      string   `json:"image,omitempty" jsonschema:"OCI image to boot instead of a profile, e.g. \"nginx:alpine\" or a converted digest; the daemon pulls+converts on a store miss and runs its entrypoint. Mutually exclusive with profile."`
+	Pull       string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
+	Vcpus      int      `json:"vcpus,omitempty" jsonschema:"number of vCPUs"`
+	MemoryMib  int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB"`
+	DiskMib    int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
+	TimeoutS   int      `json:"timeout_s,omitempty" jsonschema:"sandbox idle timeout in seconds"`
+	NetAllow   []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
+	Publish    []string `json:"publish,omitempty" jsonschema:"host port publishes so a guest service is reachable from the host, e.g. [\"8080:80\"] or [\"127.0.0.1:8080:80\"]"`
+	PublishAll bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win. Image mode only."`
 }
 
 type logsInput struct {
@@ -356,6 +357,7 @@ func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 		req.Publish = append(req.Publish, pm)
 	}
+	req.PublishAll = in.PublishAll
 	sb, err := h.cfg.Client.CreateSandbox(ctx, req)
 	if err != nil {
 		return nil, sandboxOutput{}, err

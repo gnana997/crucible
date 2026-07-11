@@ -139,6 +139,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 		profile                string
 		netAllow               []string
 		publish                []string
+		publishAll             bool
 		pull                   string
 		disk                   string
 		keep, rm               bool
@@ -176,8 +177,8 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 				}
 				return runImage(cmd, o, args[0], runImageOpts{
 					vcpus: vcpus, memory: memory, timeout: timeout,
-					netAllow: netAllow, publish: publish, pull: pull, rm: rm,
-					diskBytes: diskBytes,
+					netAllow: netAllow, publish: publish, publishAll: publishAll,
+					pull: pull, rm: rm, diskBytes: diskBytes,
 				})
 			}
 			return runCommand(cmd, o, args, runCommandOpts{
@@ -192,6 +193,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	// image mode
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a port [HOST_IP:]HOST:GUEST[/tcp] (repeatable; image mode)")
+	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing|always|never (image mode)")
 	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G (image mode)")
 	cmd.Flags().BoolVar(&rm, "rm", false, "tail logs in the foreground and remove the sandbox on detach (image mode)")
@@ -238,6 +240,7 @@ func runCommand(cmd *cobra.Command, o *globalOpts, args []string, opts runComman
 type runImageOpts struct {
 	vcpus, memory, timeout int
 	netAllow, publish      []string
+	publishAll             bool
 	pull                   string
 	diskBytes              int64
 	rm                     bool
@@ -270,6 +273,7 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 		}
 		req.Publish = append(req.Publish, pm)
 	}
+	req.PublishAll = opts.publishAll
 
 	sb, err := cl.CreateSandbox(cmd.Context(), req)
 	if err != nil {

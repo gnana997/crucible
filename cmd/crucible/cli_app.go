@@ -36,7 +36,8 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 		image, pull, restart, health string
 		vcpus, memory                int
 		disk                         string
-		netAllow, publish            []string
+		netAllow, publish, env       []string
+		publishAll                   bool
 		stopped                      bool
 	)
 	cmd := &cobra.Command{
@@ -55,14 +56,20 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			envMap, err := api.ParseEnv(env)
+			if err != nil {
+				return err
+			}
 			spec := api.AppSpec{
-				Name:      args[0],
-				Image:     &api.ImageRef{OCI: ref},
-				Pull:      effPull,
-				VCPUs:     vcpus,
-				MemoryMiB: memory,
-				DiskBytes: diskBytes,
-				Restart:   wire.RestartPolicy{Policy: restart},
+				Name:       args[0],
+				Image:      &api.ImageRef{OCI: ref},
+				Pull:       effPull,
+				VCPUs:      vcpus,
+				MemoryMiB:  memory,
+				DiskBytes:  diskBytes,
+				Env:        envMap,
+				PublishAll: publishAll,
+				Restart:    wire.RestartPolicy{Policy: restart},
 			}
 			for _, p := range publish {
 				pm, perr := parsePublish(p)
@@ -105,6 +112,8 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 	f.StringVar(&disk, "disk", "", "writable rootfs size (e.g. 2G)")
 	f.StringArrayVar(&netAllow, "net-allow", nil, "egress hostname allowlist entry (repeatable)")
 	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
+	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
+	f.StringArrayVarP(&env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
 	f.BoolVar(&stopped, "stopped", false, "create the app without starting an instance")
 	return cmd
 }

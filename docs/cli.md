@@ -43,6 +43,7 @@ Two shapes, chosen by the `--` separator:
 | Flag | Meaning |
 |---|---|
 | `-p, --publish` (repeatable) | publish a port `[HOST_IP:]HOST:GUEST[/tcp]` |
+| `-P, --publish-all` | publish every port the image `EXPOSE`s (guest N → host N) |
 | `--net-allow` (repeatable) | allowlisted hostname; enables egress |
 | `--pull` | `missing` (default) / `always` / `never` |
 | `--disk` | grow the writable rootfs to this size, e.g. `2G` / `512M` (default: template headroom) |
@@ -127,11 +128,13 @@ throwaway work; `app` is for a server you want to stay up.
 | `shell <name>` | interactive shell in the current instance |
 
 `create` flags: `--image` (required), `--pull`, `--restart always|on-failure|never`,
-`--health http:PORT[:PATH]|tcp:PORT`, `-p/--publish` (repeatable), `--net-allow`
-(repeatable), `--vcpus`, `--memory`, `--disk`, `--stopped`.
+`--health http:PORT[:PATH]|tcp:PORT`, `-p/--publish` (repeatable),
+`-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE`
+(repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--vcpus`,
+`--memory`, `--disk`, `--stopped`.
 
 ```bash
-crucible app create web --image nginx:alpine -p 8080:80 --restart always --health http:80:/
+crucible app create web --image nginx:alpine -P -e LOG_LEVEL=info --restart always --health http:80:/
 crucible app ls
 crucible app logs web -f
 crucible app rm web

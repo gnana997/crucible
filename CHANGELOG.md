@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [Unreleased]
+
+### Added
+
+- **App env config — `crucible app create -e/--env KEY=VALUE` (repeatable).**
+  Environment variables are delivered to the app's entrypoint (image `ENV` <
+  your `--env`, so yours win). Surfaced on the CLI and the MCP `create_app` tool
+  (`env`); the daemon already carried the field.
+- **Publish an image's declared ports — `-P`/`--publish-all`.** On `app create`,
+  `run`, and `sandbox create`: publishes every port the image `EXPOSE`s, each to
+  the same host port number (guest N → host N — deterministic, unlike docker's
+  random-host-port `-P`). tcp only; an explicit `-p` for a guest port wins. Also
+  on the MCP `create_app` / `create_sandbox` tools (`publish_all`).
+
 ## [0.4.0] — 2026-07-11
 
 ### Added

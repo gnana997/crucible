@@ -37,6 +37,11 @@ type AppSpec struct {
 	// Publish maps host ports to the instance's guest ports (docker -p).
 	Publish []PortMapping `json:"publish,omitempty"`
 
+	// PublishAll publishes every port the image declares with EXPOSE, each
+	// to the same host port number (docker -P, but deterministic). tcp
+	// only; an explicit Publish entry for a guest port takes precedence.
+	PublishAll bool `json:"publish_all,omitempty"`
+
 	// Network is the per-app egress policy; nil means default-deny.
 	Network *NetworkRequest `json:"network,omitempty"`
 

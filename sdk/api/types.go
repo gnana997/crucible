@@ -63,6 +63,13 @@ type CreateSandboxRequest struct {
 	// an empty egress allowlist (ingress-published, egress-denied).
 	Publish []PortMapping `json:"publish,omitempty"`
 
+	// PublishAll publishes every port the image declares with EXPOSE,
+	// each to the same host port number (guest N → host N) — the
+	// deterministic analogue of `docker run -P`. Only meaningful with an
+	// OCI Image (profiles have no EXPOSE metadata); tcp ports only. An
+	// explicit Publish entry for a guest port wins over the auto-mapping.
+	PublishAll bool `json:"publish_all,omitempty"`
+
 	// Pull controls image acquisition when Image.OCI is set, mirroring
 	// `docker run --pull`: "missing" (default, and the empty value)
 	// converts + caches the image on a store miss so a bare `--image

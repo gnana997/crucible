@@ -98,8 +98,14 @@ is the liveness signal. (An `exec` health check — running a command in the gue
 | `app shell <name>` | interactive shell in the current instance |
 
 `create` flags: `--image` (required), `--pull`, `--restart`, `--health`,
-`-p/--publish` (repeatable), `--net-allow` (repeatable), `--vcpus`, `--memory`,
-`--disk`, `--stopped` (create without starting an instance).
+`-p/--publish` (repeatable), `-P/--publish-all` (publish every port the image
+`EXPOSE`s, guest N → host N), `-e/--env KEY=VALUE` (repeatable), `--net-allow`
+(repeatable), `--vcpus`, `--memory`, `--disk`, `--stopped` (create without
+starting an instance).
+
+Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
+yours win); `-P` reads the ports the image declares, so `crucible app create web
+--image nginx:alpine -P` publishes :80 without a manual `-p`.
 
 `logs`/`exec`/`shell` resolve the app's current instance for you, so you never
 juggle the instance id.

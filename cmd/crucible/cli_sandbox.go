@@ -36,6 +36,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		disk                   string
 		netAllow               []string
 		publish                []string
+		publishAll             bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -68,6 +69,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 				}
 				req.Publish = append(req.Publish, pm)
 			}
+			req.PublishAll = publishAll
 			sb, err := o.client().CreateSandbox(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -88,6 +90,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G or 512M (default: template headroom)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
+	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
 	return cmd
 }
 
