@@ -135,7 +135,8 @@ CREATE=$(api -X POST "$BASE_URL/apps" -H 'content-type: application/json' -d "{
   \"name\": \"web\",
   \"image\": {\"oci\": \"$IMAGE\"},
   \"publish\": [{\"host_port\": 8080, \"guest_port\": 80}],
-  \"restart\": {\"policy\": \"always\"}
+  \"restart\": {\"policy\": \"always\"},
+  \"health\": {\"type\": \"http\", \"path\": \"/\", \"port\": 80, \"interval_s\": 3}
 }")
 if echo "$CREATE" | grep -q '"id":"app_'; then
   pass "app created: $(echo "$CREATE" | grep -o '"id":"app_[a-z0-9]*"')"
@@ -174,6 +175,15 @@ if echo "$GET" | grep -q '"phase":"running"'; then
 else
   fail "app status after restart: $GET"
 fi
+
+# The http health probe must reach the guest and pass (W5).
+echo "== 04b app reports healthy via its http health check"
+HEALTHY=0
+for _ in $(seq 1 20); do
+  if api "$BASE_URL/apps/web" | grep -q '"health":"healthy"'; then HEALTHY=1; break; fi
+  sleep 1
+done
+[[ "$HEALTHY" -eq 1 ]] && pass "http health check passing (health=healthy)" || fail "app never reported healthy: $(api "$BASE_URL/apps/web")"
 
 # ---- 05 second app coexists -------------------------------------------------
 

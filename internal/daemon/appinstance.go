@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/sandbox"
@@ -67,6 +71,61 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 func (a appInstantiator) Exists(instanceID string) bool {
 	_, err := a.s.cfg.Manager.Get(instanceID)
 	return err == nil
+}
+
+// Probe runs the app's health check against the instance's guest. http and
+// tcp dial the guest IP directly (reachable from the daemon's root netns
+// via the per-sandbox veth, the same path the port-publish forwarder
+// uses). exec probes — and image-HEALTHCHECK seeding, since Docker's
+// HEALTHCHECK is always a command — are a follow-up: they need in-guest
+// command exec as a probe, so exec returns HealthUnknown for now.
+func (a appInstantiator) Probe(ctx context.Context, instanceID string, hc api.HealthCheck) app.Health {
+	sb, err := a.s.cfg.Manager.Get(instanceID)
+	if err != nil || sb.Network == nil || sb.Network.GuestIP == "" {
+		return app.HealthUnknown
+	}
+	addr := net.JoinHostPort(sb.Network.GuestIP, strconv.Itoa(hc.Port))
+	timeout := time.Duration(hc.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	switch hc.Type {
+	case "tcp":
+		d := net.Dialer{Timeout: timeout}
+		conn, derr := d.DialContext(ctx, "tcp", addr)
+		if derr != nil {
+			return app.HealthFailing
+		}
+		_ = conn.Close()
+		return app.HealthPassing
+
+	case "http":
+		path := hc.Path
+		if path == "" {
+			path = "/"
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		req, rerr := http.NewRequestWithContext(pctx, http.MethodGet, "http://"+addr+path, nil)
+		if rerr != nil {
+			return app.HealthUnknown
+		}
+		// A one-shot client with no keep-alive: probes shouldn't pool.
+		client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+		resp, herr := client.Do(req)
+		if herr != nil {
+			return app.HealthFailing
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			return app.HealthPassing
+		}
+		return app.HealthFailing
+
+	default:
+		return app.HealthUnknown
+	}
 }
 
 // Destroy tears the instance down. A not-found instance is already gone,

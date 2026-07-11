@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
@@ -22,6 +23,7 @@ type fakeInstantiator struct {
 	creates   []string          // appIDs, in order
 	destroys  []string          // instanceIDs, in order
 	createErr error
+	probe     Health // result Probe returns for live instances
 }
 
 func mustCreate(t *testing.T, m *Manager, spec api.AppSpec, running bool) Record {
@@ -53,6 +55,18 @@ func (f *fakeInstantiator) Exists(instanceID string) bool {
 	defer f.mu.Unlock()
 	_, ok := f.live[instanceID]
 	return ok
+}
+
+func (f *fakeInstantiator) Probe(_ context.Context, _ string, _ api.HealthCheck) Health {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.probe
+}
+
+func (f *fakeInstantiator) setProbe(h Health) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.probe = h
 }
 
 func (f *fakeInstantiator) Destroy(_ context.Context, instanceID string) error {
@@ -87,6 +101,8 @@ func (f *fakeInstantiator) createCount() int {
 	return len(f.creates)
 }
 
+func ctx() context.Context { return context.Background() }
+
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func newMgr(t *testing.T, f Instantiator) (*Manager, *Store) {
@@ -97,6 +113,23 @@ func newMgr(t *testing.T, f Instantiator) (*Manager, *Store) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return NewManager(s, f, quietLog()), s
+}
+
+// fakeClock is a manually-advanced clock for deterministic backoff/health tests.
+type fakeClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *fakeClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+func (c *fakeClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
 }
 
 func nginxSpec(name string, policy string) api.AppSpec {
@@ -170,18 +203,24 @@ func TestReconcileIsIdempotent(t *testing.T) {
 func TestRestartOnVanishRespectsPolicy(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("always restarts", func(t *testing.T) {
+	t.Run("always restarts (after backoff)", func(t *testing.T) {
 		f := newFake()
 		m, _ := newMgr(t, f)
+		clk := &fakeClock{t: time.Unix(0, 0).UTC()}
+		m.now = clk.now
 		rec, _ := m.Create(nginxSpec("web", wire.RestartAlways), true)
 		m.reconcile(ctx)
 		f.crash(rec.ID)
+		m.reconcile(ctx) // records failure + schedules backoff, no reboot yet
+		if f.liveCount() != 0 {
+			t.Fatalf("rebooted during backoff: live=%d", f.liveCount())
+		}
+		clk.advance(2 * time.Second) // past baseBackoff (1s)
 		m.reconcile(ctx)
 		if f.liveCount() != 1 || f.createCount() != 2 {
-			t.Fatalf("live=%d create=%d, want 1/2", f.liveCount(), f.createCount())
+			t.Fatalf("after backoff: live=%d create=%d, want 1/2", f.liveCount(), f.createCount())
 		}
-		resp, _ := m.Get(rec.ID)
-		if resp.Status.Restarts != 1 {
+		if resp, _ := m.Get(rec.ID); resp.Status.Restarts != 1 {
 			t.Errorf("restarts = %d, want 1", resp.Status.Restarts)
 		}
 	})
@@ -281,4 +320,152 @@ func TestStartRunsInitialReconcileThenStops(t *testing.T) {
 		t.Fatalf("after Start: %d live, want 1", f.liveCount())
 	}
 	m.Stop() // must return (loop goroutine exits)
+}
+
+func healthSpec(name string) api.AppSpec {
+	s := nginxSpec(name, wire.RestartAlways)
+	s.Health = &api.HealthCheck{Type: "http", Path: "/", Port: 80,
+		IntervalSec: 5, UnhealthyThreshold: 3, HealthyThreshold: 1, StartPeriodSec: 5}
+	return s
+}
+
+// TestBackoffIsExponential: repeated fast crashes push the reboot delay up
+// baseBackoff·2^(n-1), and reboots only happen once the delay elapses.
+func TestBackoffIsExponential(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(0, 0).UTC()}
+	m.now = clk.now
+	rec, _ := m.Create(nginxSpec("web", wire.RestartAlways), true)
+
+	prevCreates := 0
+	// Each cycle: boot, crash immediately, expect the backoff to double.
+	wantDelays := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+	for i, want := range wantDelays {
+		m.reconcile(ctx()) // boots
+		if f.createCount() != prevCreates+1 {
+			t.Fatalf("cycle %d: expected a boot", i)
+		}
+		prevCreates = f.createCount()
+		f.crash(rec.ID)
+		m.reconcile(ctx()) // records failure, schedules backoff
+		// Just before the delay: no reboot.
+		clk.advance(want - 100*time.Millisecond)
+		m.reconcile(ctx())
+		if f.createCount() != prevCreates {
+			t.Fatalf("cycle %d: rebooted before backoff %v elapsed", i, want)
+		}
+		// Just after: reboot.
+		clk.advance(200 * time.Millisecond)
+	}
+}
+
+// TestCrashLoopGuard: after crashLoopThreshold fast failures the phase is
+// crashlooping and backoff is capped at maxBackoff (still retried).
+func TestCrashLoopGuard(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(0, 0).UTC()}
+	m.now = clk.now
+	rec, _ := m.Create(nginxSpec("web", wire.RestartAlways), true)
+
+	for i := 0; i < crashLoopThreshold+1; i++ {
+		m.reconcile(ctx())
+		f.crash(rec.ID)
+		m.reconcile(ctx())
+		clk.advance(maxBackoff + time.Second) // always past backoff
+	}
+	resp, _ := m.Get(rec.ID)
+	if resp.Status.Phase != "crashlooping" {
+		t.Fatalf("phase = %q, want crashlooping after %d fast failures", resp.Status.Phase, crashLoopThreshold)
+	}
+	if resp.Status.Restarts < crashLoopThreshold {
+		t.Errorf("restarts = %d, want >= %d", resp.Status.Restarts, crashLoopThreshold)
+	}
+}
+
+// TestStableRunResetsCrashLoop: an instance that survives past the window
+// clears the failure count, so a later one-off crash isn't a loop.
+func TestStableRunResetsCrashLoop(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(0, 0).UTC()}
+	m.now = clk.now
+	rec, _ := m.Create(nginxSpec("web", wire.RestartAlways), true)
+
+	m.reconcile(ctx()) // boot
+	// Two fast failures.
+	for i := 0; i < 2; i++ {
+		f.crash(rec.ID)
+		m.reconcile(ctx())
+		clk.advance(2 * time.Second)
+		m.reconcile(ctx()) // reboot
+	}
+	// Now run healthy past the window → failures reset.
+	clk.advance(crashLoopWindow + time.Second)
+	m.reconcile(ctx())
+	if resp, _ := m.Get(rec.ID); resp.Status.Phase != "running" {
+		t.Fatalf("phase = %q, want running after a stable run", resp.Status.Phase)
+	}
+	// A crash now starts backoff from base again (failures were reset).
+	f.crash(rec.ID)
+	m.reconcile(ctx())
+	if resp, _ := m.Get(rec.ID); resp.Status.Restarts == 0 {
+		t.Error("expected a restart recorded")
+	}
+}
+
+// TestHealthDrivesRestart: a passing probe → healthy; sustained failing
+// probes past the threshold → the instance is destroyed and rebooted.
+func TestHealthDrivesRestart(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthPassing)
+	rec, _ := m.Create(healthSpec("web"), true)
+
+	m.reconcile(ctx()) // boot
+	clk.advance(10 * time.Second)
+	m.reconcile(ctx()) // probe passes
+	if resp, _ := m.Get(rec.ID); resp.Status.Health != "healthy" {
+		t.Fatalf("health = %q, want healthy", resp.Status.Health)
+	}
+
+	// Now fail health. Needs UnhealthyThreshold (3) consecutive failing
+	// probes, each an interval apart, before a restart.
+	f.setProbe(HealthFailing)
+	createsBefore := f.createCount()
+	for i := 0; i < 3; i++ {
+		clk.advance(6 * time.Second) // past interval (5s)
+		m.reconcile(ctx())
+	}
+	// The 3rd failing probe destroys + records failure; advance past backoff to reboot.
+	clk.advance(2 * time.Second)
+	m.reconcile(ctx())
+	if f.createCount() != createsBefore+1 {
+		t.Fatalf("unhealthy instance not restarted: creates %d → %d", createsBefore, f.createCount())
+	}
+}
+
+// TestStartPeriodGrace: failing probes during the start period don't count.
+func TestStartPeriodGrace(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthFailing)
+	rec, _ := m.Create(healthSpec("web"), true) // StartPeriodSec: 5
+
+	m.reconcile(ctx()) // boot at t=100
+	createsBefore := f.createCount()
+	// Probe within the 5s start period: failing, but graced.
+	clk.advance(3 * time.Second)
+	m.reconcile(ctx())
+	if resp, _ := m.Get(rec.ID); resp.Status.Health != "unknown" {
+		t.Errorf("health during start period = %q, want unknown", resp.Status.Health)
+	}
+	if f.createCount() != createsBefore {
+		t.Error("restarted during start-period grace")
+	}
 }

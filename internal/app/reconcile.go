@@ -12,59 +12,100 @@ import (
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
-// Instantiator boots and tears down an app's instance. The daemon
-// implements it (mapping an AppSpec through image resolution into a real
-// sandbox via internal/sandbox.Manager); the reconciler depends only on
-// this narrow interface, so its convergence logic is decoupled from the
-// VMM machinery and testable with a fake.
+// Health is an instance's probe result.
+type Health int
+
+const (
+	// HealthUnknown means no probe yet, still in the start period, or the probe
+	// type is unsupported (exec probes are a follow-up).
+	HealthUnknown Health = iota
+	// HealthPassing means the probe succeeded.
+	HealthPassing
+	// HealthFailing means the probe failed.
+	HealthFailing
+)
+
+// Instantiator boots, probes, and tears down an app's instance. The daemon
+// implements it (over internal/sandbox.Manager); the reconciler depends
+// only on this narrow interface, so its self-heal logic is decoupled from
+// the VMM machinery and testable with a fake.
 type Instantiator interface {
 	// Create boots a new instance from spec and returns its instance
-	// (sandbox) id. appID is attached to the instance for attribution.
+	// (sandbox) id.
 	Create(ctx context.Context, appID string, spec api.AppSpec) (instanceID string, err error)
 
-	// Exists reports whether the instance is still live (registered in the
-	// Manager). The reconciler's liveness signal in v0.4.0; health-based
-	// liveness lands with the health checks (W5).
+	// Exists reports whether the instance is still registered in the
+	// Manager (gone = the VM/registration disappeared).
 	Exists(instanceID string) bool
 
-	// Destroy tears down the instance. Absent/already-gone is not an error.
+	// Probe runs the app's health check against the instance. Only http
+	// and tcp are probed today; exec returns HealthUnknown (a follow-up,
+	// together with image-HEALTHCHECK seeding).
+	Probe(ctx context.Context, instanceID string, hc api.HealthCheck) Health
+
+	// Destroy tears the instance down. Absent/already-gone is not an error.
 	Destroy(ctx context.Context, instanceID string) error
 }
 
-// observed is an app's runtime (never persisted) state. It is rebuilt from
-// scratch on Start: an empty observed map plus the persisted desired state
-// is exactly what drives re-creation after a daemon restart.
+// observed is an app's runtime (never persisted) state, rebuilt from
+// scratch on Start: an empty observed map plus persisted desired state is
+// what drives re-creation after a daemon restart.
 type observed struct {
 	instanceID string
-	generation uint64 // generation of the spec this instance was booted from
-	phase      string // api.AppStatus phases
-	restarts   int
-	lastErr    string
+	generation uint64    // spec generation this instance was booted from
+	bootedAt   time.Time // when the current/last instance booted
+	phase      string    // pending | running | unhealthy | crashlooping | stopped
+
+	// Self-heal bookkeeping.
+	restarts            int
+	consecutiveFailures int       // windowed; drives backoff + crash-loop
+	backoffUntil        time.Time // don't (re)boot before this
+	lastErr             string
+
+	// Health tracking.
+	health          string // healthy | unhealthy | unknown
+	healthyStreak   int
+	unhealthyStreak int
+	nextProbe       time.Time
 }
 
-// defaultReconcileInterval is how often the loop re-converges absent an
-// explicit trigger — the safety net that catches an instance that vanished
-// between events.
-const defaultReconcileInterval = 10 * time.Second
+// Tuning. Backoff is exponential between restart attempts; a run that
+// survives crashLoopWindow resets the failure count; crashLoopThreshold
+// consecutive fast failures flip the phase to crashlooping (still retried,
+// at the capped backoff — the k8s CrashLoopBackOff shape).
+const (
+	defaultReconcileInterval = 3 * time.Second
+	baseBackoff              = 1 * time.Second
+	maxBackoff               = 60 * time.Second
+	crashLoopWindow          = 60 * time.Second
+	crashLoopThreshold       = 5
+)
+
+// Health-check defaults, applied when a HealthCheck leaves a field zero.
+const (
+	defaultProbeInterval    = 10 * time.Second
+	defaultHealthyThreshold = 1
+	defaultUnhealthyCount   = 3
+	defaultStartPeriod      = 5 * time.Second
+)
 
 // Manager is the control-plane engine: it owns the durable app store and a
-// reconcile loop that converges actual instances toward desired state.
-// Level-triggered and idempotent (the network-reconcile template), so a
-// pass is always safe to repeat.
+// reconcile loop that converges actual instances toward desired state,
+// self-healing via health probes, restart backoff, and a crash-loop guard.
+// Level-triggered and idempotent — a pass is always safe to repeat.
 type Manager struct {
 	store *Store
 	inst  Instantiator
 	log   *slog.Logger
 
 	interval time.Duration
+	now      func() time.Time // injectable clock (tests)
 
-	// reconcile serializes convergence passes; obsMu guards the observed
-	// map read outside a pass (status reads).
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
-	obs         map[string]*observed // appID -> observed
+	obs         map[string]*observed
 
-	trigger chan struct{} // coalescing wake for the loop
+	trigger chan struct{}
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
 }
@@ -80,6 +121,7 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		inst:     inst,
 		log:      log,
 		interval: defaultReconcileInterval,
+		now:      time.Now,
 		obs:      make(map[string]*observed),
 		trigger:  make(chan struct{}, 1),
 	}
@@ -108,7 +150,7 @@ func (m *Manager) Create(spec api.AppSpec, desiredRunning bool) (Record, error) 
 	if err != nil {
 		return Record{}, err
 	}
-	now := time.Now().UTC()
+	now := m.now().UTC()
 	rec := Record{
 		ID:             id,
 		Spec:           spec,
@@ -139,8 +181,7 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
-// SetDesired flips an app between running and stopped (spec retained) and
-// triggers a reconcile.
+// SetDesired flips an app between running and stopped (spec retained).
 func (m *Manager) SetDesired(id string, running bool) error {
 	rec, found, err := m.store.Get(id)
 	if err != nil {
@@ -150,7 +191,7 @@ func (m *Manager) SetDesired(id string, running bool) error {
 		return ErrNotFound
 	}
 	rec.DesiredRunning = running
-	rec.UpdatedAt = time.Now().UTC()
+	rec.UpdatedAt = m.now().UTC()
 	if err := m.store.Put(rec); err != nil {
 		return err
 	}
@@ -209,25 +250,19 @@ func (m *Manager) List() ([]api.AppResponse, error) {
 
 // --- reconcile loop ----------------------------------------------------
 
-// Start runs an initial convergence (this is the survive-restart step:
-// desired apps whose instances were reaped get re-created) and then the
-// background loop. Returns after the first pass so the daemon knows apps
-// are being restored.
+// Start runs an initial convergence (the survive-restart step) then the
+// background loop. Returns after the first pass.
 func (m *Manager) Start(ctx context.Context) error {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-
-	// Initial synchronous pass: bring desired apps up before returning.
 	m.reconcile(ctx)
-
 	m.wg.Add(1)
 	go m.loop(loopCtx)
 	return nil
 }
 
-// Stop halts the reconcile loop. It does not tear down instances (daemon
-// shutdown drains sandboxes separately; the app store retains desired
-// state for the next Start).
+// Stop halts the reconcile loop (does not tear down instances; desired
+// state stays in the store for the next Start).
 func (m *Manager) Stop() {
 	if m.cancel != nil {
 		m.cancel()
@@ -259,9 +294,8 @@ func (m *Manager) loop(ctx context.Context) {
 	}
 }
 
-// reconcile converges actual instances toward desired state: tear down
-// instances whose app is gone or stopped, then ensure every desired app
-// has a live instance, (re)creating from spec. One pass at a time.
+// reconcile converges actual instances toward desired state. One pass at a
+// time (reconcileMu); observed reads elsewhere take obsMu.
 func (m *Manager) reconcile(ctx context.Context) {
 	m.reconcileMu.Lock()
 	defer m.reconcileMu.Unlock()
@@ -271,105 +305,284 @@ func (m *Manager) reconcile(ctx context.Context) {
 		m.log.Error("app reconcile: list store", "err", err)
 		return
 	}
-	byID := make(map[string]Record, len(recs))
+	desired := make(map[string]bool, len(recs))
 	for _, r := range recs {
-		byID[r.ID] = r
+		if r.DesiredRunning {
+			desired[r.ID] = true
+		}
 	}
 
 	// 1. Tear down instances whose app was deleted or stopped.
 	m.obsMu.Lock()
 	tracked := make([]string, 0, len(m.obs))
-	for appID := range m.obs {
-		tracked = append(tracked, appID)
+	for id := range m.obs {
+		tracked = append(tracked, id)
 	}
 	m.obsMu.Unlock()
-
 	for _, appID := range tracked {
-		rec, stillDesired := byID[appID]
-		if stillDesired && rec.DesiredRunning {
+		if desired[appID] {
 			continue
 		}
 		m.obsMu.Lock()
 		ob := m.obs[appID]
+		_, stillExists := desiredRec(recs, appID)
 		m.obsMu.Unlock()
 		if ob != nil && ob.instanceID != "" {
 			if err := m.inst.Destroy(ctx, ob.instanceID); err != nil {
-				m.log.Warn("app reconcile: destroy instance", "app", appID, "instance", ob.instanceID, "err", err)
+				m.log.Warn("app reconcile: destroy", "app", appID, "instance", ob.instanceID, "err", err)
 			}
-		}
-		if !stillDesired {
-			m.obsMu.Lock()
-			delete(m.obs, appID)
-			m.obsMu.Unlock()
-		} else {
-			m.setPhase(appID, ob, "stopped")
-		}
-	}
-
-	// 2. Ensure every desired-running app has a current live instance.
-	for _, rec := range recs {
-		if !rec.DesiredRunning {
-			continue
 		}
 		m.obsMu.Lock()
-		ob := m.obs[rec.ID]
+		if !stillExists {
+			delete(m.obs, appID) // app deleted → forget it
+		} else if ob != nil {
+			ob.phase, ob.instanceID, ob.health = "stopped", "", "unknown"
+		}
 		m.obsMu.Unlock()
+	}
 
-		switch {
-		case ob == nil || ob.instanceID == "":
-			m.bootInstance(ctx, rec, ob, false)
-		case !m.inst.Exists(ob.instanceID):
-			// Instance vanished. Respect the never-restart policy;
-			// backoff + crash-loop guard land in W4.
-			if rec.Spec.Restart.Policy == wire.RestartNever {
-				m.setPhase(rec.ID, ob, "stopped")
-				continue
-			}
-			m.bootInstance(ctx, rec, ob, true)
-		case ob.generation != rec.Generation:
-			// Spec changed → redeploy (naive destroy+create; zero-downtime
-			// deploys are a later item).
-			_ = m.inst.Destroy(ctx, ob.instanceID)
-			m.bootInstance(ctx, rec, ob, false)
+	// 2. Converge every desired-running app.
+	now := m.now()
+	for _, rec := range recs {
+		if rec.DesiredRunning {
+			m.reconcileApp(ctx, rec, now)
 		}
 	}
 }
 
-// bootInstance creates a fresh instance for rec and records the observed
-// state. isRestart increments the restart counter.
-func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, isRestart bool) {
-	id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
-	restarts := 0
-	if prev != nil {
-		restarts = prev.restarts
+func desiredRec(recs []Record, id string) (Record, bool) {
+	for _, r := range recs {
+		if r.ID == id {
+			return r, true
+		}
 	}
-	if isRestart {
-		restarts++
+	return Record{}, false
+}
+
+// reconcileApp converges a single desired-running app: (re)boot subject to
+// backoff, detect death via Exists, and — when a health check is
+// configured — probe and restart on sustained failure.
+func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
+	m.obsMu.Lock()
+	ob := m.obs[rec.ID]
+	m.obsMu.Unlock()
+
+	// Spec change → redeploy: destroy the old instance and boot fresh
+	// (resetting crash-loop state; a fix was shipped).
+	if ob != nil && ob.instanceID != "" && ob.generation != rec.Generation {
+		_ = m.inst.Destroy(ctx, ob.instanceID)
+		ob = nil
+	}
+
+	// No live instance: boot when backoff has elapsed.
+	if ob == nil || ob.instanceID == "" {
+		if ob != nil && now.Before(ob.backoffUntil) {
+			return
+		}
+		m.bootInstance(ctx, rec, ob, now)
+		return
+	}
+
+	// Instance vanished (VM/registration gone).
+	if !m.inst.Exists(ob.instanceID) {
+		if rec.Spec.Restart.Policy == wire.RestartNever {
+			m.setStopped(rec.ID)
+			return
+		}
+		m.recordFailure(rec.ID, "instance exited", now)
+		return
+	}
+
+	// Instance is registered. Health, if configured, is the liveness signal.
+	if hc := rec.Spec.Health; hc != nil && hc.Type != "" {
+		if now.Before(ob.nextProbe) {
+			m.maybeResetStable(rec.ID, now)
+			return
+		}
+		res := m.inst.Probe(ctx, ob.instanceID, *hc)
+		m.applyProbe(ctx, rec, res, now)
+		return
+	}
+
+	// No health check: alive-and-registered is healthy.
+	m.obsMu.Lock()
+	ob.health, ob.phase = "healthy", "running"
+	m.obsMu.Unlock()
+	m.maybeResetStable(rec.ID, now)
+}
+
+// bootInstance creates a fresh instance and records observed state.
+func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, now time.Time) {
+	id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
+	next := &observed{generation: rec.Generation, bootedAt: now}
+	if prev != nil {
+		next.restarts = prev.restarts
+		next.consecutiveFailures = prev.consecutiveFailures
 	}
 	if err != nil {
-		m.log.Error("app reconcile: boot instance", "app", rec.ID, "name", rec.Spec.Name, "err", err)
+		next.phase, next.lastErr = "pending", err.Error()
+		next.consecutiveFailures++
+		next.backoffUntil = now.Add(backoffFor(next.consecutiveFailures))
+		if next.consecutiveFailures >= crashLoopThreshold {
+			next.phase = "crashlooping"
+		}
+		m.log.Error("app: boot instance", "app", rec.ID, "name", rec.Spec.Name, "err", err, "failures", next.consecutiveFailures)
 		m.obsMu.Lock()
-		m.obs[rec.ID] = &observed{generation: rec.Generation, phase: "pending", restarts: restarts, lastErr: err.Error()}
+		m.obs[rec.ID] = next
 		m.obsMu.Unlock()
 		return
 	}
-	m.log.Info("app instance booted", "app", rec.ID, "name", rec.Spec.Name, "instance", id, "restart", isRestart)
+	next.instanceID, next.phase = id, "running"
+	if rec.Spec.Health != nil && rec.Spec.Health.Type != "" {
+		next.health = "unknown"
+		next.nextProbe = now.Add(probeInterval(rec.Spec.Health))
+	} else {
+		next.health = "healthy"
+	}
+	m.log.Info("app instance booted", "app", rec.ID, "name", rec.Spec.Name, "instance", id, "restarts", next.restarts)
 	m.obsMu.Lock()
-	m.obs[rec.ID] = &observed{instanceID: id, generation: rec.Generation, phase: "running", restarts: restarts}
+	m.obs[rec.ID] = next
 	m.obsMu.Unlock()
 }
 
-func (m *Manager) setPhase(appID string, ob *observed, phase string) {
+// recordFailure marks the current instance dead and schedules a backed-off
+// reboot, tracking crash-loop state.
+func (m *Manager) recordFailure(appID, reason string, now time.Time) {
 	m.obsMu.Lock()
 	defer m.obsMu.Unlock()
-	if cur := m.obs[appID]; cur != nil {
-		cur.phase = phase
-		cur.instanceID = ""
-	} else if ob != nil {
-		ob.phase = phase
-		ob.instanceID = ""
-		m.obs[appID] = ob
+	ob := m.obs[appID]
+	if ob == nil {
+		return
 	}
+	// A run that survived the crash-loop window is a fresh, isolated
+	// failure; a fast one compounds toward the crash-loop guard.
+	if now.Sub(ob.bootedAt) < crashLoopWindow {
+		ob.consecutiveFailures++
+	} else {
+		ob.consecutiveFailures = 1
+	}
+	ob.restarts++
+	ob.instanceID, ob.health, ob.lastErr = "", "unhealthy", reason
+	ob.backoffUntil = now.Add(backoffFor(ob.consecutiveFailures))
+	if ob.consecutiveFailures >= crashLoopThreshold {
+		ob.phase = "crashlooping"
+	} else {
+		ob.phase = "pending"
+	}
+	m.log.Warn("app instance failed", "app", appID, "reason", reason, "failures", ob.consecutiveFailures, "phase", ob.phase)
+}
+
+// applyProbe folds a probe result into health streaks and restarts the
+// instance when it is unhealthy past the threshold.
+func (m *Manager) applyProbe(ctx context.Context, rec Record, res Health, now time.Time) {
+	m.obsMu.Lock()
+	ob := m.obs[rec.ID]
+	if ob == nil {
+		m.obsMu.Unlock()
+		return
+	}
+	hc := rec.Spec.Health
+	ob.nextProbe = now.Add(probeInterval(hc))
+	inStartPeriod := now.Sub(ob.bootedAt) < startPeriod(hc)
+	var restart bool
+	instanceID := ob.instanceID
+	switch res {
+	case HealthPassing:
+		ob.healthyStreak++
+		ob.unhealthyStreak = 0
+		if ob.healthyStreak >= healthyThreshold(hc) {
+			ob.health, ob.phase = "healthy", "running"
+		}
+	case HealthFailing:
+		if inStartPeriod {
+			ob.health = "unknown" // grace: slow starters aren't failures yet
+			break
+		}
+		ob.unhealthyStreak++
+		ob.healthyStreak = 0
+		ob.health = "unhealthy"
+		if ob.unhealthyStreak >= unhealthyThreshold(hc) {
+			restart = true
+		}
+	default:
+		ob.health = "unknown"
+	}
+	m.obsMu.Unlock()
+
+	if restart {
+		if rec.Spec.Restart.Policy == wire.RestartNever {
+			m.setStopped(rec.ID)
+			return
+		}
+		_ = m.inst.Destroy(ctx, instanceID)
+		m.recordFailure(rec.ID, "health check failing", now)
+	} else {
+		m.maybeResetStable(rec.ID, now)
+	}
+}
+
+// maybeResetStable clears crash-loop state once an instance has run past
+// the window (a one-off crash later doesn't count as a loop).
+func (m *Manager) maybeResetStable(appID string, now time.Time) {
+	m.obsMu.Lock()
+	defer m.obsMu.Unlock()
+	ob := m.obs[appID]
+	if ob == nil || ob.instanceID == "" {
+		return
+	}
+	if now.Sub(ob.bootedAt) >= crashLoopWindow {
+		ob.consecutiveFailures = 0
+		if ob.phase == "crashlooping" || ob.phase == "pending" {
+			ob.phase = "running"
+		}
+	}
+}
+
+func (m *Manager) setStopped(appID string) {
+	m.obsMu.Lock()
+	defer m.obsMu.Unlock()
+	if ob := m.obs[appID]; ob != nil {
+		ob.phase, ob.instanceID, ob.health = "stopped", "", "unknown"
+	}
+}
+
+// backoffFor returns the delay before the nth consecutive-failure reboot:
+// exponential from baseBackoff, capped at maxBackoff.
+func backoffFor(failures int) time.Duration {
+	if failures <= 1 {
+		return baseBackoff
+	}
+	d := baseBackoff << (failures - 1)
+	if d > maxBackoff || d <= 0 {
+		return maxBackoff
+	}
+	return d
+}
+
+// Health-check field resolution with defaults.
+func probeInterval(hc *api.HealthCheck) time.Duration {
+	if hc != nil && hc.IntervalSec > 0 {
+		return time.Duration(hc.IntervalSec) * time.Second
+	}
+	return defaultProbeInterval
+}
+func startPeriod(hc *api.HealthCheck) time.Duration {
+	if hc != nil && hc.StartPeriodSec > 0 {
+		return time.Duration(hc.StartPeriodSec) * time.Second
+	}
+	return defaultStartPeriod
+}
+func healthyThreshold(hc *api.HealthCheck) int {
+	if hc != nil && hc.HealthyThreshold > 0 {
+		return hc.HealthyThreshold
+	}
+	return defaultHealthyThreshold
+}
+func unhealthyThreshold(hc *api.HealthCheck) int {
+	if hc != nil && hc.UnhealthyThreshold > 0 {
+		return hc.UnhealthyThreshold
+	}
+	return defaultUnhealthyCount
 }
 
 // toResponse merges a persisted record with its observed status.
@@ -397,6 +610,7 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 		resp.Status = &api.AppStatus{
 			InstanceID: ob.instanceID,
 			Phase:      phase,
+			Health:     ob.health,
 			Restarts:   ob.restarts,
 			LastError:  ob.lastErr,
 		}
@@ -416,6 +630,20 @@ func validateSpec(spec api.AppSpec) error {
 	case "", wire.RestartNever, wire.RestartOnFailure, wire.RestartAlways:
 	default:
 		return fmt.Errorf("app: unknown restart policy %q", spec.Restart.Policy)
+	}
+	if hc := spec.Health; hc != nil && hc.Type != "" {
+		switch hc.Type {
+		case "http", "tcp":
+			if hc.Port <= 0 {
+				return fmt.Errorf("app: health check type %q requires a port", hc.Type)
+			}
+		case "exec":
+			if len(hc.Cmd) == 0 {
+				return errors.New("app: exec health check requires a cmd")
+			}
+		default:
+			return fmt.Errorf("app: unknown health check type %q", hc.Type)
+		}
 	}
 	return nil
 }
