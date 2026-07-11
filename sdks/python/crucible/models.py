@@ -189,6 +189,7 @@ class AppResponse(BaseModel):
     memory_mib: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
+    port: int | None = None
     publish: list[PortMapping] | None = None
     publish_all: bool | None = None
     pull: str | None = None
@@ -220,6 +221,7 @@ class CreateAppRequest(BaseModel):
     memory_mib: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
+    port: int | None = None
     publish: list[PortMapping] | None = None
     publish_all: bool | None = None
     pull: str | None = None
@@ -272,6 +274,7 @@ class UpdateAppReq(BaseModel):
     memory_mib: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
+    port: int | None = None
     publish: list[PortMapping] | None = None
     publish_all: bool | None = None
     pull: str | None = None

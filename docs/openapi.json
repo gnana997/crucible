@@ -1723,6 +1723,9 @@
           "network": {
             "$ref": "#/components/schemas/NetworkRequest"
           },
+          "port": {
+            "type": "integer"
+          },
           "publish": {
             "type": "array",
             "items": {
@@ -1842,6 +1845,9 @@
           },
           "network": {
             "$ref": "#/components/schemas/NetworkRequest"
+          },
+          "port": {
+            "type": "integer"
           },
           "publish": {
             "type": "array",
@@ -2367,6 +2373,9 @@
           },
           "network": {
             "$ref": "#/components/schemas/NetworkRequest"
+          },
+          "port": {
+            "type": "integer"
           },
           "publish": {
             "type": "array",

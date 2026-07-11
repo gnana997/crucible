@@ -466,6 +466,7 @@ export interface components {
             memory_mib?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
+            port?: number;
             publish?: components["schemas"]["PortMapping"][];
             publish_all?: boolean;
             pull?: string;
@@ -508,6 +509,7 @@ export interface components {
             memory_mib?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
+            port?: number;
             publish?: components["schemas"]["PortMapping"][];
             publish_all?: boolean;
             pull?: string;
@@ -676,6 +678,7 @@ export interface components {
             memory_mib?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
+            port?: number;
             publish?: components["schemas"]["PortMapping"][];
             publish_all?: boolean;
             pull?: string;

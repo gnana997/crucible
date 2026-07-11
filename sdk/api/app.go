@@ -42,6 +42,12 @@ type AppSpec struct {
 	// only; an explicit Publish entry for a guest port takes precedence.
 	PublishAll bool `json:"publish_all,omitempty"`
 
+	// Port is the guest port the ingress proxy forwards to when routing this
+	// app by name (v0.4.2). Zero lets the daemon default it from a single
+	// published/EXPOSEd port. Independent of Publish, which is the direct
+	// host-port bypass path.
+	Port int `json:"port,omitempty"`
+
 	// Network is the per-app egress policy; nil means default-deny.
 	Network *NetworkRequest `json:"network,omitempty"`
 
