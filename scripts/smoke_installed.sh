@@ -4,17 +4,21 @@
 #
 # Unlike the other smokes (which spin up their own daemon), this drives the
 # `crucible` you'd get from a real install — the binary on your PATH talking to
-# the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey.
-# It answers one question: "will someone who installs the release hit a wall?"
+# the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey:
+# run/shell/exec, egress deny, logs, snapshot+fork, --disk, stop/rm, build,
+# durable apps (v0.4), and the MCP server. It answers one question: "will
+# someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
-#   - creates its own sandboxes/snapshots/image and deletes ONLY those on exit
-#   - never lists-and-deletes, never stops or restarts the daemon
+#   - creates its own sandboxes/snapshots/image/app and deletes ONLY those on exit
+#   - never lists-and-deletes, never stops or restarts the daemon (so the durable
+#     app is tested via self-heal — killing its instance — not a daemon restart)
 #
 # Prereqs: the daemon is running with image + durable logs enabled
 #   (--image-dir and --log-dir in CRUCIBLE_FLAGS) and a default egress iface;
-#   internet to pull the public images; curl; docker (only for the build step).
+#   for the apps step also --app-db; internet to pull the public images; curl;
+#   python3 (only for the MCP step); docker (only for the build step).
 #
 # Usage:
 #   sudo systemctl start crucible        # make sure it's up
@@ -34,6 +38,7 @@ IMAGE="${IMAGE:-nginx:alpine}"
 ALPINE="${ALPINE:-alpine:latest}"
 HOST_PORT_A="${HOST_PORT_A:-8080}"
 HOST_PORT_B="${HOST_PORT_B:-8081}"
+HOST_PORT_C="${HOST_PORT_C:-8082}"   # durable-app instance
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -52,16 +57,19 @@ skip() { SKIP=$((SKIP+1)); echo "   SKIP: $*"; }
 cli()  { "$CRUCIBLE_BIN" --addr "$ADDR" "$@"; }
 
 # --- own-resource tracking + safe cleanup ------------------------------------
-CREATED_SBX=(); CREATED_SNAP=(); CREATED_IMG=()
+CREATED_SBX=(); CREATED_SNAP=(); CREATED_IMG=(); CREATED_APP=()
 track_sbx()  { CREATED_SBX+=("$1"); }
 track_snap() { CREATED_SNAP+=("$1"); }
 track_img()  { CREATED_IMG+=("$1"); }
+track_app()  { CREATED_APP+=("$1"); }
 
 cleanup() {
   echo "== cleanup (only what this smoke created)"
+  for name in "${CREATED_APP[@]:-}"; do [[ -n "$name" ]] && cli app rm "$name" >/dev/null 2>&1 || true; done
   for id in "${CREATED_SBX[@]:-}"; do [[ -n "$id" ]] && cli sandbox rm "$id" >/dev/null 2>&1 || true; done
   for id in "${CREATED_SNAP[@]:-}"; do [[ -n "$id" ]] && cli snapshot rm "$id" >/dev/null 2>&1 || true; done
   for id in "${CREATED_IMG[@]:-}"; do [[ -n "$id" ]] && cli image rm "$id" >/dev/null 2>&1 || true; done
+  [[ -n "${MCP_TMP:-}" ]] && rm -rf "$MCP_TMP" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -77,14 +85,14 @@ hit() {
 }
 
 # ---- 00 preflight: daemon up + version --------------------------------------
-echo "== 00 daemon reachable and on v0.3.x"
+echo "== 00 daemon reachable and on v0.3.x/v0.4.x"
 if ! curl -sf "$BASE_URL/healthz" >/dev/null 2>&1; then
   echo "error: no daemon at $BASE_URL — start it: sudo systemctl start crucible" >&2
   exit 3
 fi
 VER="$(cli version 2>&1)"
-if [[ "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
-else fail "unexpected version: $VER (want v0.3.x)"; fi
+if [[ "$VER" == *"v0.4."* || "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
+else fail "unexpected version: $VER (want v0.3.x or v0.4.x)"; fi
 
 # ---- 01 boot an image + publish a port + reach it from the host -------------
 echo "== 01 run $IMAGE -p $HOST_PORT_A:80 (long-lived) and curl it"
@@ -197,6 +205,156 @@ if command -v docker >/dev/null 2>&1; then
   else fail "build produced no digest: $DIG"; fi
 else
   skip "docker not installed — crucible build needs it (client-side)"
+fi
+
+# ---- 10 durable app: create, serve, health, self-heal, delete (v0.4) --------
+echo "== 10 durable app (v0.4): create + serve + http health + self-heal + rm"
+APP="crucible-smoke-app"
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint (pre-v0.4, or apps not enabled)"
+else
+  cli app rm "$APP" >/dev/null 2>&1 || true   # free the name from a prior run
+  OUT="$(cli app create "$APP" --image "$IMAGE" -p "$HOST_PORT_C:80" \
+           --restart always --health "http:80:/" --memory 256 2>&1)"
+  if [[ "$OUT" == "$APP" ]]; then
+    track_app "$APP"
+    # the app's instance boots and serves the published port
+    if hit "http://localhost:$HOST_PORT_C/" "html" || hit "http://localhost:$HOST_PORT_C/" "nginx"; then
+      pass "app instance booted and served on :$HOST_PORT_C"
+    else
+      fail "app never served on :$HOST_PORT_C"
+    fi
+    # the http health probe reaches the guest and passes
+    HEALTHY=0
+    for _ in {1..25}; do
+      [[ "$(curl -s "$BASE_URL/apps/$APP" 2>/dev/null)" == *'"health":"healthy"'* ]] && { HEALTHY=1; break; }
+      sleep 1
+    done
+    [[ "$HEALTHY" -eq 1 ]] && pass "http health check reports healthy" \
+      || fail "app never reported healthy: $(curl -s "$BASE_URL/apps/$APP" 2>&1)"
+    # ls surfaces it
+    if cli app ls 2>/dev/null | grep -q "$APP"; then pass "app ls lists $APP"; else fail "app ls missing $APP"; fi
+    # self-heal (the reconcile machinery, without restarting the daemon): kill the
+    # instance out from under the app and confirm a NEW one is re-created + serves.
+    INST="$(curl -s "$BASE_URL/apps/$APP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+    if [[ "$INST" == sbx_* ]]; then
+      cli sandbox rm "$INST" >/dev/null 2>&1 || true
+      HEALED=0; NEW=""
+      for _ in {1..60}; do
+        NEW="$(curl -s "$BASE_URL/apps/$APP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+        if [[ "$NEW" == sbx_* && "$NEW" != "$INST" ]] && curl -sf "http://localhost:$HOST_PORT_C/" >/dev/null 2>&1; then
+          HEALED=1; break
+        fi
+        sleep 1
+      done
+      [[ "$HEALED" -eq 1 ]] && pass "self-heal: reconciler re-created the instance ($INST → $NEW) and it serves again" \
+        || fail "app did not self-heal after its instance was killed ($INST → ${NEW:-none})"
+    else
+      skip "could not read app instance id for the self-heal check"
+    fi
+    # delete tears the app AND its instance down (port stops answering)
+    cli app rm "$APP" >/dev/null 2>&1
+    sleep 3
+    if curl -sf "http://localhost:$HOST_PORT_C/" >/dev/null 2>&1; then
+      fail "deleted app still serving on :$HOST_PORT_C"
+    else
+      pass "app rm tore down the app and its instance"
+    fi
+  else
+    skip "app create failed/unsupported (daemon needs --app-db in CRUCIBLE_FLAGS): $OUT"
+  fi
+fi
+
+# ---- 11 MCP server drives the daemon (stdio JSON-RPC) -----------------------
+echo "== 11 MCP server (crucible mcp serve) end-to-end"
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "python3 not installed — the MCP smoke drives the stdio protocol with it"
+else
+  MCP_TMP="$(mktemp -d)"
+  MCP_APP="crucible-smoke-mcp"
+  track_app "$MCP_APP"   # safety net in case the driver dies mid round-trip
+  cli app rm "$MCP_APP" >/dev/null 2>&1 || true
+  cat >"$MCP_TMP/mcp_driver.py" <<'PY'
+import json, os, signal, subprocess, sys
+
+signal.alarm(240)  # never wedge the smoke on a hung daemon
+
+CRUX = os.environ["CRUX"]; ADDR = os.environ["ADDR"]
+IMAGE = os.environ.get("MCP_IMAGE", "alpine:latest")
+APP = os.environ.get("MCP_APP", "crucible-smoke-mcp")
+
+p = subprocess.Popen([CRUX, "--addr", ADDR, "mcp", "serve"],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=sys.stderr, text=True, bufsize=1)
+
+def send(o): p.stdin.write(json.dumps(o) + "\n"); p.stdin.flush()
+def read(): return json.loads(p.stdout.readline())
+def die(msg): print("DRIVER-FAIL:", msg); p.kill(); sys.exit(1)
+
+send({"jsonrpc":"2.0","id":1,"method":"initialize",
+      "params":{"protocolVersion":"2025-06-18","capabilities":{},
+                "clientInfo":{"name":"installed-smoke","version":"0"}}})
+read()
+send({"jsonrpc":"2.0","method":"notifications/initialized"})
+
+# tools/list — the catalog must advertise the core sandbox tools
+send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
+tools = sorted(t["name"] for t in read()["result"]["tools"])
+print("tools/list (%d): %s" % (len(tools), tools))
+for t in ("run","exec","create_sandbox","delete_sandbox","list_profiles"):
+    if t not in tools: die("catalog missing core tool %r" % t)
+
+def call(name, args):
+    send({"jsonrpc":"2.0","id":99,"method":"tools/call",
+          "params":{"name":name,"arguments":args}})
+    return read()["result"]
+
+# run round-trip: MCP boots a VM, runs a command, tears it down
+r = call("run", {"image":IMAGE, "command":["sh","-c","echo mcp-run-ok"]})
+if r.get("isError"): die("run errored: %s" % r["content"])
+out = r["structuredContent"]
+if out["exit_code"] != 0 or "mcp-run-ok" not in out["stdout"]:
+    die("run output wrong: %r" % out)
+print("run: exit=%d stdout=%r" % (out["exit_code"], out["stdout"]))
+print("MCP-CORE-OK")
+
+# app tools (v0.4): create stopped (no VM boot) → get → list → delete
+app_tools = {"create_app","list_apps","get_app","delete_app"}
+if not app_tools.issubset(tools):
+    print("MCP-APPS-SKIP (app tools not advertised)")
+else:
+    r = call("create_app", {"name":APP, "image":IMAGE, "stopped":True})
+    if r.get("isError"): die("create_app errored: %s" % r["content"])
+    if not r["structuredContent"]["id"].startswith("app_"):
+        die("create_app returned no app id: %r" % r["structuredContent"])
+    r = call("get_app", {"name":APP})
+    if r.get("isError") or r["structuredContent"]["name"] != APP:
+        die("get_app wrong: %r" % r.get("structuredContent"))
+    r = call("list_apps", {})
+    names = [a["name"] for a in r["structuredContent"]["apps"]]
+    if APP not in names: die("list_apps missing %r: %s" % (APP, names))
+    r = call("delete_app", {"name":APP})
+    if r.get("isError"): die("delete_app errored: %s" % r["content"])
+    print("app tools: create/get/list/delete round-trip ok")
+    print("MCP-APPS-OK")
+
+p.stdin.close()
+try: p.wait(timeout=10)
+except Exception: p.kill()
+PY
+  MCP_OUT="$(CRUX="$CRUCIBLE_BIN" ADDR="$ADDR" MCP_IMAGE="$ALPINE" MCP_APP="$MCP_APP" \
+             python3 "$MCP_TMP/mcp_driver.py" 2>&1)"; MCP_RC=$?
+  echo "$MCP_OUT" | sed 's/^/     /'
+  if [[ "$MCP_RC" -eq 0 && "$MCP_OUT" == *"MCP-CORE-OK"* ]]; then
+    pass "MCP core: tools/list advertises the catalog + run round-trip through the daemon"
+  else
+    fail "MCP core checks failed (rc=$MCP_RC)"
+  fi
+  if [[ "$MCP_OUT" == *"MCP-APPS-OK"* ]]; then
+    pass "MCP app tools: create/get/list/delete round-trip"
+  elif [[ "$MCP_OUT" == *"MCP-APPS-SKIP"* ]]; then
+    skip "MCP app tools not advertised (pre-v0.4 daemon)"
+  fi
 fi
 
 # ---- summary ----------------------------------------------------------------

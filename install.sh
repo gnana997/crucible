@@ -27,7 +27,7 @@
 #   --enable            (daemon) enable + start the service now
 #   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, and a guest kernel — opt-in, checksum-verified
 #   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
-#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --network-egress-iface to an existing config
+#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --network-egress-iface to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
 #   --token-name NAME   (daemon) name for --connect-token's key (default: remote-client)
 #   --version TAG       release tag (default: latest; download mode)
@@ -527,6 +527,7 @@ apply_config_flags() {
     }
     add_flag "--image-dir" "$STATEDIR/images"
     add_flag "--log-dir"   "$STATEDIR/logs"
+    add_flag "--app-db"    "$STATEDIR/apps.db"
     [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && add_flag "--network-egress-iface" "$egress"
     return $changed
 }
