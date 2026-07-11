@@ -41,6 +41,9 @@ import (
 type idParam struct {
 	ID string `path:"id" description:"Sandbox ID, e.g. sbx_ab12cd34."`
 }
+type appNameParam struct {
+	Name string `path:"name" description:"App name (a DNS label, e.g. web)."`
+}
 type snapIDParam struct {
 	ID string `path:"id" description:"Snapshot ID, e.g. snap_ab12cd34."`
 }
@@ -183,6 +186,22 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodGet, "/profiles", "listProfiles", "meta", "List rootfs profiles",
 		"The rootfs profiles the daemon can boot sandboxes from.",
 		nil, api.ProfilesResponse{}, http.StatusOK)
+
+	// --- apps (durable workloads reconciled into instances; v0.4) ---
+	jsonOp(http.MethodPost, "/apps", "createApp", "apps", "Create a durable app",
+		"Creates a named app the daemon keeps a healthy instance of, re-creating it "+
+			"from spec after a daemon restart. desired_state defaults to \"running\". The "+
+			"instance boots asynchronously; the response is the app's initial state.",
+		api.CreateAppRequest{}, api.AppResponse{}, http.StatusCreated,
+		http.StatusBadRequest, http.StatusConflict, http.StatusForbidden, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/apps", "listApps", "apps", "List apps",
+		"", nil, api.AppListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/apps/{name}", "getApp", "apps", "Get an app",
+		"Desired state plus observed status (instance id, phase, health, restarts).",
+		appNameParam{}, api.AppResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/apps/{name}", "deleteApp", "apps", "Delete an app",
+		"Removes the app and tears down its instance on the next reconcile.",
+		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
 
 	// --- sandboxes ---
 	jsonOp(http.MethodPost, "/sandboxes", "createSandbox", "sandboxes", "Create a sandbox",

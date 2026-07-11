@@ -75,6 +75,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		switch {
 		case path == "/sandboxes":
 			return policy.OpCreate, true
+		// Creating an app configures an entrypoint the daemon runs — exec-grade.
+		case path == "/apps":
+			return policy.OpExec, true
 		// Image pull/import provision a bootable rootfs — create-grade.
 		case path == "/images" || path == "/images/import":
 			return policy.OpCreate, true

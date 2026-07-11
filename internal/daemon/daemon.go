@@ -28,6 +28,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/sandbox"
@@ -93,6 +94,11 @@ type Config struct {
 	// activity capture, and the GET /sandboxes/{id}/logs route. Nil
 	// makes that route answer 501 and skips the drain/capture.
 	LogStore *logstore.Store
+
+	// AppManager, when non-nil, enables the /apps routes: durable apps
+	// the daemon reconciles into running instances (v0.4 durability).
+	// Nil makes those routes answer 501.
+	AppManager *app.Manager
 }
 
 const (
@@ -140,6 +146,13 @@ func New(cfg Config) (*Server, error) {
 // for tests that want to use httptest.NewServer rather than binding a
 // real TCP port.
 func (s *Server) Handler() http.Handler { return s.http.Handler }
+
+// SetAppManager wires the durable-app control plane after construction.
+// Two-phase because the app manager's instantiator needs this Server (for
+// buildCreateConfig + the sandbox Manager), while the Server's routes need
+// the app manager — so the caller builds the Server, then the app manager
+// from s.NewAppInstantiator(), then calls this before serving.
+func (s *Server) SetAppManager(m *app.Manager) { s.cfg.AppManager = m }
 
 // ListenAndServe binds the configured address and serves until the server
 // is shut down or an error occurs. Returns http.ErrServerClosed on clean

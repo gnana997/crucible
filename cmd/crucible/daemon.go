@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/agentbin"
+	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/logstore"
@@ -117,6 +118,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// so `crucible logs` works and survives the sandbox. Kept outside
 		// --work-base so the reconcile sweep can't reap it. Empty disables it.
 		logDir = fs.String("log-dir", "/var/lib/crucible/logs", "directory for durable per-sandbox logs (service output + exec activity); empty disables `crucible logs`")
+		// Durable app control-plane store (v0.4). Kept outside --work-base
+		// (like --log-dir) so the sandbox reconcile sweep can't reap it.
+		// Enables the /apps routes + reconcile loop; empty disables apps.
+		appDB = fs.String("app-db", "/var/lib/crucible/apps.db", "bbolt file for durable apps; enables /apps + the reconcile loop when set (must be outside --work-base)")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -419,6 +424,28 @@ Required flags:
 		return 1
 	}
 
+	// Durable app control plane (v0.4, optional). Opened after the sandbox
+	// reconcile above has reaped the previous run's instances, so the
+	// app reconciler's initial pass boots fresh instances from persisted
+	// desired state — this is how an app survives a daemon restart.
+	var appMgr *app.Manager
+	var appStore *app.Store
+	if *appDB != "" {
+		as, aerr := app.Open(*appDB)
+		if aerr != nil {
+			logger.Warn("durable apps disabled", "app_db", *appDB, "err", aerr)
+		} else {
+			appStore = as
+			appMgr = app.NewManager(as, srv.NewAppInstantiator(), logger)
+			srv.SetAppManager(appMgr)
+			if serr := appMgr.Start(context.Background()); serr != nil {
+				logger.Warn("app reconciler start failed", "err", serr)
+			} else {
+				logger.Info("durable apps enabled", "app_db", *appDB)
+			}
+		}
+	}
+
 	// --- run + shutdown ---------------------------------------------------
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -450,7 +477,16 @@ Required flags:
 	if err := srv.Shutdown(drainCtx); err != nil {
 		logger.Warn("http shutdown did not complete cleanly", "err", err)
 	}
+	// Stop the app reconcile loop before draining sandboxes so it doesn't
+	// try to "heal" instances the drain is tearing down. Desired state
+	// stays in the store for the next start to reconcile from.
+	if appMgr != nil {
+		appMgr.Stop()
+	}
 	mgr.Shutdown(drainCtx)
+	if appStore != nil {
+		_ = appStore.Close()
+	}
 	if logStore != nil {
 		_ = logStore.Close()
 	}

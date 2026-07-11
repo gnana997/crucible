@@ -4,6 +4,51 @@
  */
 
 export interface paths {
+    "/apps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List apps */
+        get: operations["listApps"];
+        put?: never;
+        /**
+         * Create a durable app
+         * @description Creates a named app the daemon keeps a healthy instance of, re-creating it from spec after a daemon restart. desired_state defaults to "running". The instance boots asynchronously; the response is the app's initial state.
+         */
+        post: operations["createApp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an app
+         * @description Desired state plus observed status (instance id, phase, health, restarts).
+         */
+        get: operations["getApp"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete an app
+         * @description Removes the app and tears down its instance on the next reconcile.
+         */
+        delete: operations["deleteApp"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -398,6 +443,41 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AppListResponse: {
+            apps?: components["schemas"]["AppResponse"][] | null;
+        };
+        AppResponse: {
+            /** Format: date-time */
+            created_at?: string;
+            desired_state?: string;
+            /** Format: int64 */
+            disk_bytes?: number;
+            env?: {
+                [key: string]: string;
+            };
+            generation?: number;
+            health?: components["schemas"]["HealthCheck"];
+            id?: string;
+            image?: components["schemas"]["ImageRef"];
+            memory_mib?: number;
+            name?: string;
+            network?: components["schemas"]["NetworkRequest"];
+            publish?: components["schemas"]["PortMapping"][];
+            pull?: string;
+            restart?: components["schemas"]["WireRestartPolicy"];
+            service?: components["schemas"]["WireServiceSpec"];
+            status?: components["schemas"]["AppStatus"];
+            /** Format: date-time */
+            updated_at?: string;
+            vcpus?: number;
+        };
+        AppStatus: {
+            health?: string;
+            instance_id?: string;
+            last_error?: string;
+            phase?: string;
+            restarts?: number;
+        };
         ConfigureServiceReq: {
             cmd?: string[] | null;
             cwd?: string;
@@ -410,6 +490,24 @@ export interface components {
             stop_grace_s?: number;
             stop_signal?: string;
             user?: string;
+        };
+        CreateAppRequest: {
+            desired_state?: string;
+            /** Format: int64 */
+            disk_bytes?: number;
+            env?: {
+                [key: string]: string;
+            };
+            health?: components["schemas"]["HealthCheck"];
+            image?: components["schemas"]["ImageRef"];
+            memory_mib?: number;
+            name?: string;
+            network?: components["schemas"]["NetworkRequest"];
+            publish?: components["schemas"]["PortMapping"][];
+            pull?: string;
+            restart?: components["schemas"]["WireRestartPolicy"];
+            service?: components["schemas"]["WireServiceSpec"];
+            vcpus?: number;
         };
         CreateSandboxRequest: {
             boot_args?: string;
@@ -442,6 +540,17 @@ export interface components {
         };
         ForkResponse: {
             sandboxes?: components["schemas"]["SandboxResponse"][] | null;
+        };
+        HealthCheck: {
+            cmd?: string[];
+            healthy_threshold?: number;
+            interval_s?: number;
+            path?: string;
+            port?: number;
+            start_period_s?: number;
+            timeout_s?: number;
+            type?: string;
+            unhealthy_threshold?: number;
         };
         HealthResponse: {
             /** @example ok */
@@ -628,6 +737,175 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listApps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppListResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateAppRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;

@@ -6,6 +6,14 @@ from __future__ import annotations
 from pydantic import AwareDatetime, BaseModel, Field, conint
 
 
+class AppStatus(BaseModel):
+    health: str | None = None
+    instance_id: str | None = None
+    last_error: str | None = None
+    phase: str | None = None
+    restarts: int | None = None
+
+
 class ErrorResponse(BaseModel):
     error: str | None = None
 
@@ -15,6 +23,18 @@ class ExecReq(BaseModel):
     cwd: str | None = None
     env: dict[str, str] | None = None
     timeout_s: int | None = None
+
+
+class HealthCheck(BaseModel):
+    cmd: list[str] | None = None
+    healthy_threshold: int | None = None
+    interval_s: int | None = None
+    path: str | None = None
+    port: int | None = None
+    start_period_s: int | None = None
+    timeout_s: int | None = None
+    type: str | None = None
+    unhealthy_threshold: int | None = None
 
 
 class HealthResponse(BaseModel):
@@ -154,6 +174,27 @@ class WireServiceSpec(BaseModel):
     user: str | None = None
 
 
+class AppResponse(BaseModel):
+    created_at: AwareDatetime | None = None
+    desired_state: str | None = None
+    disk_bytes: int | None = None
+    env: dict[str, str] | None = None
+    generation: conint(ge=0) | None = None
+    health: HealthCheck | None = None
+    id: str | None = None
+    image: ImageRef | None = None
+    memory_mib: int | None = None
+    name: str | None = None
+    network: NetworkRequest | None = None
+    publish: list[PortMapping] | None = None
+    pull: str | None = None
+    restart: WireRestartPolicy | None = None
+    service: WireServiceSpec | None = None
+    status: AppStatus | None = None
+    updated_at: AwareDatetime | None = None
+    vcpus: int | None = None
+
+
 class ConfigureServiceReq(BaseModel):
     cmd: list[str] | None = None
     cwd: str | None = None
@@ -164,6 +205,22 @@ class ConfigureServiceReq(BaseModel):
     stop_grace_s: int | None = None
     stop_signal: str | None = None
     user: str | None = None
+
+
+class CreateAppRequest(BaseModel):
+    desired_state: str | None = None
+    disk_bytes: int | None = None
+    env: dict[str, str] | None = None
+    health: HealthCheck | None = None
+    image: ImageRef | None = None
+    memory_mib: int | None = None
+    name: str | None = None
+    network: NetworkRequest | None = None
+    publish: list[PortMapping] | None = None
+    pull: str | None = None
+    restart: WireRestartPolicy | None = None
+    service: WireServiceSpec | None = None
+    vcpus: int | None = None
 
 
 class CreateSandboxRequest(BaseModel):
@@ -226,3 +283,7 @@ class WireServiceStatus(BaseModel):
     started_at_unix_ms: int | None = None
     state: str | None = None
     uptime_ms: int | None = None
+
+
+class AppListResponse(BaseModel):
+    apps: list[AppResponse] | None = None

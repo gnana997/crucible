@@ -65,6 +65,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /snapshots/{id}", s.handleDeleteSnapshot)
 	mux.HandleFunc("POST /snapshots/{id}/fork", s.handleForkSnapshot)
 	mux.HandleFunc("GET /profiles", s.handleListProfiles)
+	// Durable apps (v0.4): a named workload reconciled into a running
+	// instance that survives daemon restart. 501 when AppManager is nil.
+	mux.HandleFunc("POST /apps", s.handleCreateApp)
+	mux.HandleFunc("GET /apps", s.handleListApps)
+	mux.HandleFunc("GET /apps/{name}", s.handleGetApp)
+	mux.HandleFunc("DELETE /apps/{name}", s.handleDeleteApp)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	mux.HandleFunc("POST /images", s.handlePullImage)
@@ -191,6 +197,80 @@ func (s *Server) acquireImage(ctx context.Context, ref, pull string) (*oci.Image
 		}
 		return rec, err
 	}
+}
+
+// buildCreateConfig resolves a CreateSandboxRequest into a
+// sandbox.CreateConfig: image resolution (→ rootfs + boot args + effective
+// service), network validation, port publish, and service validation. It
+// mutates req.BootArgs and req.Service with image-derived values so a
+// caller can apply policy against the effective request. TokenID is left
+// unset for the caller to fill. Shared by handleCreateSandbox and the app
+// instantiator so an app boots through the exact same path a `create` does.
+func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRequest, pull string) (sandbox.CreateConfig, *imageErr) {
+	imgRec, imgBootArgs, ierr := s.resolveImage(ctx, req.Image, pull)
+	if ierr != nil {
+		return sandbox.CreateConfig{}, ierr
+	}
+	var rootfsOverride string
+	staticNetwork := false
+	if imgRec != nil {
+		rootfsOverride = imgRec.RootfsPath
+		req.BootArgs = imgBootArgs
+		// OCI guests have no DHCP client; the network is pushed over vsock.
+		staticNetwork = true
+		// Run the image's own entrypoint merged with any override
+		// (docker-run semantics); nil for a bare sandbox.
+		req.Service = effectiveServiceSpec(imgRec.RunConfig, req.Service)
+	}
+
+	var netCfg *sandbox.NetworkConfig
+	if req.Network != nil {
+		al, status, err := validateNetwork(req.Network)
+		if err != nil {
+			return sandbox.CreateConfig{}, &imageErr{status, err}
+		}
+		if al != nil {
+			netCfg = &sandbox.NetworkConfig{Allowlist: al}
+		}
+	}
+
+	// Port publish: ensure a NIC to forward to; synthesize an
+	// egress-denied one when none was requested (reachable, can't phone home).
+	var publish []sandbox.PortMapping
+	if len(req.Publish) > 0 {
+		pm, err := validatePublish(req.Publish)
+		if err != nil {
+			return sandbox.CreateConfig{}, &imageErr{http.StatusBadRequest, err}
+		}
+		publish = pm
+		if netCfg == nil {
+			denyAll, nerr := network.New(nil)
+			if nerr != nil {
+				return sandbox.CreateConfig{}, &imageErr{http.StatusInternalServerError, nerr}
+			}
+			netCfg = &sandbox.NetworkConfig{Allowlist: denyAll}
+		}
+	}
+
+	if req.Service != nil {
+		if err := validateServiceSpec(req.Service); err != nil {
+			return sandbox.CreateConfig{}, &imageErr{http.StatusBadRequest, err}
+		}
+	}
+
+	return sandbox.CreateConfig{
+		VCPUs:          req.VCPUs,
+		MemoryMiB:      req.MemoryMiB,
+		BootArgs:       req.BootArgs,
+		TimeoutSec:     req.TimeoutSec,
+		Profile:        req.Profile,
+		RootfsOverride: rootfsOverride,
+		StaticNetwork:  staticNetwork,
+		Network:        netCfg,
+		Service:        req.Service,
+		Publish:        publish,
+		DiskBytes:      req.DiskBytes,
+	}, nil
 }
 
 // resolveImage turns a request's ImageRef into a store record + boot
@@ -393,75 +473,14 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	// Image resolution. A per-sandbox path override is still 501; an OCI
-	// reference resolves against the image store — acquiring it on a miss
-	// per the pull policy — to a converted rootfs the sandbox boots with
-	// the guest agent as PID 1. Both/neither is a 400. Returns the store
-	// record + boot args, or nil when no image.
-	imgRec, imgBootArgs, ierr := s.resolveImage(r.Context(), req.Image, pull)
+	// Resolve the request into a CreateConfig (image → rootfs, network,
+	// publish, service). Shared with the app instantiator (see
+	// buildCreateConfig); it mutates req.BootArgs/Service with
+	// image-derived values so policy below sees the effective request.
+	cfg, ierr := s.buildCreateConfig(r.Context(), &req, pull)
 	if ierr != nil {
 		writeError(w, ierr.status, ierr.err)
 		return
-	}
-	var rootfsOverride string
-	staticNetwork := false
-	if imgRec != nil {
-		rootfsOverride = imgRec.RootfsPath
-		req.BootArgs = imgBootArgs
-		// OCI guests have no DHCP client, so their network is pushed
-		// over vsock (netlink) rather than DHCP'd.
-		staticNetwork = true
-		// Run the image's own entrypoint: the effective service spec is
-		// the image's OCI config merged with any request override
-		// (docker-run semantics). Nil when the image has no
-		// entrypoint/cmd and none was supplied — a bare sandbox.
-		req.Service = effectiveServiceSpec(imgRec.RunConfig, req.Service)
-	}
-
-	// Network validation — parses the allowlist into a matcher or
-	// rejects with 400. Passed into sandbox.Manager as a typed
-	// NetworkConfig; nil means no NIC.
-	var netCfg *sandbox.NetworkConfig
-	if req.Network != nil {
-		al, status, err := validateNetwork(req.Network)
-		if err != nil {
-			writeError(w, status, err)
-			return
-		}
-		if al != nil {
-			netCfg = &sandbox.NetworkConfig{Allowlist: al}
-		}
-	}
-
-	// Port publish. Validate the mappings, then ensure the sandbox has a
-	// NIC to forward to: if the request asked for no network, synthesize
-	// an egress-denied one (empty allowlist) — an exposed service that
-	// can be reached but can't phone home is the safer default.
-	var publish []sandbox.PortMapping
-	if len(req.Publish) > 0 {
-		pm, err := validatePublish(req.Publish)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		publish = pm
-		if netCfg == nil {
-			denyAll, nerr := network.New(nil) // empty allowlist = deny all egress
-			if nerr != nil {
-				writeError(w, http.StatusInternalServerError, nerr)
-				return
-			}
-			netCfg = &sandbox.NetworkConfig{Allowlist: denyAll}
-		}
-	}
-
-	// Service validation (experimental create-with-service): a bad spec
-	// fails here with a 400 rather than mid-create against the agent.
-	if req.Service != nil {
-		if err := validateServiceSpec(req.Service); err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
 	}
 
 	// Scoped-token ceilings — every violation reported at once. max_sandboxes is
@@ -493,20 +512,8 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sb, err := s.cfg.Manager.Create(r.Context(), sandbox.CreateConfig{
-		VCPUs:          req.VCPUs,
-		MemoryMiB:      req.MemoryMiB,
-		BootArgs:       req.BootArgs,
-		TimeoutSec:     req.TimeoutSec,
-		Profile:        req.Profile,
-		RootfsOverride: rootfsOverride,
-		StaticNetwork:  staticNetwork,
-		Network:        netCfg,
-		TokenID:        tokenID,
-		Service:        req.Service,
-		Publish:        publish,
-		DiskBytes:      req.DiskBytes,
-	})
+	cfg.TokenID = tokenID
+	sb, err := s.cfg.Manager.Create(r.Context(), cfg)
 	if err != nil {
 		if errors.Is(err, sandbox.ErrInvalidConfig) {
 			writeError(w, http.StatusBadRequest, err)
