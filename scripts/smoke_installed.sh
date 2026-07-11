@@ -214,10 +214,14 @@ if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
   skip "daemon has no /apps endpoint (pre-v0.4, or apps not enabled)"
 else
   cli app rm "$APP" >/dev/null 2>&1 || true   # free the name from a prior run
+  # stdout carries JUST the app name; image import/progress goes to stderr, so
+  # capture the streams separately and match stdout exactly.
+  APP_ERR="$(mktemp)"
   OUT="$(cli app create "$APP" --image "$IMAGE" -p "$HOST_PORT_C:80" \
-           --restart always --health "http:80:/" --memory 256 2>&1)"
+           --restart always --health "http:80:/" --memory 256 2>"$APP_ERR")"
   if [[ "$OUT" == "$APP" ]]; then
     track_app "$APP"
+    rm -f "$APP_ERR"
     # the app's instance boots and serves the published port
     if hit "http://localhost:$HOST_PORT_C/" "html" || hit "http://localhost:$HOST_PORT_C/" "nginx"; then
       pass "app instance booted and served on :$HOST_PORT_C"
@@ -261,7 +265,10 @@ else
       pass "app rm tore down the app and its instance"
     fi
   else
-    skip "app create failed/unsupported (daemon needs --app-db in CRUCIBLE_FLAGS): $OUT"
+    # The /apps probe above already confirmed apps are enabled, so a create that
+    # doesn't print the name is a real failure, not an unsupported daemon.
+    fail "app create did not return the name: stdout=${OUT:-<none>} stderr=$(cat "$APP_ERR" 2>/dev/null)"
+    rm -f "$APP_ERR"
   fi
 fi
 
