@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -255,6 +256,15 @@ type NetworkConfig struct {
 	// the typed value through. Required when NetworkConfig is
 	// non-nil.
 	Allowlist NetworkAllowlist
+
+	// FullEgress lets the guest reach any public host (metadata/
+	// link-local/RFC1918 still blocked). Broadest of the egress modes.
+	FullEgress bool
+
+	// CIDRs permits direct egress to IP literals in these public IPv4
+	// prefixes, on top of the hostname allowlist. Private/reserved space
+	// inside a prefix is still dropped.
+	CIDRs []netip.Prefix
 }
 
 // NetworkAllowlist decouples sandbox.Manager from internal/network's
@@ -446,8 +456,10 @@ type PublishHandle interface {
 // Mirrors internal/network.SandboxSetup but lives here so
 // sandbox.Manager doesn't import the network package directly.
 type NetworkSetupRequest struct {
-	SandboxID string
-	Allowlist NetworkAllowlist
+	SandboxID  string
+	Allowlist  NetworkAllowlist
+	FullEgress bool
+	CIDRs      []netip.Prefix
 }
 
 // NetworkHandle is the return value of NetworkProvisioner.Setup,
@@ -487,6 +499,12 @@ type NetworkHandle struct {
 	// immutable; sharing a single instance across source + forks
 	// is safe.
 	Allowlist NetworkAllowlist
+
+	// FullEgress and CIDRs mirror the source sandbox's range-based egress
+	// so a fork reconstructs the same policy (carried onto Snapshot.Network
+	// alongside Allowlist).
+	FullEgress bool
+	CIDRs      []netip.Prefix
 
 	// Impl is an opaque reference to the network package's own
 	// handle type, carried along so Teardown can pass the same
@@ -844,8 +862,10 @@ func (m *Manager) provisionNetwork(ctx context.Context, sandboxID string, req *N
 		return nil, errors.New("sandbox: NetworkConfig.Allowlist required")
 	}
 	h, err := m.cfg.Network.Setup(ctx, NetworkSetupRequest{
-		SandboxID: sanitizeNetworkID(sandboxID),
-		Allowlist: req.Allowlist,
+		SandboxID:  sanitizeNetworkID(sandboxID),
+		Allowlist:  req.Allowlist,
+		FullEgress: req.FullEgress,
+		CIDRs:      req.CIDRs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: network setup: %w", err)
@@ -1136,7 +1156,9 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	// re-parsing patterns for every fork.
 	if src.Network != nil && src.Network.Allowlist != nil {
 		snap.Network = &NetworkConfig{
-			Allowlist: src.Network.Allowlist,
+			Allowlist:  src.Network.Allowlist,
+			FullEgress: src.Network.FullEgress,
+			CIDRs:      src.Network.CIDRs,
 		}
 	}
 

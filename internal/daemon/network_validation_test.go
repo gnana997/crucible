@@ -43,15 +43,15 @@ func TestNetworkDisabledWithAllowlistIsRejected(t *testing.T) {
 	}
 	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
-	if !strings.Contains(e.Error, "allowlist set but") {
-		t.Errorf("error = %q, want 'allowlist set but ...'", e.Error)
+	if !strings.Contains(e.Error, "network.enabled is false") {
+		t.Errorf("error = %q, want '... network.enabled is false'", e.Error)
 	}
 }
 
 func TestNetworkEnabledWithEmptyAllowlistIsRejected(t *testing.T) {
-	// enabled=true + empty allowlist would be "full internet",
-	// which violates our default-deny ethos. v0.1 rejects
-	// explicitly rather than silently allowing everything.
+	// enabled=true with no allowlist AND no full_egress/CIDR is inconsistent:
+	// networking was requested but nothing is reachable. Rejected explicitly
+	// rather than silently allowing (or denying) everything.
 	resp := postCreateNetworkBody(t, map[string]any{
 		"network": map[string]any{
 			"enabled": true,
@@ -62,8 +62,8 @@ func TestNetworkEnabledWithEmptyAllowlistIsRejected(t *testing.T) {
 	}
 	var e api.ErrorResponse
 	decodeJSON(t, resp, &e)
-	if !strings.Contains(e.Error, "non-empty allowlist") {
-		t.Errorf("error = %q, want 'non-empty allowlist ...'", e.Error)
+	if !strings.Contains(e.Error, "requires an allowlist, full_egress, or allowlist_cidr") {
+		t.Errorf("error = %q, want '... requires an allowlist, full_egress, or allowlist_cidr'", e.Error)
 	}
 }
 

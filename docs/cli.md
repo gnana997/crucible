@@ -45,6 +45,8 @@ Two shapes, chosen by the `--` separator:
 | `-p, --publish` (repeatable) | publish a port `[HOST_IP:]HOST:GUEST[/tcp]` |
 | `-P, --publish-all` | publish every port the image `EXPOSE`s (guest N → host N) |
 | `--net-allow` (repeatable) | allowlisted hostname; enables egress |
+| `--net-allow-cidr` (repeatable) | allow direct egress to a public IPv4 CIDR (e.g. `203.0.113.0/24`) |
+| `--net-full-egress` | reach any public host (metadata/link-local/RFC1918 still blocked) |
 | `--pull` | `missing` (default) / `always` / `never` |
 | `--disk` | grow the writable rootfs to this size, e.g. `2G` / `512M` (default: template headroom) |
 | `--rm` | tail logs in the foreground; remove the sandbox on detach (Ctrl-C) |
@@ -131,7 +133,8 @@ throwaway work; `app` is for a server you want to stay up.
 `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec
 check, exit 0 = healthy), `-p/--publish` (repeatable), `-P/--publish-all`
 (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable,
-delivered to the entrypoint), `--net-allow` (repeatable), `--vcpus`, `--memory`,
+delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr`
+(public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`,
 `--disk`, `--stopped`.
 
 ```bash

@@ -36,6 +36,26 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	// Scoped-token egress ceiling — an app's instance is created through the
+	// same path a sandbox is, so the network grants must apply here too (the
+	// sandbox-create handler is bypassed for apps).
+	if pol := policyFor(r); pol != nil {
+		var reqNet []string
+		wantFull, wantCIDR := false, false
+		if n := req.Network; n != nil && n.Enabled {
+			reqNet = n.Allowlist
+			wantFull = n.FullEgress
+			wantCIDR = len(n.AllowlistCIDR) > 0
+		}
+		if err := errors.Join(
+			pol.CheckNetAllow(reqNet),
+			pol.CheckFullEgress(wantFull, wantCIDR),
+		); err != nil {
+			writeError(w, http.StatusForbidden, err)
+			return
+		}
+	}
+
 	desiredRunning := req.DesiredState != "stopped"
 	rec, err := s.cfg.AppManager.Create(req.AppSpec, desiredRunning)
 	if err != nil {

@@ -113,6 +113,21 @@ type NetworkRequest struct {
 	// DNS proxy + nftables. Each entry is an exact hostname ("pypi.org")
 	// or a single-label wildcard ("*.npmjs.org"). Bare "*" is rejected.
 	Allowlist []string `json:"allowlist,omitempty"`
+
+	// FullEgress, when true, lets the guest reach any *public* host —
+	// "the internet", but still with metadata/link-local/RFC1918/CGNAT
+	// and the other reserved ranges blocked (public-unicast only). It is
+	// the right default for a trusted app you deploy yourself; it does NOT
+	// weaken the SSRF guard. Composes with Allowlist/AllowlistCIDR (it is
+	// the broadest of the three). Requires enabled=true.
+	FullEgress bool `json:"full_egress,omitempty"`
+
+	// AllowlistCIDR permits direct egress to IP literals inside these
+	// IPv4 prefixes (e.g. "203.0.113.0/24"), which the hostname allowlist
+	// alone can't express. Each prefix is still filtered to public-unicast
+	// space: a prefix overlapping private/metadata ranges has those
+	// addresses dropped, and a wholly-private prefix reaches nothing.
+	AllowlistCIDR []string `json:"allowlist_cidr,omitempty"`
 }
 
 // ImageRef identifies a per-sandbox rootfs override. Exactly one of

@@ -28,27 +28,31 @@ import (
 type noInput struct{}
 
 type runInput struct {
-	Profile  string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
-	Image    string   `json:"image,omitempty" jsonschema:"OCI image to run the command inside, e.g. \"python:3.12-slim\" or a converted digest; the daemon pulls+converts on a store miss. Mutually exclusive with profile."`
-	Pull     string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
-	Command  []string `json:"command" jsonschema:"command argv to run, e.g. [\"python\",\"-c\",\"print(1)\"]"`
-	Env      []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings"`
-	DiskMib  int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
-	TimeoutS int      `json:"timeout_s,omitempty" jsonschema:"wall-clock timeout in seconds"`
-	NetAllow []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
+	Profile       string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
+	Image         string   `json:"image,omitempty" jsonschema:"OCI image to run the command inside, e.g. \"python:3.12-slim\" or a converted digest; the daemon pulls+converts on a store miss. Mutually exclusive with profile."`
+	Pull          string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
+	Command       []string `json:"command" jsonschema:"command argv to run, e.g. [\"python\",\"-c\",\"print(1)\"]"`
+	Env           []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings"`
+	DiskMib       int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
+	TimeoutS      int      `json:"timeout_s,omitempty" jsonschema:"wall-clock timeout in seconds"`
+	NetAllow      []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
+	NetAllowCIDR  []string `json:"net_allow_cidr,omitempty" jsonschema:"public IPv4 CIDRs the sandbox may reach directly, e.g. [\"203.0.113.0/24\"]"`
+	NetFullEgress bool     `json:"net_full_egress,omitempty" jsonschema:"allow egress to ANY public host (metadata/link-local/RFC1918 still blocked). Subject to the server's --net-allow-max ceiling."`
 }
 
 type createSandboxInput struct {
-	Profile    string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
-	Image      string   `json:"image,omitempty" jsonschema:"OCI image to boot instead of a profile, e.g. \"nginx:alpine\" or a converted digest; the daemon pulls+converts on a store miss and runs its entrypoint. Mutually exclusive with profile."`
-	Pull       string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
-	Vcpus      int      `json:"vcpus,omitempty" jsonschema:"number of vCPUs"`
-	MemoryMib  int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB"`
-	DiskMib    int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
-	TimeoutS   int      `json:"timeout_s,omitempty" jsonschema:"sandbox idle timeout in seconds"`
-	NetAllow   []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
-	Publish    []string `json:"publish,omitempty" jsonschema:"host port publishes so a guest service is reachable from the host, e.g. [\"8080:80\"] or [\"127.0.0.1:8080:80\"]"`
-	PublishAll bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win. Image mode only."`
+	Profile       string   `json:"profile,omitempty" jsonschema:"rootfs profile to launch; omit to use the daemon's default rootfs. Mutually exclusive with image."`
+	Image         string   `json:"image,omitempty" jsonschema:"OCI image to boot instead of a profile, e.g. \"nginx:alpine\" or a converted digest; the daemon pulls+converts on a store miss and runs its entrypoint. Mutually exclusive with profile."`
+	Pull          string   `json:"pull,omitempty" jsonschema:"image pull policy when image is set: missing (default), always, or never"`
+	Vcpus         int      `json:"vcpus,omitempty" jsonschema:"number of vCPUs"`
+	MemoryMib     int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB"`
+	DiskMib       int      `json:"disk_mib,omitempty" jsonschema:"grow the writable rootfs to at least this many MiB (default: image/profile headroom)"`
+	TimeoutS      int      `json:"timeout_s,omitempty" jsonschema:"sandbox idle timeout in seconds"`
+	NetAllow      []string `json:"net_allow,omitempty" jsonschema:"hostnames the sandbox may reach; empty means no network"`
+	NetAllowCIDR  []string `json:"net_allow_cidr,omitempty" jsonschema:"public IPv4 CIDRs the sandbox may reach directly, e.g. [\"203.0.113.0/24\"]"`
+	NetFullEgress bool     `json:"net_full_egress,omitempty" jsonschema:"allow egress to ANY public host (metadata/link-local/RFC1918 still blocked). Subject to the server's --net-allow-max ceiling."`
+	Publish       []string `json:"publish,omitempty" jsonschema:"host port publishes so a guest service is reachable from the host, e.g. [\"8080:80\"] or [\"127.0.0.1:8080:80\"]"`
+	PublishAll    bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win. Image mode only."`
 }
 
 type logsInput struct {
@@ -288,6 +292,9 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
 		return nil, execOutput{}, err
 	}
+	if err := h.cfg.checkFullEgress(in.NetFullEgress, len(in.NetAllowCIDR) > 0); err != nil {
+		return nil, execOutput{}, err
+	}
 	if err := h.cfg.checkCapacity(ctx, 1); err != nil {
 		return nil, execOutput{}, err
 	}
@@ -304,9 +311,7 @@ func (h *handlers) run(ctx context.Context, _ *mcp.CallToolRequest, in runInput)
 		}
 		req.Profile = profile
 	}
-	if len(in.NetAllow) > 0 {
-		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
-	}
+	req.Network = mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress)
 	sb, err := h.cfg.Client.CreateSandbox(ctx, req)
 	if err != nil {
 		return nil, execOutput{}, err
@@ -331,6 +336,9 @@ func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in
 	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
 		return nil, sandboxOutput{}, err
 	}
+	if err := h.cfg.checkFullEgress(in.NetFullEgress, len(in.NetAllowCIDR) > 0); err != nil {
+		return nil, sandboxOutput{}, err
+	}
 	if err := h.cfg.checkCapacity(ctx, 1); err != nil {
 		return nil, sandboxOutput{}, err
 	}
@@ -347,9 +355,7 @@ func (h *handlers) createSandbox(ctx context.Context, _ *mcp.CallToolRequest, in
 		}
 		req.Profile = profile
 	}
-	if len(in.NetAllow) > 0 {
-		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: in.NetAllow}
-	}
+	req.Network = mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress)
 	for _, p := range in.Publish {
 		pm, err := api.ParsePublish(p)
 		if err != nil {

@@ -41,7 +41,8 @@ that axis"**, so `{}` is fully permissive.
 | Field | Type | Meaning |
 |---|---|---|
 | `operations` | `[]string` | allow-list of verbs: `create`, `exec`, `snapshot`, `fork`, `delete`, `read`. Absent/empty = all allowed. |
-| `net_allow_max` | `[]string` | egress ceiling (tri-state, below). |
+| `net_allow_max` | `[]string` | hostname egress ceiling (tri-state, below). |
+| `net_full_egress` | `bool` | grants the range-based egress modes (`full_egress`, `allowlist_cidr`). Default `false`: without it, a request asking for either is rejected — so a `net_allow_max` hostname ceiling can't be bypassed by switching to full-egress. |
 | `allow_profiles` | `[]string` | which rootfs profiles may launch. Absent = any. |
 | `max_sandboxes` | `int` | concurrent live sandboxes (0 = unlimited). |
 | `max_fork` | `int` | cap on a single `fork` count (0 = unlimited). |

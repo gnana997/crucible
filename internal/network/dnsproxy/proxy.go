@@ -458,6 +458,13 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 }
 
+// ReservedV4Prefixes exposes reservedV4Prefixes so the nft layer
+// (network.BlockedEgressPrefixes) can build its drop rules from the same
+// source of truth the DNS answer filter uses — see IsPublicUnicast.
+func ReservedV4Prefixes() []netip.Prefix {
+	return append([]netip.Prefix(nil), reservedV4Prefixes...)
+}
+
 // reservedV4Prefixes are IANA special-purpose IPv4 blocks that
 // netip's IsGlobalUnicast/IsPrivate do NOT catch: they look like
 // ordinary global unicast (and aren't RFC1918) yet route to

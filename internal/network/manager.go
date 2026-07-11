@@ -128,7 +128,24 @@ type SandboxSetup struct {
 	// from an empty slice) if the caller wants to explicitly ban
 	// everything but still plumb DNS (a rare case).
 	Allowlist *Allowlist
+
+	// FullEgress lets the guest reach any public host: the DNS proxy
+	// answers any name (still public-unicast-filtered) and nft accepts all
+	// but the BlockedEgressPrefixes. The broadest egress mode.
+	FullEgress bool
+
+	// CIDRs permits direct egress to IP literals in these public IPv4
+	// prefixes, on top of the hostname allowlist. Private/reserved overlaps
+	// are dropped by the nft SSRF guard.
+	CIDRs []netip.Prefix
 }
+
+// matchAllEgress answers "yes" for every hostname — the DNS-proxy matcher used
+// under full-egress. Resolved records are still filtered to public-unicast
+// space by the proxy, so this is "any public host", not "raw internet".
+type matchAllEgress struct{}
+
+func (matchAllEgress) Matches(string) bool { return true }
 
 // Start does the one-time host setup and returns a Manager.
 // Requires root (or CAP_NET_ADMIN + CAP_SYS_ADMIN). Fails fast on
@@ -306,7 +323,7 @@ func (m *Manager) Setup(ctx context.Context, req SandboxSetup) (*SandboxHandle, 
 	}()
 
 	// 4. nft per-sandbox rules.
-	if err := InstallSandbox(ctx, req.SandboxID, vspec.HostVeth(), lease.GuestIP, m.cfg.DNSAnycast); err != nil {
+	if err := InstallSandbox(ctx, req.SandboxID, vspec.HostVeth(), lease.GuestIP, m.cfg.DNSAnycast, req.FullEgress, req.CIDRs); err != nil {
 		return nil, fmt.Errorf("network: nft install: %w", err)
 	}
 	defer func() {
@@ -343,9 +360,15 @@ func (m *Manager) Setup(ctx context.Context, req SandboxSetup) (*SandboxHandle, 
 
 	// 6. Register with DNS proxy so queries from this guest IP
 	// are matched against its allowlist.
+	// Under full-egress the proxy answers any hostname (still public-unicast
+	// filtered); otherwise the hostname allowlist gates resolution.
+	var matcher dnsproxy.Matcher = req.Allowlist
+	if req.FullEgress {
+		matcher = matchAllEgress{}
+	}
 	m.proxy.Register(lease.GuestIP, &dnsproxy.Policy{
 		SandboxID: req.SandboxID,
-		Allowlist: req.Allowlist,
+		Allowlist: matcher,
 	})
 
 	h := &SandboxHandle{

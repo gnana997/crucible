@@ -35,6 +35,8 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		pull                   string
 		disk                   string
 		netAllow               []string
+		netAllowCIDR           []string
+		netFullEgress          bool
 		publish                []string
 		publishAll             bool
 	)
@@ -59,9 +61,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 				req.Image = &api.ImageRef{OCI: ref}
 				req.Pull = effPull
 			}
-			if len(netAllow) > 0 {
-				req.Network = &api.NetworkRequest{Enabled: true, Allowlist: netAllow}
-			}
+			req.Network = buildNetworkRequest(netAllow, netAllowCIDR, netFullEgress)
 			for _, p := range publish {
 				pm, err := parsePublish(p)
 				if err != nil {
@@ -89,6 +89,8 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing (default), always, or never")
 	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G or 512M (default: template headroom)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
+	cmd.Flags().StringArrayVar(&netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
+	cmd.Flags().BoolVar(&netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
 	return cmd
@@ -124,6 +126,21 @@ func parseDiskSize(s string) (int64, error) {
 		return 0, fmt.Errorf("invalid --disk %q (want e.g. 2G, 512M, or a byte count)", s)
 	}
 	return v * mult, nil
+}
+
+// buildNetworkRequest assembles the egress request from the three CLI flags,
+// or nil when none is set (default-deny). Networking is enabled implicitly by
+// any of them. Shared by `run`, `sandbox create`, and `app create`.
+func buildNetworkRequest(netAllow, netAllowCIDR []string, fullEgress bool) *api.NetworkRequest {
+	if len(netAllow) == 0 && len(netAllowCIDR) == 0 && !fullEgress {
+		return nil
+	}
+	return &api.NetworkRequest{
+		Enabled:       true,
+		Allowlist:     netAllow,
+		FullEgress:    fullEgress,
+		AllowlistCIDR: netAllowCIDR,
+	}
 }
 
 // parsePublish parses a docker-style port spec (see api.ParsePublish). Kept

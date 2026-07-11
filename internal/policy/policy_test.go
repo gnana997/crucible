@@ -349,3 +349,24 @@ func TestCheckVCPUsAndMemory(t *testing.T) {
 		t.Errorf("mem 0 (daemon default) should pass: %v", err)
 	}
 }
+
+func TestCheckFullEgress(t *testing.T) {
+	// No grant (default): full-egress and CIDR are both rejected; a plain
+	// hostname request (neither flag) is unaffected.
+	var denied Policy
+	if err := denied.CheckFullEgress(true, false); err == nil {
+		t.Error("full_egress without the grant should be rejected")
+	}
+	if err := denied.CheckFullEgress(false, true); err == nil {
+		t.Error("allowlist_cidr without the grant should be rejected")
+	}
+	if err := denied.CheckFullEgress(false, false); err != nil {
+		t.Errorf("neither flag should always pass: %v", err)
+	}
+
+	// Grant present: both allowed.
+	granted := Policy{NetFullEgress: true}
+	if err := granted.CheckFullEgress(true, true); err != nil {
+		t.Errorf("granted token should allow full_egress + CIDR: %v", err)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // This file holds the operator-policy enforcement — the guardrails from the
@@ -52,6 +53,31 @@ func (c Config) checkNetAllow(hosts []string) error {
 		}
 	}
 	return nil
+}
+
+// checkFullEgress rejects the range-based egress modes (full_egress / CIDR) when
+// the server has a hostname ceiling: an agent must not bypass --net-allow-max by
+// asking for full egress. With no ceiling set, the daemon's own token policy
+// (net_full_egress) remains the authoritative gate.
+func (c Config) checkFullEgress(wantFullEgress, wantCIDR bool) error {
+	if len(c.NetAllowMax) > 0 && (wantFullEgress || wantCIDR) {
+		return fmt.Errorf("full egress / CIDR egress is not permitted by this server's --net-allow-max ceiling")
+	}
+	return nil
+}
+
+// mcpNetwork builds the egress request from the three tool arguments, or nil
+// when none is set. Shared by run / create_sandbox / create_app.
+func mcpNetwork(netAllow, netAllowCIDR []string, fullEgress bool) *api.NetworkRequest {
+	if len(netAllow) == 0 && len(netAllowCIDR) == 0 && !fullEgress {
+		return nil
+	}
+	return &api.NetworkRequest{
+		Enabled:       true,
+		Allowlist:     netAllow,
+		FullEgress:    fullEgress,
+		AllowlistCIDR: netAllowCIDR,
+	}
 }
 
 // clampTimeout bounds a command timeout (seconds) by --max-timeout. An

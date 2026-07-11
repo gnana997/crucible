@@ -63,6 +63,13 @@ type Policy struct {
 	// It is a pointer so "absent" and "present but empty" are distinguishable.
 	NetAllowMax *[]string `json:"net_allow_max,omitempty"`
 
+	// NetFullEgress grants the range-based egress modes (full_egress and
+	// allowlist_cidr). Default false: a scoped token may NOT broaden egress
+	// past its hostname allowlist unless this is set — so a NetAllowMax
+	// hostname ceiling can't be bypassed by flipping to full-egress. A nil
+	// policy (no token / loopback) permits everything, as elsewhere.
+	NetFullEgress bool `json:"net_full_egress,omitempty"`
+
 	// AllowProfiles restricts which rootfs profiles may be launched. Nil/empty
 	// means any profile.
 	AllowProfiles []string `json:"allow_profiles,omitempty"`
@@ -205,6 +212,18 @@ func (p Policy) CheckNetAllow(hosts []string) error {
 		if _, ok := ceil[normHost(h)]; !ok {
 			return fmt.Errorf("host %q is not permitted by this token's network ceiling", h)
 		}
+	}
+	return nil
+}
+
+// CheckFullEgress gates the range-based egress modes: full_egress and
+// allowlist_cidr may be used only when NetFullEgress is granted. A request that
+// asks for either without the grant is rejected, so a hostname NetAllowMax
+// ceiling can't be widened by switching to full-egress. Hostname allowlists are
+// governed separately by CheckNetAllow.
+func (p Policy) CheckFullEgress(wantFullEgress, wantCIDR bool) error {
+	if (wantFullEgress || wantCIDR) && !p.NetFullEgress {
+		return errors.New("this token is not permitted to broaden egress (full_egress / allowlist_cidr require the net_full_egress grant)")
 	}
 	return nil
 }

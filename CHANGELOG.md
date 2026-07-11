@@ -6,9 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [Unreleased]
+## [0.4.1] — 2026-07-12
+
+Apps you can actually deploy: real config, real egress. Everything here builds on
+v0.4.0 durable apps and applies across `app create`, `run`, and `sandbox create`.
 
 ### Added
+
+- **Real egress for trusted workloads (A6).** Two opt-in modes widen egress past
+  the hostname allowlist, on `app create`, `run`, and `sandbox create`:
+  `--net-full-egress` (reach any public host) and `--net-allow-cidr
+  203.0.113.0/24` (reach IP literals in a public prefix). The invariant is
+  **public unicast only** — metadata/link-local (`169.254.169.254`), RFC1918,
+  CGNAT, loopback, and the reserved ranges are always dropped; a wholly-private
+  CIDR reaches nothing. The nft drop list is unit-tested to agree with the DNS
+  proxy's `IsPublicUnicast` guard so the two can't drift. Gated by a new
+  `net_full_egress` scoped-token policy grant (default off, so a `net_allow_max`
+  hostname ceiling can't be bypassed) and the MCP server's `--net-allow-max`
+  guardrail. Also on the MCP `create_app`/`create_sandbox`/`run` tools.
 
 - **Exec health checks — `crucible app create --health-cmd '<command>'`.** The
   daemon runs the command in the guest over vsock (exit 0 = healthy), joining the

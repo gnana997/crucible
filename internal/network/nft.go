@@ -135,7 +135,7 @@ func BuildBaseScript(egressIface string, dnsAnycast netip.Addr) string {
 //
 // It also registers the (host veth, guest IP) pair in the base
 // guest_sources set so the input chain accepts this guest's DNS.
-func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast netip.Addr) string {
+func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast netip.Addr, fullEgress bool, cidrs []netip.Prefix) string {
 	chain := sandboxChainName(sandboxID)
 	set := sandboxAllowedSetName(sandboxID)
 
@@ -145,11 +145,34 @@ func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast net
 		NftTableName, set)
 	// Chain.
 	fmt.Fprintf(&b, "add chain inet %s %s\n", NftTableName, chain)
-	// Rules inside the chain.
+	// 1. DNS to the proxy anycast — always first, before any range drop, so the
+	//    resolver stays reachable even if the anycast sits in a blocked range.
 	fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s udp dport 53 accept\n",
 		NftTableName, chain, anycast)
+	// 2. Range-based egress (full-egress or an operator CIDR) must DROP the
+	//    non-public ranges first — the nft half of the SSRF guard. The
+	//    hostname-allowlist path never needs this (its set only holds vetted
+	//    public IPs), so we emit it only when a range accept follows.
+	if fullEgress || len(cidrs) > 0 {
+		for _, p := range BlockedEgressPrefixes {
+			fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s drop\n",
+				NftTableName, chain, p)
+		}
+	}
+	// 3. Hostname-allowlist path: the public IPs the DNS proxy vetted + poked
+	//    into the set. Unchanged from the default-deny behavior.
 	fmt.Fprintf(&b, "add rule inet %s %s ip daddr @%s accept\n",
 		NftTableName, chain, set)
+	// 4. Operator CIDRs — public portions only (private overlaps dropped above).
+	for _, p := range cidrs {
+		fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s accept\n",
+			NftTableName, chain, p)
+	}
+	// 5. Full-egress: accept everything else (all IPv4 not dropped = public).
+	if fullEgress {
+		fmt.Fprintf(&b, "add rule inet %s %s ip daddr 0.0.0.0/0 accept\n",
+			NftTableName, chain)
+	}
 	// Map entry: iifname → jump chain. Quote the iifname so it
 	// parses as an ifname literal.
 	fmt.Fprintf(&b, "add element inet %s %s { %q : jump %s }\n",
@@ -280,11 +303,11 @@ func removeIptablesForward(ctx context.Context) error {
 // InstallSandbox applies BuildSandboxScript via nft -f -. Must be
 // called after EnsureBaseTable and after the host-side veth
 // (hostIface) exists.
-func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, anycast netip.Addr) error {
+func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, anycast netip.Addr, fullEgress bool, cidrs []netip.Prefix) error {
 	if err := checkNftSandboxID(sandboxID); err != nil {
 		return err
 	}
-	script := BuildSandboxScript(sandboxID, hostIface, guestIP, anycast)
+	script := BuildSandboxScript(sandboxID, hostIface, guestIP, anycast, fullEgress, cidrs)
 	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
 

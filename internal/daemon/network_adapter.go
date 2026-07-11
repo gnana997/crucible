@@ -39,8 +39,10 @@ func (a *networkAdapter) Setup(ctx context.Context, req sandbox.NetworkSetupRequ
 		return nil, fmt.Errorf("daemon: network adapter expected *network.Allowlist, got %T", req.Allowlist)
 	}
 	inner, err := a.m.Setup(ctx, network.SandboxSetup{
-		SandboxID: req.SandboxID,
-		Allowlist: al,
+		SandboxID:  req.SandboxID,
+		Allowlist:  al,
+		FullEgress: req.FullEgress,
+		CIDRs:      req.CIDRs,
 	})
 	if err != nil {
 		return nil, err
@@ -55,6 +57,8 @@ func (a *networkAdapter) Setup(ctx context.Context, req sandbox.NetworkSetupRequ
 		PrefixBits: inner.Lease.Prefix.Bits(),
 		DNSServer:  network.DefaultDNSAnycast.String(),
 		Allowlist:  al,
+		FullEgress: req.FullEgress,
+		CIDRs:      req.CIDRs,
 		Impl:       inner,
 	}, nil
 }

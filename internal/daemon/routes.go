@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"syscall"
@@ -88,27 +89,50 @@ func (s *Server) routes() *http.ServeMux {
 // (internal/network); the response mappers stay here because they read
 // the manager's internal sandbox/snapshot structs.
 
-// validateNetwork enforces v0.1 network semantics and returns the parsed
-// allowlist on success. Rules: enabled=false with a populated allowlist
-// is a 400 (inconsistent); enabled=true requires a non-empty allowlist
-// (no full-internet egress in v0.1); an invalid pattern is a 400.
-func validateNetwork(r *api.NetworkRequest) (*network.Allowlist, int, error) {
+// netParams is the parsed, validated egress config for one sandbox: the
+// hostname allowlist plus the two range-based modes (full-egress, CIDRs).
+type netParams struct {
+	allowlist  *network.Allowlist
+	fullEgress bool
+	cidrs      []netip.Prefix
+}
+
+// validateNetwork parses and validates a NetworkRequest. Rules: enabled=false
+// with any egress option set is a 400 (inconsistent); enabled=true requires at
+// least one of allowlist / full-egress / CIDR; an invalid hostname pattern or
+// CIDR is a 400. Returns (nil, 0, nil) for "no network". The public-hosts-only
+// invariant is enforced downstream at the nft/DNS layer, not here.
+func validateNetwork(r *api.NetworkRequest) (*netParams, int, error) {
+	anyEgress := len(r.Allowlist) > 0 || r.FullEgress || len(r.AllowlistCIDR) > 0
 	if !r.Enabled {
-		if len(r.Allowlist) > 0 {
+		if anyEgress {
 			return nil, http.StatusBadRequest,
-				errors.New("network.allowlist set but network.enabled is false")
+				errors.New("network egress options set but network.enabled is false")
 		}
 		return nil, 0, nil
 	}
-	if len(r.Allowlist) == 0 {
+	if !anyEgress {
 		return nil, http.StatusBadRequest,
-			errors.New("network.enabled=true requires a non-empty allowlist (full-internet egress is not supported in v0.1)")
+			errors.New("network.enabled=true requires an allowlist, full_egress, or allowlist_cidr")
 	}
+	// The hostname allowlist may be empty when full-egress or CIDRs carry the
+	// egress (network.New([]) yields a matcher that matches nothing).
 	al, err := network.New(r.Allowlist)
 	if err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("network.allowlist: %w", err)
 	}
-	return al, 0, nil
+	var cidrs []netip.Prefix
+	for _, c := range r.AllowlistCIDR {
+		p, perr := netip.ParsePrefix(c)
+		if perr != nil {
+			return nil, http.StatusBadRequest, fmt.Errorf("allowlist_cidr %q: %w", c, perr)
+		}
+		if !p.Addr().Is4() {
+			return nil, http.StatusBadRequest, fmt.Errorf("allowlist_cidr %q: only IPv4 prefixes are supported", c)
+		}
+		cidrs = append(cidrs, p.Masked())
+	}
+	return &netParams{allowlist: al, fullEgress: r.FullEgress, cidrs: cidrs}, 0, nil
 }
 
 // validatePublish checks the port mappings and returns the sandbox-layer
@@ -267,12 +291,12 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 
 	var netCfg *sandbox.NetworkConfig
 	if req.Network != nil {
-		al, status, err := validateNetwork(req.Network)
+		np, status, err := validateNetwork(req.Network)
 		if err != nil {
 			return sandbox.CreateConfig{}, &imageErr{status, err}
 		}
-		if al != nil {
-			netCfg = &sandbox.NetworkConfig{Allowlist: al}
+		if np != nil {
+			netCfg = &sandbox.NetworkConfig{Allowlist: np.allowlist, FullEgress: np.fullEgress, CIDRs: np.cidrs}
 		}
 	}
 
@@ -542,12 +566,16 @@ func (s *Server) handleCreateSandbox(w http.ResponseWriter, r *http.Request) {
 	tokenID := tokenIDFor(r)
 	if pol := policyFor(r); pol != nil {
 		var reqNet []string
+		wantFull, wantCIDR := false, false
 		if req.Network != nil && req.Network.Enabled {
 			reqNet = req.Network.Allowlist
+			wantFull = req.Network.FullEgress
+			wantCIDR = len(req.Network.AllowlistCIDR) > 0
 		}
 		if err := errors.Join(
 			pol.CheckProfile(req.Profile),
 			pol.CheckNetAllow(reqNet),
+			pol.CheckFullEgress(wantFull, wantCIDR),
 			pol.CheckVCPUs(req.VCPUs),
 			pol.CheckMemory(req.MemoryMiB),
 			pol.CheckCapacity(s.cfg.Manager.CountByToken(tokenID), 1),

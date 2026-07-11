@@ -83,7 +83,7 @@ func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
 func TestBuildSandboxScript(t *testing.T) {
 	anycast := netip.MustParseAddr("10.20.255.254")
 	guestIP := netip.MustParseAddr("10.20.0.2")
-	got := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast)
+	got := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast, false, nil)
 
 	mustContainAll(t, got, []string{
 		"add set inet crucible sandbox_sbx-abc_allowed",
@@ -95,6 +95,55 @@ func TestBuildSandboxScript(t *testing.T) {
 		"add element inet crucible sandbox_chains { \"vh-sbx-abc\" : jump sandbox_sbx-abc }",
 		"add element inet crucible guest_sources { \"vh-sbx-abc\" . 10.20.0.2 }",
 	})
+	// The hostname-only path must NOT emit range drops or an accept-all.
+	if strings.Contains(got, "drop") || strings.Contains(got, "0.0.0.0/0") {
+		t.Errorf("hostname-only script should carry no range drops / accept-all:\n%s", got)
+	}
+}
+
+func TestBuildSandboxScriptFullEgress(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+	guestIP := netip.MustParseAddr("10.20.0.2")
+	got := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast, true, nil)
+
+	// SSRF guard: every blocked prefix must be dropped, and the accept-all must
+	// come AFTER the last drop and AFTER the DNS accept.
+	for _, p := range BlockedEgressPrefixes {
+		want := "ip daddr " + p.String() + " drop"
+		if !strings.Contains(got, want) {
+			t.Errorf("full-egress script missing drop for %v:\n%s", p, got)
+		}
+	}
+	dnsIdx := strings.Index(got, "udp dport 53 accept")
+	metaIdx := strings.Index(got, "ip daddr 169.254.0.0/16 drop")
+	allIdx := strings.Index(got, "ip daddr 0.0.0.0/0 accept")
+	if dnsIdx < 0 || metaIdx < 0 || allIdx < 0 {
+		t.Fatalf("full-egress script missing expected rules:\n%s", got)
+	}
+	if dnsIdx >= metaIdx || metaIdx >= allIdx {
+		t.Errorf("order wrong: dns(%d) must precede metadata-drop(%d) must precede accept-all(%d)", dnsIdx, metaIdx, allIdx)
+	}
+}
+
+func TestBuildSandboxScriptCIDR(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+	guestIP := netip.MustParseAddr("10.20.0.2")
+	cidrs := []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+	got := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast, false, cidrs)
+
+	// CIDR accept present, no accept-all, and the metadata drop precedes the
+	// CIDR accept (so a CIDR overlapping private space can't reach it).
+	if !strings.Contains(got, "ip daddr 203.0.113.0/24 accept") {
+		t.Errorf("CIDR script missing the CIDR accept:\n%s", got)
+	}
+	if strings.Contains(got, "0.0.0.0/0 accept") {
+		t.Errorf("CIDR script must not accept-all:\n%s", got)
+	}
+	dropIdx := strings.Index(got, "ip daddr 169.254.0.0/16 drop")
+	cidrIdx := strings.Index(got, "ip daddr 203.0.113.0/24 accept")
+	if dropIdx < 0 || cidrIdx < 0 || dropIdx >= cidrIdx {
+		t.Errorf("blocked-range drop(%d) must precede CIDR accept(%d)", dropIdx, cidrIdx)
+	}
 }
 
 func TestBuildSandboxTeardownScript(t *testing.T) {

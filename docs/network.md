@@ -10,7 +10,12 @@
 
 1. **Default-deny.** A sandbox with no network config gets no NIC attached and zero egress reachability. This is the out-of-the-box experience.
 2. **Hostname allowlist override.** A sandbox configured with `network.enabled=true` and an allowlist of hostname patterns can reach exactly those hostnames (A/AAAA records only) over any TCP/UDP port. Everything else — ICMP to arbitrary hosts, egress to IP literals, connections to ports on resolved IPs we didn't answer for — is dropped.
-3. **Enforcement on the host kernel.** Policy is applied in the host's nftables and a host-side DNS proxy the guest is forced to use. The guest is untrusted — if user code escalates to root and tears down guest-side firewall rules, the host rules still block egress.
+3. **Broader egress for trusted workloads (public-hosts-only).** For an app you deploy yourself, "enumerate every hostname" is the wrong default. Two opt-ins widen egress without weakening the SSRF guard:
+   - **Full egress** (`full_egress` / `--net-full-egress`) — reach *any* public host. The DNS proxy answers any name and nftables accepts all destinations **except** the blocked ranges below.
+   - **CIDR allowlist** (`allowlist_cidr` / `--net-allow-cidr 203.0.113.0/24`) — reach IP literals in a public prefix directly, which the hostname allowlist can't express.
+
+   The invariant for both: **public unicast only, no exceptions.** Metadata/link-local (`169.254.0.0/16`, incl. `169.254.169.254`), RFC1918, loopback, CGNAT (`100.64.0.0/10`), and the reserved blocks are always dropped — the nft drop list (`network.BlockedEgressPrefixes`) is unit-tested to agree with the DNS-layer `IsPublicUnicast` guard, so the two can't drift. A CIDR overlapping private space has those addresses dropped; a wholly-private CIDR reaches nothing.
+4. **Enforcement on the host kernel.** Policy is applied in the host's nftables and a host-side DNS proxy the guest is forced to use. The guest is untrusted — if user code escalates to root and tears down guest-side firewall rules, the host rules still block egress.
 4. **Per-sandbox isolation.** Sandbox A cannot see, reach, or influence sandbox B's network traffic, even if both are allowlisted to overlapping destinations.
 5. **Clean lifecycle.** Create → use → delete leaves no orphan namespaces, veth pairs, nftables tables, or DNS proxy state. Daemon-crash recovery wipes stale per-sandbox network state on startup.
 
@@ -19,7 +24,7 @@
 These are deliberate exclusions, not oversights:
 
 - **IPv6.** All allocation and rules are IPv4-only (deferred).
-- **CIDR-based allowlists** (`10.0.0.0/8`). Hostname-only.
+- **Reaching private ranges.** There is no opt-in for RFC1918/link-local/metadata egress — the public-only invariant holds for every mode. Private inter-app networking is separate future work (A5), under a tenancy model.
 - **Port allowlists** (`pypi.org:443`). Any port to allowed IPs; ports aren't constrained.
 - **Protocol allowlists.** TCP, UDP, ICMP all allowed to allowed IPs — no per-protocol filter.
 - **Egress rate limiting.** No per-sandbox rate limit.

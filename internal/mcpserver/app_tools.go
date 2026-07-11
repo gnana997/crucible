@@ -16,20 +16,23 @@ import (
 // app's instance exactly as they do to a create.
 
 type createAppInput struct {
-	Name       string   `json:"name" jsonschema:"app name (a DNS label, e.g. web); unique per daemon"`
-	Image      string   `json:"image" jsonschema:"OCI image the app boots from, e.g. \"nginx:alpine\"; the daemon pulls+converts on a store miss"`
-	Pull       string   `json:"pull,omitempty" jsonschema:"image pull policy: missing (default), always, or never"`
-	Publish    []string `json:"publish,omitempty" jsonschema:"host port mappings [HOST_IP:]HOST:GUEST[/tcp]"`
-	PublishAll bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win"`
-	Env        []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings for the app's entrypoint"`
-	Restart    string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
-	VCPUs      int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
-	MemoryMiB  int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB; omit for the daemon default"`
-	HealthType string   `json:"health_type,omitempty" jsonschema:"health check type: http, tcp, or exec (omit for none)"`
-	HealthPort int      `json:"health_port,omitempty" jsonschema:"guest port an http/tcp health check probes"`
-	HealthPath string   `json:"health_path,omitempty" jsonschema:"http health check path (default /)"`
-	HealthCmd  []string `json:"health_cmd,omitempty" jsonschema:"exec health check: command argv run in the guest, exit 0 = healthy (used when health_type is exec)"`
-	Stopped    bool     `json:"stopped,omitempty" jsonschema:"create the app without starting an instance"`
+	Name          string   `json:"name" jsonschema:"app name (a DNS label, e.g. web); unique per daemon"`
+	Image         string   `json:"image" jsonschema:"OCI image the app boots from, e.g. \"nginx:alpine\"; the daemon pulls+converts on a store miss"`
+	Pull          string   `json:"pull,omitempty" jsonschema:"image pull policy: missing (default), always, or never"`
+	Publish       []string `json:"publish,omitempty" jsonschema:"host port mappings [HOST_IP:]HOST:GUEST[/tcp]"`
+	PublishAll    bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win"`
+	Env           []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings for the app's entrypoint"`
+	Restart       string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
+	VCPUs         int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
+	MemoryMiB     int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB; omit for the daemon default"`
+	HealthType    string   `json:"health_type,omitempty" jsonschema:"health check type: http, tcp, or exec (omit for none)"`
+	HealthPort    int      `json:"health_port,omitempty" jsonschema:"guest port an http/tcp health check probes"`
+	HealthPath    string   `json:"health_path,omitempty" jsonschema:"http health check path (default /)"`
+	HealthCmd     []string `json:"health_cmd,omitempty" jsonschema:"exec health check: command argv run in the guest, exit 0 = healthy (used when health_type is exec)"`
+	NetAllow      []string `json:"net_allow,omitempty" jsonschema:"egress hostname allowlist for the app (repeatable); empty means no network"`
+	NetAllowCIDR  []string `json:"net_allow_cidr,omitempty" jsonschema:"public IPv4 CIDRs the app may reach directly, e.g. [\"203.0.113.0/24\"]"`
+	NetFullEgress bool     `json:"net_full_egress,omitempty" jsonschema:"allow the app egress to ANY public host (metadata/link-local/RFC1918 still blocked). Subject to the server's --net-allow-max ceiling."`
+	Stopped       bool     `json:"stopped,omitempty" jsonschema:"create the app without starting an instance"`
 }
 
 type appNameInput struct {
@@ -68,6 +71,12 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 	if restart == "" {
 		restart = wire.RestartAlways
 	}
+	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
+		return nil, appOutput{}, err
+	}
+	if err := h.cfg.checkFullEgress(in.NetFullEgress, len(in.NetAllowCIDR) > 0); err != nil {
+		return nil, appOutput{}, err
+	}
 	envMap, err := api.ParseEnv(in.Env)
 	if err != nil {
 		return nil, appOutput{}, err
@@ -80,6 +89,7 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 		MemoryMiB:  in.MemoryMiB,
 		Env:        envMap,
 		PublishAll: in.PublishAll,
+		Network:    mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress),
 		Restart:    wire.RestartPolicy{Policy: restart},
 	}
 	for _, p := range in.Publish {

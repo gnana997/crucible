@@ -10,6 +10,20 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.4.1" title="Apps you can actually deploy">
+
+Real config and real egress for the durable apps v0.4.0 introduced — across `app
+create`, `run`, and `sandbox create`.
+
+- **App env** — `-e/--env KEY=VALUE` delivers config to the entrypoint (image `ENV` < your `--env`).
+- **Real egress (A6)** — `--net-full-egress` (reach any public host) and `--net-allow-cidr 203.0.113.0/24` (reach IP literals in a public prefix), for a workload you deploy yourself. **Public-hosts-only, no exceptions**: metadata/link-local (`169.254.169.254`), RFC1918, CGNAT, and reserved ranges are always dropped — the nft guard is unit-tested to agree with the DNS-layer SSRF filter. Gated by a `net_full_egress` scoped-token grant so a hostname ceiling can't be bypassed.
+- **Exec health checks** — `--health-cmd '<command>'` runs a command in the guest (exit 0 = healthy), joining http/tcp.
+- **Publish the image's ports** — `-P/--publish-all` publishes every port the image `EXPOSE`s (guest N → host N).
+
+The MCP `create_app`/`create_sandbox`/`run` tools gained the matching arguments.
+
+</Update>
+
 <Update label="v0.4.0" title="Durable, self-healing apps">
 
 Promote a workload to a named **app** the daemon manages over time — the answer

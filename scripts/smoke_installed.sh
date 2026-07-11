@@ -6,8 +6,9 @@
 # `crucible` you'd get from a real install — the binary on your PATH talking to
 # the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey:
 # run/shell/exec, egress deny, logs, snapshot+fork, --disk, stop/rm, build,
-# durable apps (v0.4), and the MCP server. It answers one question: "will
-# someone who installs the release hit a wall?"
+# durable apps (v0.4), the MCP server, and the v0.4.1 surface (app --env, exec
+# health, and full-egress with its SSRF tripwire). It answers one question:
+# "will someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -39,6 +40,7 @@ ALPINE="${ALPINE:-alpine:latest}"
 HOST_PORT_A="${HOST_PORT_A:-8080}"
 HOST_PORT_B="${HOST_PORT_B:-8081}"
 HOST_PORT_C="${HOST_PORT_C:-8082}"   # durable-app instance
+HOST_PORT_D="${HOST_PORT_D:-8083}"   # v0.4.1 app (env + exec health)
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -362,6 +364,57 @@ PY
   elif [[ "$MCP_OUT" == *"MCP-APPS-SKIP"* ]]; then
     skip "MCP app tools not advertised (pre-v0.4 daemon)"
   fi
+fi
+
+# ---- 12 v0.4.1: app --env + exec health check -------------------------------
+echo "== 12 v0.4.1 app: --env + --health-cmd (exec health)"
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  APP2="crucible-smoke-app2"
+  cli app rm "$APP2" >/dev/null 2>&1 || true
+  A2ERR="$(mktemp)"
+  OUT="$(cli app create "$APP2" --image "$IMAGE" -p "$HOST_PORT_D:80" \
+           -e SMOKE_ENV=ok --health-cmd 'test -f /etc/nginx/nginx.conf' --memory 256 2>"$A2ERR")"
+  if [[ "$OUT" == "$APP2" ]]; then
+    track_app "$APP2"; rm -f "$A2ERR"
+    if hit "http://localhost:$HOST_PORT_D/" "html" || hit "http://localhost:$HOST_PORT_D/" "nginx"; then
+      pass "app with --env booted and served on :$HOST_PORT_D"
+    else
+      fail "v0.4.1 app never served on :$HOST_PORT_D"
+    fi
+    H=0
+    for _ in {1..25}; do
+      [[ "$(curl -s "$BASE_URL/apps/$APP2" 2>/dev/null)" == *'"health":"healthy"'* ]] && { H=1; break; }
+      sleep 1
+    done
+    [[ "$H" -eq 1 ]] && pass "exec health check (--health-cmd) reports healthy" \
+      || fail "exec health never healthy: $(curl -s "$BASE_URL/apps/$APP2" 2>&1)"
+    cli app rm "$APP2" >/dev/null 2>&1
+  else
+    skip "v0.4.1 app flags unsupported (pre-v0.4.1 daemon): $(head -1 "$A2ERR" 2>/dev/null)"; rm -f "$A2ERR"
+  fi
+fi
+
+# ---- 13 v0.4.1: full-egress + the SSRF tripwire -----------------------------
+echo "== 13 full-egress reaches a public host but refuses cloud metadata"
+SBXE="$(cli sandbox create --image "$ALPINE" --memory 256 --net-full-egress 2>/dev/null)"
+if [[ "$SBXE" == sbx_* ]]; then
+  track_sbx "$SBXE"
+  if cli sandbox exec "$SBXE" -- sh -c 'nc -w 4 1.1.1.1 443 </dev/null' >/dev/null 2>&1; then
+    pass "full-egress reached a public host (1.1.1.1:443)"
+  else
+    fail "full-egress could not reach a public host (is this host online?)"
+  fi
+  # The tripwire: metadata MUST stay unreachable even under full-egress.
+  if cli sandbox exec "$SBXE" -- sh -c 'nc -w 4 169.254.169.254 80 </dev/null' >/dev/null 2>&1; then
+    fail "SSRF: full-egress reached cloud metadata 169.254.169.254 — guard regressed!"
+  else
+    pass "full-egress refused cloud metadata (SSRF guard holds)"
+  fi
+  cli sandbox rm "$SBXE" >/dev/null 2>&1
+else
+  skip "full-egress unsupported (pre-v0.4.1 daemon) or daemon has no --network-egress-iface"
 fi
 
 # ---- summary ----------------------------------------------------------------

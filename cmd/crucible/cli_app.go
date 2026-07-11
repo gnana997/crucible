@@ -38,6 +38,8 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 		vcpus, memory                int
 		disk                         string
 		netAllow, publish, env       []string
+		netAllowCIDR                 []string
+		netFullEgress                bool
 		publishAll                   bool
 		stopped                      bool
 	)
@@ -79,9 +81,7 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 				}
 				spec.Publish = append(spec.Publish, pm)
 			}
-			if len(netAllow) > 0 {
-				spec.Network = &api.NetworkRequest{Enabled: true, Allowlist: netAllow}
-			}
+			spec.Network = buildNetworkRequest(netAllow, netAllowCIDR, netFullEgress)
 			if health != "" {
 				hc, herr := parseHealth(health)
 				if herr != nil {
@@ -120,6 +120,8 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 	f.IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
 	f.StringVar(&disk, "disk", "", "writable rootfs size (e.g. 2G)")
 	f.StringArrayVar(&netAllow, "net-allow", nil, "egress hostname allowlist entry (repeatable)")
+	f.StringArrayVar(&netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
+	f.BoolVar(&netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
 	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
 	f.StringArrayVarP(&env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")

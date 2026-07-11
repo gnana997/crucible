@@ -138,6 +138,8 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 		vcpus, memory, timeout int
 		profile                string
 		netAllow               []string
+		netAllowCIDR           []string
+		netFullEgress          bool
 		publish                []string
 		publishAll             bool
 		pull                   string
@@ -177,13 +179,15 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 				}
 				return runImage(cmd, o, args[0], runImageOpts{
 					vcpus: vcpus, memory: memory, timeout: timeout,
-					netAllow: netAllow, publish: publish, publishAll: publishAll,
+					netAllow: netAllow, netAllowCIDR: netAllowCIDR, netFullEgress: netFullEgress,
+					publish: publish, publishAll: publishAll,
 					pull: pull, rm: rm, diskBytes: diskBytes,
 				})
 			}
 			return runCommand(cmd, o, args, runCommandOpts{
 				vcpus: vcpus, memory: memory, timeout: timeout,
-				profile: profile, netAllow: netAllow, keep: keep,
+				profile: profile, netAllow: netAllow, netAllowCIDR: netAllowCIDR,
+				netFullEgress: netFullEgress, keep: keep,
 			})
 		},
 	}
@@ -191,6 +195,8 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "timeout in seconds (0 = long-lived / no deadline)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
+	cmd.Flags().StringArrayVar(&netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
+	cmd.Flags().BoolVar(&netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
 	// image mode
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a port [HOST_IP:]HOST:GUEST[/tcp] (repeatable; image mode)")
 	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
@@ -207,6 +213,8 @@ type runCommandOpts struct {
 	vcpus, memory, timeout int
 	profile                string
 	netAllow               []string
+	netAllowCIDR           []string
+	netFullEgress          bool
 	keep                   bool
 }
 
@@ -215,9 +223,7 @@ type runCommandOpts struct {
 func runCommand(cmd *cobra.Command, o *globalOpts, args []string, opts runCommandOpts) error {
 	cl := o.client()
 	req := api.CreateSandboxRequest{VCPUs: opts.vcpus, MemoryMiB: opts.memory, TimeoutSec: opts.timeout, Profile: opts.profile}
-	if len(opts.netAllow) > 0 {
-		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: opts.netAllow}
-	}
+	req.Network = buildNetworkRequest(opts.netAllow, opts.netAllowCIDR, opts.netFullEgress)
 	sb, err := cl.CreateSandbox(cmd.Context(), req)
 	if err != nil {
 		return err
@@ -240,6 +246,8 @@ func runCommand(cmd *cobra.Command, o *globalOpts, args []string, opts runComman
 type runImageOpts struct {
 	vcpus, memory, timeout int
 	netAllow, publish      []string
+	netAllowCIDR           []string
+	netFullEgress          bool
 	publishAll             bool
 	pull                   string
 	diskBytes              int64
@@ -263,9 +271,7 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 		VCPUs: opts.vcpus, MemoryMiB: opts.memory, TimeoutSec: opts.timeout,
 		Image: &api.ImageRef{OCI: ref}, Pull: effPull, DiskBytes: opts.diskBytes,
 	}
-	if len(opts.netAllow) > 0 {
-		req.Network = &api.NetworkRequest{Enabled: true, Allowlist: opts.netAllow}
-	}
+	req.Network = buildNetworkRequest(opts.netAllow, opts.netAllowCIDR, opts.netFullEgress)
 	for _, p := range opts.publish {
 		pm, err := parsePublish(p)
 		if err != nil {

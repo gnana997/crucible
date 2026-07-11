@@ -103,8 +103,10 @@ now.)
 `create` flags: `--image` (required), `--pull`, `--restart`, `--health`
 (http/tcp), `--health-cmd` (exec), `-p/--publish` (repeatable),
 `-P/--publish-all` (publish every port the image `EXPOSE`s, guest N → host N),
-`-e/--env KEY=VALUE` (repeatable), `--net-allow` (repeatable), `--vcpus`,
-`--memory`, `--disk`, `--stopped` (create without starting an instance).
+`-e/--env KEY=VALUE` (repeatable), `--net-allow` (repeatable),
+`--net-allow-cidr` (public IPv4 CIDR, repeatable), `--net-full-egress` (reach any
+public host), `--vcpus`, `--memory`, `--disk`, `--stopped` (create without
+starting an instance).
 
 Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
 yours win); `-P` reads the ports the image declares, so `crucible app create web
