@@ -15,6 +15,11 @@ ExecStart=/usr/local/bin/crucible daemon $CRUCIBLE_FLAGS
 Restart=on-failure
 RestartSec=2
 
+# A many-VM host holds a lot of open fds: per-sandbox vsock/tap/pipes, durable
+# log files, and — with the ingress proxy — one socket pair per in-flight
+# connection. Lift the file-descriptor ceiling so a busy host doesn't hit EMFILE.
+LimitNOFILE=1048576
+
 # crucible runs as root by design: it needs KVM (/dev/kvm), the jailer
 # (chroot + mount/PID namespaces + uid drop for each VMM), and
 # per-sandbox netns/nftables. It confines the guest VMM itself via the

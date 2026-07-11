@@ -19,6 +19,26 @@
 4. **Per-sandbox isolation.** Sandbox A cannot see, reach, or influence sandbox B's network traffic, even if both are allowlisted to overlapping destinations.
 5. **Clean lifecycle.** Create → use → delete leaves no orphan namespaces, veth pairs, nftables tables, or DNS proxy state. Daemon-crash recovery wipes stale per-sandbox network state on startup.
 
+## Inbound isolation
+
+Networking is egress-shaped, but two features send traffic *toward* a guest:
+port publish (`-p`) and the [ingress proxy](proxy.md). Both preserve the
+per-sandbox isolation above:
+
+- **Inbound reaches a guest only from the daemon.** The publish forwarder and the
+  proxy both dial the guest's IP from the daemon's own (host) network namespace
+  over the sandbox's veth — there is no DNAT and no listener inside the guest's
+  netns that a third party can reach. A guest is reachable only on the ports the
+  operator published / routed, and only via the daemon.
+- **Peers still can't reach each other.** Each sandbox has its own `/30` in its
+  own netns; a guest's egress is default-deny and RFC1918/link-local are blocked
+  (the same `IsPublicUnicast` guard the range-based egress modes use). So one
+  guest cannot reach a neighbor's guest IP, published port or not.
+- **The proxy is not a lateral path.** A `--net-full-egress` guest can reach
+  another app's *published* (intentionally public) port via the host's public
+  address — the same as any internet client — but never an *unpublished* port or
+  a guest IP directly. The public-only egress invariant is what closes that.
+
 ## Non-goals
 
 These are deliberate exclusions, not oversights:

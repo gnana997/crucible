@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/app"
+	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/sdk/api"
@@ -46,6 +47,17 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 	cfg, ierr := a.s.buildCreateConfig(ctx, &req, pull)
 	if ierr != nil {
 		return "", ierr.err
+	}
+	// A proxied app (Port set) needs a NIC so the ingress proxy can reach the
+	// guest over its veth — even with no published ports or egress. Synthesize a
+	// deny-all network (ingress-reachable, egress-denied), mirroring the publish
+	// path in buildCreateConfig.
+	if cfg.Network == nil && spec.Port > 0 {
+		denyAll, derr := network.New(nil)
+		if derr != nil {
+			return "", fmt.Errorf("app %s: deny-all network: %w", appID, derr)
+		}
+		cfg.Network = &sandbox.NetworkConfig{Allowlist: denyAll}
 	}
 	// App env applies to the entrypoint the guest supervisor runs, so it
 	// merges onto the effective service (app values win). An app with env
