@@ -104,6 +104,32 @@ jobs:
         # on the runner's long $TMPDIR — irrelevant to the client.
         run: |
           go test -count=1 \
-            ./internal/client/... ./internal/mcpserver/... ./internal/api/... \
+            ./sdk/... ./internal/mcpserver/... \
             ./internal/netallow/... ./internal/policy/... ./internal/agentwire/... \
             ./internal/tokenstore/... ./internal/version/...
+
+  # Generated artifacts must match their generators: docs/openapi.json is
+  # reflected from the Go wire types, and the TS/Python types under sdks/ are
+  # generated from that spec — the single fan-out point that keeps N languages
+  # in lock-step with the Go contract. A diff here means a wire-type change
+  # was committed without `make gen`. Mirrors the route-coverage test in
+  # cmd/openapi-gen.
+  codegen-drift:
+    name: generated code drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - name: Install uv (runs the pinned datamodel-code-generator)
+        run: pip install uv
+      - name: Regenerate spec + TS + Python types
+        run: make gen
+      - name: Fail on drift
+        run: |
+          if ! git diff --exit-code -- docs/openapi.json sdks/; then
+            echo "::error::generated artifacts drifted — run 'make gen' and commit the result"
+            exit 1
+          fi

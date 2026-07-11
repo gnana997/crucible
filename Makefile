@@ -20,7 +20,7 @@ CLIENT_GOARCH ?= $(shell go env GOARCH)
 CLIENT_EXT    := $(if $(filter windows,$(CLIENT_GOOS)),.exe,)
 CLIENT_PLATFORMS ?= darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help openapi
+.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help openapi gen-ts gen-py gen
 
 all: fmt vet test build
 
@@ -38,6 +38,10 @@ help:
 	@echo "  fmt      - gofmt -s -w ."
 	@echo "  lint     - golangci-lint run (requires golangci-lint)"
 	@echo "  hooks    - install git pre-commit/pre-push hooks (requires lefthook)"
+	@echo "  openapi  - regenerate docs/openapi.json from the Go wire types"
+	@echo "  gen      - openapi + gen-ts + gen-py (all generated artifacts)"
+	@echo "  gen-ts   - regenerate TS types from docs/openapi.json (needs npx)"
+	@echo "  gen-py   - regenerate Python models from docs/openapi.json (needs uvx)"
 	@echo "  tidy     - go mod tidy"
 	@echo "  clean    - remove built binaries"
 
@@ -105,6 +109,22 @@ test:
 # coverage test (go test ./cmd/openapi-gen) fails if a route is undocumented.
 openapi:
 	go run ./cmd/openapi-gen -out docs/openapi.json
+
+# Generated TS/Python types, derived from docs/openapi.json — the spec is the
+# single fan-out point, so N languages can't drift from the Go types
+# independently. Generator versions are pinned for reproducible output; the
+# CI codegen-drift job regenerates everything and fails on any diff.
+gen-ts:
+	npx --yes openapi-typescript@7.13.0 docs/openapi.json -o sdks/ts/src/schema.gen.ts
+
+gen-py:
+	uvx --from datamodel-code-generator==0.68.1 datamodel-codegen \
+	  --input docs/openapi.json --input-file-type openapi \
+	  --output-model-type pydantic_v2.BaseModel --disable-timestamp \
+	  --formatters black isort \
+	  --output sdks/python/crucible/models.py
+
+gen: openapi gen-ts gen-py
 
 race:
 	go test -race $(PKG)
