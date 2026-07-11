@@ -2,7 +2,10 @@ BINARY   := crucible
 AGENT    := bin/crucible-agent
 EMBEDDED_AGENT := internal/agentbin/crucible-agent
 PKG      := ./...
-VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# --match 'v[0-9]*' restricts to the daemon's release tags: the repo also carries
+# sdk/vX.Y.Z tags (the nested SDK module), and a bare `git describe --tags` will
+# happily stamp the daemon binary with an sdk/* tag when both sit on one commit.
+VERSION  ?= $(shell git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X github.com/gnana997/crucible/internal/version.version=$(VERSION)
 
 # Rootfs build parameters — override on the command line.

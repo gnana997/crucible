@@ -6,9 +6,9 @@
 # `crucible` you'd get from a real install — the binary on your PATH talking to
 # the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey:
 # run/shell/exec, egress deny, logs, snapshot+fork, --disk, stop/rm, build,
-# durable apps (v0.4), the MCP server, and the v0.4.1 surface (app --env, exec
-# health, and full-egress with its SSRF tripwire). It answers one question:
-# "will someone who installs the release hit a wall?"
+# durable apps (v0.4), the MCP server, and the full v0.4.1 surface (app --env,
+# exec health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P). It
+# answers one question: "will someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -332,7 +332,10 @@ app_tools = {"create_app","list_apps","get_app","delete_app"}
 if not app_tools.issubset(tools):
     print("MCP-APPS-SKIP (app tools not advertised)")
 else:
-    r = call("create_app", {"name":APP, "image":IMAGE, "stopped":True})
+    # stopped=True → no VM boot; also exercises the v0.4.1 tool args (env,
+    # net_full_egress, publish_all) so a schema/plumbing regression is caught.
+    r = call("create_app", {"name":APP, "image":IMAGE, "stopped":True,
+                            "env":["MCP_ENV=ok"], "net_full_egress":True, "publish_all":True})
     if r.get("isError"): die("create_app errored: %s" % r["content"])
     if not r["structuredContent"]["id"].startswith("app_"):
         die("create_app returned no app id: %r" % r["structuredContent"])
@@ -396,25 +399,60 @@ else
   fi
 fi
 
-# ---- 13 v0.4.1: full-egress + the SSRF tripwire -----------------------------
-echo "== 13 full-egress reaches a public host but refuses cloud metadata"
+# ---- 13 v0.4.1 egress modes: full-egress (+ SSRF tripwire) and CIDR ---------
+# reach <sbx> <host> <port> — 0 if the guest can TCP-connect (busybox nc).
+reach() { cli sandbox exec "$1" -- sh -c "nc -w 4 $2 $3 </dev/null" >/dev/null 2>&1; }
+
+echo "== 13a full-egress reaches a public host but refuses cloud metadata"
 SBXE="$(cli sandbox create --image "$ALPINE" --memory 256 --net-full-egress 2>/dev/null)"
 if [[ "$SBXE" == sbx_* ]]; then
   track_sbx "$SBXE"
-  if cli sandbox exec "$SBXE" -- sh -c 'nc -w 4 1.1.1.1 443 </dev/null' >/dev/null 2>&1; then
-    pass "full-egress reached a public host (1.1.1.1:443)"
-  else
-    fail "full-egress could not reach a public host (is this host online?)"
-  fi
-  # The tripwire: metadata MUST stay unreachable even under full-egress.
-  if cli sandbox exec "$SBXE" -- sh -c 'nc -w 4 169.254.169.254 80 </dev/null' >/dev/null 2>&1; then
-    fail "SSRF: full-egress reached cloud metadata 169.254.169.254 — guard regressed!"
-  else
-    pass "full-egress refused cloud metadata (SSRF guard holds)"
-  fi
+  reach "$SBXE" 1.1.1.1 443 && pass "full-egress reached a public host (1.1.1.1:443)" \
+    || fail "full-egress could not reach a public host (is this host online?)"
+  # The tripwire: metadata + RFC1918 MUST stay unreachable even under full-egress.
+  reach "$SBXE" 169.254.169.254 80 && fail "SSRF: full-egress reached cloud metadata — guard regressed!" \
+    || pass "full-egress refused cloud metadata 169.254.169.254 (SSRF guard holds)"
+  reach "$SBXE" 10.255.255.1 80 && fail "SSRF: full-egress reached RFC1918 — guard regressed!" \
+    || pass "full-egress refused RFC1918 10.255.255.1"
   cli sandbox rm "$SBXE" >/dev/null 2>&1
 else
   skip "full-egress unsupported (pre-v0.4.1 daemon) or daemon has no --network-egress-iface"
+fi
+
+echo "== 13b CIDR: in-range public reachable, out-of-range not"
+SBXC="$(cli sandbox create --image "$ALPINE" --memory 256 --net-allow-cidr 1.1.1.0/24 2>/dev/null)"
+if [[ "$SBXC" == sbx_* ]]; then
+  track_sbx "$SBXC"
+  reach "$SBXC" 1.1.1.1 443 && pass "CIDR 1.1.1.0/24 reached in-range 1.1.1.1" \
+    || fail "CIDR did not reach an in-range public host"
+  reach "$SBXC" 8.8.8.8 443 && fail "out-of-range 8.8.8.8 reachable (CIDR leaked)" \
+    || pass "out-of-range 8.8.8.8 not reachable"
+  cli sandbox rm "$SBXC" >/dev/null 2>&1
+else
+  skip "--net-allow-cidr unsupported (pre-v0.4.1 daemon)"
+fi
+
+# ---- 14 v0.4.1: -P publishes the image's EXPOSEd port -----------------------
+echo "== 14 -P publishes the image's EXPOSEd port (guest 80 → host 80)"
+if curl -sf http://localhost:80/ >/dev/null 2>&1; then
+  skip "-P check: something is already answering :80 on this host"
+elif ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  PAPP="crucible-smoke-puball"
+  cli app rm "$PAPP" >/dev/null 2>&1 || true
+  POUT="$(cli app create "$PAPP" --image "$IMAGE" -P --memory 256 2>/dev/null)"
+  if [[ "$POUT" == "$PAPP" ]]; then
+    track_app "$PAPP"
+    if hit "http://localhost:80/" "html" || hit "http://localhost:80/" "nginx"; then
+      pass "-P published the image's EXPOSEd port; served on :80 with no explicit -p"
+    else
+      fail "-P did not publish the EXPOSEd port (:80 unreachable)"
+    fi
+    cli app rm "$PAPP" >/dev/null 2>&1
+  else
+    skip "-P/--publish-all unsupported (pre-v0.4.1 daemon)"
+  fi
 fi
 
 # ---- summary ----------------------------------------------------------------
