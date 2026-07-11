@@ -73,7 +73,9 @@ class LogsResponse(BaseModel):
 
 class NetworkRequest(BaseModel):
     allowlist: list[str] | None = None
+    allowlist_cidr: list[str] | None = None
     enabled: bool | None = None
+    full_egress: bool | None = None
 
 
 class NetworkResponse(BaseModel):
@@ -91,6 +93,7 @@ class Policy(BaseModel):
     max_timeout_s: int | None = None
     max_vcpus: int | None = None
     net_allow_max: list[str] | None = None
+    net_full_egress: bool | None = None
     operations: list[str] | None = None
 
 
@@ -187,6 +190,7 @@ class AppResponse(BaseModel):
     name: str | None = None
     network: NetworkRequest | None = None
     publish: list[PortMapping] | None = None
+    publish_all: bool | None = None
     pull: str | None = None
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
@@ -217,6 +221,7 @@ class CreateAppRequest(BaseModel):
     name: str | None = None
     network: NetworkRequest | None = None
     publish: list[PortMapping] | None = None
+    publish_all: bool | None = None
     pull: str | None = None
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
@@ -231,6 +236,7 @@ class CreateSandboxRequest(BaseModel):
     network: NetworkRequest | None = None
     profile: str | None = None
     publish: list[PortMapping] | None = None
+    publish_all: bool | None = None
     pull: str | None = None
     service: WireServiceSpec | None = None
     timeout_s: int | None = None

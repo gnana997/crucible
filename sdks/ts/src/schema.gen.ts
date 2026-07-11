@@ -463,6 +463,7 @@ export interface components {
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
             publish?: components["schemas"]["PortMapping"][];
+            publish_all?: boolean;
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
@@ -504,6 +505,7 @@ export interface components {
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
             publish?: components["schemas"]["PortMapping"][];
+            publish_all?: boolean;
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
@@ -518,6 +520,7 @@ export interface components {
             network?: components["schemas"]["NetworkRequest"];
             profile?: string;
             publish?: components["schemas"]["PortMapping"][];
+            publish_all?: boolean;
             pull?: string;
             service?: components["schemas"]["WireServiceSpec"];
             timeout_s?: number;
@@ -595,7 +598,9 @@ export interface components {
         };
         NetworkRequest: {
             allowlist?: string[];
+            allowlist_cidr?: string[];
             enabled?: boolean;
+            full_egress?: boolean;
         };
         NetworkResponse: {
             allowlist?: string[];
@@ -611,6 +616,7 @@ export interface components {
             max_timeout_s?: number;
             max_vcpus?: number;
             net_allow_max?: string[] | null;
+            net_full_egress?: boolean;
             operations?: string[];
         };
         PortMapping: {
