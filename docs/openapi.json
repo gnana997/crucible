@@ -1762,6 +1762,10 @@
           "health": {
             "type": "string"
           },
+          "instance_generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "instance_id": {
             "type": "string"
           },

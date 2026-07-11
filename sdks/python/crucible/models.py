@@ -8,6 +8,7 @@ from pydantic import AwareDatetime, BaseModel, Field, conint
 
 class AppStatus(BaseModel):
     health: str | None = None
+    instance_generation: conint(ge=0) | None = None
     instance_id: str | None = None
     last_error: str | None = None
     phase: str | None = None

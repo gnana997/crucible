@@ -41,14 +41,16 @@ type appNameInput struct {
 }
 
 type appOutput struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	DesiredState string `json:"desired_state"`
-	Phase        string `json:"phase,omitempty"`
-	Health       string `json:"health,omitempty"`
-	Restarts     int    `json:"restarts,omitempty"`
-	InstanceID   string `json:"instance_id,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	DesiredState       string `json:"desired_state"`
+	Generation         uint64 `json:"generation,omitempty"`
+	Phase              string `json:"phase,omitempty"`
+	Health             string `json:"health,omitempty"`
+	Restarts           int    `json:"restarts,omitempty"`
+	InstanceID         string `json:"instance_id,omitempty"`
+	InstanceGeneration uint64 `json:"instance_generation,omitempty"`
+	LastError          string `json:"last_error,omitempty"`
 }
 
 type appListOutput struct {
@@ -56,10 +58,11 @@ type appListOutput struct {
 }
 
 func toAppOutput(a api.AppResponse) appOutput {
-	out := appOutput{ID: a.ID, Name: a.Name, DesiredState: a.DesiredState}
+	out := appOutput{ID: a.ID, Name: a.Name, DesiredState: a.DesiredState, Generation: a.Generation}
 	if a.Status != nil {
 		out.Phase, out.Health, out.Restarts = a.Status.Phase, a.Status.Health, a.Status.Restarts
 		out.InstanceID, out.LastError = a.Status.InstanceID, a.Status.LastError
+		out.InstanceGeneration = a.Status.InstanceGeneration
 	}
 	return out
 }

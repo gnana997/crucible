@@ -119,6 +119,11 @@ type AppStatus struct {
 	// InstanceID is the sandbox currently backing the app, if any.
 	InstanceID string `json:"instance_id,omitempty"`
 
+	// InstanceGeneration is the spec generation the current instance was booted
+	// from. It lags Generation while a rolling update is in progress or after a
+	// failed update (the old instance still serves the previous generation).
+	InstanceGeneration uint64 `json:"instance_generation,omitempty"`
+
 	// Phase is one of: pending, running, unhealthy, crashlooping, stopped.
 	Phase string `json:"phase"`
 

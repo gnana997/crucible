@@ -479,6 +479,7 @@ export interface components {
         };
         AppStatus: {
             health?: string;
+            instance_generation?: number;
             instance_id?: string;
             last_error?: string;
             phase?: string;

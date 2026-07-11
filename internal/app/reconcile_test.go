@@ -507,6 +507,202 @@ func TestUpdateBumpsGenerationAndReplacesSpec(t *testing.T) {
 	}
 }
 
+// proxySpec is a proxy-fronted app (a Port, no host publish) — the shape that
+// qualifies for a zero-downtime rolling update.
+func proxySpec(name string) api.AppSpec {
+	s := nginxSpec(name, wire.RestartAlways)
+	s.Port = 80
+	return s
+}
+
+func proxyHealthSpec(name string) api.AppSpec {
+	s := healthSpec(name)
+	s.Port = 80
+	return s
+}
+
+func instanceOf(t *testing.T, m *Manager, appID string) string {
+	t.Helper()
+	resp, err := m.Get(appID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if resp.Status == nil {
+		return ""
+	}
+	return resp.Status.InstanceID
+}
+
+// TestRollingUpdateFlipsAndDrains: a proxy-fronted app updates zero-downtime —
+// the incoming boots without flipping, the route flips only once it's ready,
+// and the superseded instance is drained (kept alive) then reaped.
+func TestRollingUpdateFlipsAndDrains(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthPassing)
+	rec := mustCreate(t, m, proxyHealthSpec("web"), true)
+
+	m.reconcile(ctx()) // boot generation 1
+	old := instanceOf(t, m, rec.ID)
+	if old == "" || f.liveCount() != 1 {
+		t.Fatalf("boot: instance=%q live=%d", old, f.liveCount())
+	}
+
+	updated := proxyHealthSpec("web")
+	updated.MemoryMiB = 512
+	if _, err := m.Update("web", updated); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	m.reconcile(ctx()) // startRoll: boot incoming WITHOUT flipping
+	if f.liveCount() != 2 {
+		t.Fatalf("during roll live=%d, want 2 (old + incoming)", f.liveCount())
+	}
+	if got := instanceOf(t, m, rec.ID); got != old {
+		t.Fatalf("flipped before the incoming was ready: current=%s old=%s", got, old)
+	}
+
+	m.reconcile(ctx()) // incoming readiness passes → flip
+	neu := instanceOf(t, m, rec.ID)
+	if neu == old || neu == "" {
+		t.Fatalf("did not flip: current=%s old=%s", neu, old)
+	}
+	if !f.Exists(old) {
+		t.Fatal("old instance destroyed immediately; want it kept alive to drain")
+	}
+	if f.liveCount() != 2 {
+		t.Fatalf("just after flip live=%d, want 2 (new + draining old)", f.liveCount())
+	}
+	if resp, _ := m.Get(rec.ID); resp.Status.InstanceGeneration != 2 {
+		t.Fatalf("instance_generation=%d, want 2 after flip", resp.Status.InstanceGeneration)
+	}
+
+	clk.advance(drainWindow + time.Second)
+	m.reconcile(ctx()) // drain window elapsed → reap old
+	if f.Exists(old) {
+		t.Fatal("draining instance not reaped after the drain window")
+	}
+	if f.liveCount() != 1 {
+		t.Fatalf("after drain live=%d, want 1", f.liveCount())
+	}
+}
+
+// TestRollingUpdateNoHealthTCPGate: an app with no health check still rolls,
+// gating the flip on a TCP connect to its port.
+func TestRollingUpdateNoHealthTCPGate(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthPassing) // the synthesized tcp readiness probe passes
+	rec := mustCreate(t, m, proxySpec("web"), true)
+
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := proxySpec("web")
+	upd.MemoryMiB = 256
+	if _, err := m.Update("web", upd); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	m.reconcile(ctx()) // startRoll
+	m.reconcile(ctx()) // tcp gate passes → flip
+	if got := instanceOf(t, m, rec.ID); got == old || got == "" {
+		t.Fatalf("no-health app did not flip on the tcp gate: current=%s old=%s", got, old)
+	}
+}
+
+// TestFailedUpdateKeepsOldServing: an update whose new instance never becomes
+// ready aborts on the rollout deadline, leaving the OLD instance serving.
+func TestFailedUpdateKeepsOldServing(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthPassing)
+	rec := mustCreate(t, m, proxyHealthSpec("web"), true)
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := proxyHealthSpec("web")
+	upd.MemoryMiB = 512
+	if _, err := m.Update("web", upd); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	f.setProbe(HealthFailing) // the incoming never passes its readiness gate
+	m.reconcile(ctx())        // startRoll
+	if f.liveCount() != 2 {
+		t.Fatalf("during roll live=%d, want 2", f.liveCount())
+	}
+
+	clk.advance(rolloutTimeout + time.Second)
+	m.reconcile(ctx()) // past the rollout deadline → abort
+
+	if got := instanceOf(t, m, rec.ID); got != old {
+		t.Fatalf("route flipped on a failed update: current=%s old=%s", got, old)
+	}
+	if !f.Exists(old) {
+		t.Fatal("old instance destroyed on a failed update")
+	}
+	if f.liveCount() != 1 {
+		t.Fatalf("after abort live=%d, want 1 (incoming destroyed, old serving)", f.liveCount())
+	}
+	resp, _ := m.Get(rec.ID)
+	if resp.Status.LastError == "" {
+		t.Error("failed update recorded no LastError")
+	}
+	if resp.Status.Phase != "running" {
+		t.Errorf("phase=%q during failed update, want running (old still serving)", resp.Status.Phase)
+	}
+	if resp.Status.InstanceGeneration != 1 {
+		t.Errorf("instance_generation=%d, want 1 (still serving the old spec)", resp.Status.InstanceGeneration)
+	}
+
+	// A failed roll backs off: the very next pass must not immediately re-roll.
+	createsAfterAbort := f.createCount()
+	m.reconcile(ctx())
+	if f.createCount() != createsAfterAbort {
+		t.Error("re-rolled immediately after a failed update; want backoff gating")
+	}
+	// Past the backoff, it retries.
+	clk.advance(2 * maxBackoff)
+	m.reconcile(ctx())
+	if f.createCount() == createsAfterAbort {
+		t.Error("did not retry the roll after backoff elapsed")
+	}
+}
+
+// TestNonProxyAppRedeployDestroyThenBoot: an app without a proxy port can't run
+// two instances at once, so its update stays the classic destroy-then-boot.
+func TestNonProxyAppRedeployDestroyThenBoot(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	rec := mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true) // no Port
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.MemoryMiB = 256
+	if _, err := m.Update("web", upd); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	m.reconcile(ctx()) // canRoll=false → destroy old + boot new in one pass
+	neu := instanceOf(t, m, rec.ID)
+	if neu == old || neu == "" {
+		t.Fatalf("no redeploy: current=%s old=%s", neu, old)
+	}
+	if f.Exists(old) {
+		t.Fatal("old instance not destroyed in destroy-then-boot")
+	}
+	if f.liveCount() != 1 {
+		t.Fatalf("live=%d, want 1 (a non-proxy app never runs two instances)", f.liveCount())
+	}
+}
+
 func TestSeedHealthFromImage(t *testing.T) {
 	// No app health + image declares one → seeded and persisted at boot.
 	f := newFake()

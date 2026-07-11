@@ -71,6 +71,24 @@ type observed struct {
 	healthyStreak   int
 	unhealthyStreak int
 	nextProbe       time.Time
+
+	// Zero-downtime rolling update. While a roll is in progress the incoming
+	// instance is booted and probed WITHOUT being made current, so the old
+	// instance keeps serving (phase stays "running", the proxy keeps routing to
+	// it) until the incoming passes its readiness gate. Only the intentional
+	// `app update` path rolls; self-heal of a dead instance stays a cold boot.
+	incomingInstanceID  string // booted from a newer generation, not yet current
+	incomingGeneration  uint64
+	incomingReadyStreak int       // consecutive readiness passes for the incoming
+	rolloutUntil        time.Time // abort the roll (keep old serving) if not ready by here
+	rollFailures        int       // consecutive failed rolls, drives rollBackoff
+	rollBackoff         time.Time // don't retry a failed roll before this
+
+	// After a flip, the superseded instance is kept alive for drainWindow so
+	// in-flight requests and the ~1s of stale proxy routes (resolver TTL) land
+	// on a live instance, then it is destroyed.
+	drainInstanceID string
+	drainUntil      time.Time
 }
 
 // Tuning. Backoff is exponential between restart attempts; a run that
@@ -83,6 +101,14 @@ const (
 	maxBackoff               = 60 * time.Second
 	crashLoopWindow          = 60 * time.Second
 	crashLoopThreshold       = 5
+
+	// Rolling update (W1): how long to wait for the incoming instance to pass
+	// its readiness gate before aborting the roll (keeping the old instance),
+	// and how long to keep the superseded instance alive after a flip so the
+	// cutover drops nothing. drainWindow must exceed the resolver's cache TTL
+	// (1s) so stale routes still land on a live instance.
+	rolloutTimeout = 60 * time.Second
+	drainWindow    = 10 * time.Second
 )
 
 // Health-check defaults, applied when a HealthCheck leaves a field zero.
@@ -204,10 +230,13 @@ func (m *Manager) SetDesired(id string, running bool) error {
 }
 
 // Update replaces an app's spec and bumps its generation, which the reconciler
-// observes as a redeploy: the old instance is destroyed and a fresh one booted
-// from the new spec (P1b redeploy — not zero-downtime). The app's name is
-// immutable and desired running/stopped is retained (use SetDesired to change
-// that). Absent name is ErrNotFound.
+// observes as a redeploy. For a proxy-fronted app (a Port, no fixed host
+// publish) the redeploy is a zero-downtime rolling update: a new instance is
+// booted and, once it passes its readiness gate, the route flips to it and the
+// old instance is drained then destroyed (a failed update keeps the old
+// instance serving). Other apps fall back to destroy-then-boot. The app's name
+// is immutable and desired running/stopped is retained (use SetDesired to
+// change that). Absent name is ErrNotFound.
 func (m *Manager) Update(name string, spec api.AppSpec) (Record, error) {
 	if spec.Name != name {
 		return Record{}, fmt.Errorf("app: name is immutable (%q cannot become %q)", name, spec.Name)
@@ -400,9 +429,32 @@ func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
 	ob := m.obs[rec.ID]
 	m.obsMu.Unlock()
 
-	// Spec change → redeploy: destroy the old instance and boot fresh
-	// (resetting crash-loop state; a fix was shipped).
+	// Reap a superseded (draining) instance once its drain window has elapsed.
+	if ob != nil && ob.drainInstanceID != "" && !now.Before(ob.drainUntil) {
+		_ = m.inst.Destroy(ctx, ob.drainInstanceID)
+		m.obsMu.Lock()
+		ob.drainInstanceID, ob.drainUntil = "", time.Time{}
+		m.obsMu.Unlock()
+	}
+
+	// A rolling update in progress: advance it (probe the incoming, then flip or
+	// abort) and stop — the old instance keeps serving until the roll resolves.
+	if ob != nil && ob.incomingInstanceID != "" {
+		m.advanceRoll(ctx, rec, ob, now)
+		return
+	}
+
+	// Spec change → redeploy.
 	if ob != nil && ob.instanceID != "" && ob.generation != rec.Generation {
+		if canRoll(rec) {
+			if now.Before(ob.rollBackoff) {
+				return // a recent roll failed; keep the old instance serving
+			}
+			m.startRoll(ctx, rec, ob, now)
+			return
+		}
+		// Not a proxy-fronted app (nothing to keep warm, or a host publish a
+		// second instance can't co-bind): classic destroy-then-boot.
 		_ = m.inst.Destroy(ctx, ob.instanceID)
 		ob = nil
 	}
@@ -502,6 +554,170 @@ func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, 
 	m.obsMu.Lock()
 	m.obs[rec.ID] = next
 	m.obsMu.Unlock()
+}
+
+// canRoll reports whether an app can be updated with zero downtime. That needs
+// two instances alive at once, which only works for a proxy-fronted app: it
+// must have a Port (the proxy's routing target, and the TCP readiness gate when
+// no health check is set) and NO fixed host publish — a published host port
+// can't be bound by two instances simultaneously.
+func canRoll(rec Record) bool {
+	return rec.Spec.Port > 0 && len(rec.Spec.Publish) == 0 && !rec.Spec.PublishAll
+}
+
+// startRoll begins a rolling update: boot the new generation's instance WITHOUT
+// making it current, so the old instance keeps serving until the incoming
+// passes its readiness gate (advanceRoll). A boot failure leaves the old
+// instance serving and backs off before retrying.
+func (m *Manager) startRoll(ctx context.Context, rec Record, ob *observed, now time.Time) {
+	rec = m.seedHealthFromImage(ctx, rec)
+	id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
+	if err != nil {
+		m.obsMu.Lock()
+		ob.rollFailures++
+		ob.rollBackoff = now.Add(backoffFor(ob.rollFailures))
+		ob.lastErr = fmt.Sprintf("update to generation %d failed: boot: %v (serving generation %d)", rec.Generation, err, ob.generation)
+		m.obsMu.Unlock()
+		m.log.Error("app: rolling update boot failed; keeping current instance",
+			"app", rec.ID, "name", rec.Spec.Name, "err", err)
+		return
+	}
+	m.obsMu.Lock()
+	ob.incomingInstanceID = id
+	ob.incomingGeneration = rec.Generation
+	ob.incomingReadyStreak = 0
+	ob.rolloutUntil = now.Add(rolloutTimeout)
+	m.obsMu.Unlock()
+	m.log.Info("app: rolling update started",
+		"app", rec.ID, "name", rec.Spec.Name, "incoming", id, "generation", rec.Generation)
+}
+
+// advanceRoll advances an in-progress rolling update: it aborts a stale/failed
+// roll, promotes the incoming early if the current instance died mid-roll,
+// flips once the incoming passes its readiness gate, or aborts on the rollout
+// deadline. The old instance keeps serving throughout.
+func (m *Manager) advanceRoll(ctx context.Context, rec Record, ob *observed, now time.Time) {
+	// A newer spec arrived mid-roll: abandon this now-stale roll (no failure,
+	// no backoff) so the next pass starts a fresh one for the current generation.
+	if ob.incomingGeneration != rec.Generation {
+		m.cancelRoll(ctx, ob, "superseded by a newer update")
+		return
+	}
+	// Incoming vanished (failed to stay up) → abort, keep the old instance.
+	if !m.inst.Exists(ob.incomingInstanceID) {
+		m.abortRoll(ctx, rec, ob, now, "incoming instance exited")
+		return
+	}
+	// Current (still-serving) instance died mid-roll → availability wins:
+	// promote the incoming now, nothing to drain (the old is already gone).
+	if ob.instanceID != "" && !m.inst.Exists(ob.instanceID) {
+		m.log.Warn("app: current instance died mid-roll; promoting incoming",
+			"app", rec.ID, "name", rec.Spec.Name, "incoming", ob.incomingInstanceID)
+		m.flip(rec, ob, now, false)
+		return
+	}
+	// Readiness gate: the incoming's health check, or a TCP connect to its port.
+	res := m.probeReady(ctx, rec, ob.incomingInstanceID)
+	var ready bool
+	m.obsMu.Lock()
+	if res == HealthPassing {
+		ob.incomingReadyStreak++
+		ready = ob.incomingReadyStreak >= readyThreshold(rec)
+	} else {
+		ob.incomingReadyStreak = 0
+	}
+	m.obsMu.Unlock()
+	if ready {
+		m.log.Info("app: rolling update ready; flipping route to new instance",
+			"app", rec.ID, "name", rec.Spec.Name, "instance", ob.incomingInstanceID, "generation", ob.incomingGeneration)
+		m.flip(rec, ob, now, true)
+		return
+	}
+	// Not ready yet: abort if the rollout deadline has passed.
+	if !now.Before(ob.rolloutUntil) {
+		m.abortRoll(ctx, rec, ob, now, "rollout timed out")
+	}
+}
+
+// flip makes the incoming instance current. When drain is true the superseded
+// instance is kept alive for drainWindow (then reaped) so the cutover drops
+// nothing; when false the old instance is already gone. Resets crash-loop and
+// health state for the fresh instance and clears roll bookkeeping.
+func (m *Manager) flip(rec Record, ob *observed, now time.Time, drain bool) {
+	m.obsMu.Lock()
+	defer m.obsMu.Unlock()
+	if drain && ob.instanceID != "" {
+		ob.drainInstanceID = ob.instanceID
+		ob.drainUntil = now.Add(drainWindow)
+	}
+	ob.instanceID = ob.incomingInstanceID
+	ob.generation = ob.incomingGeneration
+	ob.bootedAt = now
+	ob.phase = "running"
+	ob.consecutiveFailures = 0
+	ob.backoffUntil = time.Time{}
+	ob.lastErr = ""
+	if rec.Spec.Health != nil && rec.Spec.Health.Type != "" {
+		ob.health = "unknown"
+		ob.healthyStreak, ob.unhealthyStreak = 0, 0
+		ob.nextProbe = now.Add(probeInterval(rec.Spec.Health))
+	} else {
+		ob.health = "healthy"
+	}
+	ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
+	ob.rolloutUntil = time.Time{}
+	ob.rollFailures, ob.rollBackoff = 0, time.Time{}
+}
+
+// abortRoll ends a failed rolling update: the incoming instance is destroyed
+// and the old instance keeps serving. The failure is recorded (surfaced via
+// AppStatus.LastError) and backed off; the served generation stays behind the
+// desired one, so a later `app update` — or the backoff-gated retry — tries
+// again without ever taking the app down.
+func (m *Manager) abortRoll(ctx context.Context, rec Record, ob *observed, now time.Time, reason string) {
+	m.obsMu.Lock()
+	incoming := ob.incomingInstanceID
+	ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
+	ob.rolloutUntil = time.Time{}
+	ob.rollFailures++
+	ob.rollBackoff = now.Add(backoffFor(ob.rollFailures))
+	ob.lastErr = fmt.Sprintf("update to generation %d failed: %s (serving generation %d)", rec.Generation, reason, ob.generation)
+	m.obsMu.Unlock()
+	_ = m.inst.Destroy(ctx, incoming)
+	m.log.Warn("app: rolling update aborted; keeping current instance",
+		"app", rec.ID, "name", rec.Spec.Name, "incoming", incoming, "reason", reason, "serving_generation", ob.generation)
+}
+
+// cancelRoll abandons an in-progress roll that a newer update superseded. Unlike
+// abortRoll this is not a failure: no backoff, no recorded error.
+func (m *Manager) cancelRoll(ctx context.Context, ob *observed, reason string) {
+	m.obsMu.Lock()
+	incoming := ob.incomingInstanceID
+	ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
+	ob.rolloutUntil = time.Time{}
+	m.obsMu.Unlock()
+	_ = m.inst.Destroy(ctx, incoming)
+	m.log.Info("app: rolling update cancelled", "instance", incoming, "reason", reason)
+}
+
+// probeReady runs the incoming instance's readiness gate: its configured health
+// check, or — when none is set — a TCP connect to the app's proxy port (canRoll
+// guarantees Port > 0).
+func (m *Manager) probeReady(ctx context.Context, rec Record, instanceID string) Health {
+	if hc := rec.Spec.Health; hc != nil && hc.Type != "" {
+		return m.inst.Probe(ctx, instanceID, *hc)
+	}
+	return m.inst.Probe(ctx, instanceID, api.HealthCheck{Type: "tcp", Port: rec.Spec.Port})
+}
+
+// readyThreshold is how many consecutive readiness passes the incoming instance
+// needs before the flip: the health check's healthy threshold, or one
+// successful TCP connect.
+func readyThreshold(rec Record) int {
+	if hc := rec.Spec.Health; hc != nil && hc.Type != "" {
+		return healthyThreshold(hc)
+	}
+	return 1
 }
 
 // recordFailure marks the current instance dead and schedules a backed-off
@@ -667,11 +883,12 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 			phase = "pending"
 		}
 		resp.Status = &api.AppStatus{
-			InstanceID: ob.instanceID,
-			Phase:      phase,
-			Health:     ob.health,
-			Restarts:   ob.restarts,
-			LastError:  ob.lastErr,
+			InstanceID:         ob.instanceID,
+			InstanceGeneration: ob.generation,
+			Phase:              phase,
+			Health:             ob.health,
+			Restarts:           ob.restarts,
+			LastError:          ob.lastErr,
 		}
 	}
 	return resp
