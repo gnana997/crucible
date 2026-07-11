@@ -29,6 +29,7 @@ import (
 	"github.com/gnana997/crucible/internal/agentbin"
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/daemon"
+	"github.com/gnana997/crucible/internal/ingress"
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/metrics"
@@ -42,6 +43,18 @@ import (
 
 // defaultTokenFile is where the daemon's API-key store lives by default.
 const defaultTokenFile = "/var/lib/crucible/tokens.json"
+
+// sandboxGuestIP adapts the sandbox Manager to ingress.InstanceLookup: it maps
+// an app instance's sandbox id to its guest IP for the proxy to dial.
+type sandboxGuestIP struct{ mgr *sandbox.Manager }
+
+func (s sandboxGuestIP) GuestIP(instanceID string) (string, bool) {
+	sb, err := s.mgr.Get(instanceID)
+	if err != nil || sb.Network == nil || sb.Network.GuestIP == "" {
+		return "", false
+	}
+	return sb.Network.GuestIP, true
+}
 
 // runDaemon implements the `crucible daemon` subcommand.
 //
@@ -122,6 +135,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// (like --log-dir) so the sandbox reconcile sweep can't reap it.
 		// Enables the /apps routes + reconcile loop; empty disables apps.
 		appDB = fs.String("app-db", "/var/lib/crucible/apps.db", "bbolt file for durable apps; enables /apps + the reconcile loop when set (must be outside --work-base)")
+
+		// Ingress proxy (v0.4.2): route inbound traffic to an app by name.
+		proxyListen    = fs.String("proxy-listen", "", "ingress proxy HTTP listen address (e.g. :80): routes by Host header to an app's current instance. Requires --app-db. Empty disables the HTTP proxy.")
+		proxyTLSListen = fs.String("proxy-tls-listen", "", "ingress proxy TLS listen address (e.g. :443): SNI passthrough to an app's current instance (the guest terminates TLS). Empty disables it.")
+		proxyDomain    = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -446,6 +464,28 @@ Required flags:
 		}
 	}
 
+	// Ingress proxy (v0.4.2): reach an app by name. Needs the app manager
+	// (name → current instance) and the sandbox manager (instance → guest IP).
+	var proxy *ingress.Proxy
+	if *proxyListen != "" || *proxyTLSListen != "" {
+		if appMgr == nil {
+			logger.Warn("ingress proxy requested but durable apps are disabled; set --app-db", "proxy_listen", *proxyListen, "proxy_tls_listen", *proxyTLSListen)
+		} else {
+			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, time.Second)
+			proxy = ingress.New(ingress.Config{
+				Resolver:   resolver,
+				HTTPListen: *proxyListen,
+				TLSListen:  *proxyTLSListen,
+				Logger:     logger,
+			})
+			if perr := proxy.Start(); perr != nil {
+				logger.Error("ingress proxy start failed", "err", perr)
+				return 1
+			}
+			logger.Info("ingress proxy enabled", "http", *proxyListen, "tls", *proxyTLSListen, "domain", *proxyDomain)
+		}
+	}
+
 	// --- run + shutdown ---------------------------------------------------
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -476,6 +516,11 @@ Required flags:
 
 	if err := srv.Shutdown(drainCtx); err != nil {
 		logger.Warn("http shutdown did not complete cleanly", "err", err)
+	}
+	// Stop accepting new proxied traffic before the reconciler and sandbox
+	// drain tear instances down.
+	if proxy != nil {
+		proxy.Stop(drainCtx)
 	}
 	// Stop the app reconcile loop before draining sandboxes so it doesn't
 	// try to "heal" instances the drain is tearing down. Desired state

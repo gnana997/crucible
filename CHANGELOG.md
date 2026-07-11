@@ -10,6 +10,16 @@ settles.
 
 ### Added
 
+- **Reach an app by name — the ingress proxy.** A daemon-owned front door routes
+  inbound traffic to an app's *current* instance by name, so many apps share one
+  host and the route follows the app across self-heal/redeploy. Off by default;
+  enable with `--proxy-listen :80` (Host-header routing, L7), `--proxy-tls-listen
+  :443` (SNI passthrough, L4 — the guest terminates its own TLS), and
+  `--proxy-domain <domain>` (`web.<domain>` → app `web`). New `--port` on an app
+  picks the guest port to forward to (defaults from a single published/`EXPOSE`d
+  port). In-process, resolution is live so it never routes a stale IP; unknown
+  host → 404, no ready instance → 502. See [docs/proxy.md](docs/proxy.md).
+
 - **Update a running app — `crucible app update <name>` / `PUT /apps/{name}`.**
   Replaces the app's spec (same flags as `create`; name immutable) and redeploys
   its instance — the daemon bumps the app's generation and the reconciler

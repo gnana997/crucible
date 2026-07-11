@@ -36,7 +36,7 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 // builds an AppSpec from them, so the two commands can never drift.
 type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
-	vcpus, memory                                 int
+	vcpus, memory, port                           int
 	netAllow, publish, env, netAllowCIDR          []string
 	netFullEgress, publishAll                     bool
 }
@@ -50,6 +50,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringVar(&a.healthCmd, "health-cmd", "", "exec health check: a shell command run in the guest, exit 0 = healthy (e.g. 'pg_isready -U postgres')")
 	f.IntVar(&a.vcpus, "vcpus", 0, "vCPUs (0 = daemon default)")
 	f.IntVar(&a.memory, "memory", 0, "memory in MiB (0 = daemon default)")
+	f.IntVar(&a.port, "port", 0, "guest port the ingress proxy forwards to (0 = default from a single published port)")
 	f.StringVar(&a.disk, "disk", "", "writable rootfs size (e.g. 2G)")
 	f.StringArrayVar(&a.netAllow, "net-allow", nil, "egress hostname allowlist entry (repeatable)")
 	f.StringArrayVar(&a.netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
@@ -83,6 +84,7 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		MemoryMiB:  a.memory,
 		DiskBytes:  diskBytes,
 		Env:        envMap,
+		Port:       a.port,
 		PublishAll: a.publishAll,
 		Restart:    wire.RestartPolicy{Policy: a.restart},
 	}

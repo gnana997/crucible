@@ -103,7 +103,7 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 | `app shell <name>` | interactive shell in the current instance |
 
 `create` flags: `--image` (required), `--pull`, `--restart`, `--health`
-(http/tcp), `--health-cmd` (exec), `-p/--publish` (repeatable),
+(http/tcp), `--health-cmd` (exec), `--port` (proxy target port), `-p/--publish` (repeatable),
 `-P/--publish-all` (publish every port the image `EXPOSE`s, guest N → host N),
 `-e/--env KEY=VALUE` (repeatable), `--net-allow` (repeatable),
 `--net-allow-cidr` (public IPv4 CIDR, repeatable), `--net-full-egress` (reach any
@@ -144,5 +144,9 @@ app := cr.App("web")
 res, _ := app.Exec(ctx, wire.ExecRequest{Cmd: []string{"nginx", "-t"}}, os.Stdout, os.Stderr)
 ```
 
-MCP agents get `create_app` / `list_apps` / `get_app` / `delete_app` tools (see
-[mcp.md](mcp.md)), under the same operator guardrails as sandbox creation.
+Reach an app by name through the [ingress proxy](proxy.md) instead of juggling
+published ports.
+
+MCP agents get `create_app` / `update_app` / `list_apps` / `get_app` /
+`delete_app` tools (see [mcp.md](mcp.md)), under the same operator guardrails as
+sandbox creation.

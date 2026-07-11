@@ -25,6 +25,7 @@ type createAppInput struct {
 	Restart       string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
 	VCPUs         int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
 	MemoryMiB     int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB; omit for the daemon default"`
+	Port          int      `json:"port,omitempty" jsonschema:"guest port the ingress proxy forwards to when routing this app by name (omit to default from a single published port)"`
 	HealthType    string   `json:"health_type,omitempty" jsonschema:"health check type: http, tcp, or exec (omit for none)"`
 	HealthPort    int      `json:"health_port,omitempty" jsonschema:"guest port an http/tcp health check probes"`
 	HealthPath    string   `json:"health_path,omitempty" jsonschema:"http health check path (default /)"`
@@ -90,6 +91,7 @@ func (h *handlers) appSpecFrom(in createAppInput) (api.AppSpec, error) {
 		VCPUs:      in.VCPUs,
 		MemoryMiB:  in.MemoryMiB,
 		Env:        envMap,
+		Port:       in.Port,
 		PublishAll: in.PublishAll,
 		Network:    mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress),
 		Restart:    wire.RestartPolicy{Policy: restart},

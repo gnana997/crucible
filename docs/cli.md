@@ -132,7 +132,7 @@ throwaway work; `app` is for a server you want to stay up.
 
 `create` flags: `--image` (required), `--pull`, `--restart always|on-failure|never`,
 `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec
-check, exit 0 = healthy), `-p/--publish` (repeatable), `-P/--publish-all`
+check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all`
 (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable,
 delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr`
 (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`,
