@@ -36,24 +36,9 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	// Scoped-token egress ceiling — an app's instance is created through the
-	// same path a sandbox is, so the network grants must apply here too (the
-	// sandbox-create handler is bypassed for apps).
-	if pol := policyFor(r); pol != nil {
-		var reqNet []string
-		wantFull, wantCIDR := false, false
-		if n := req.Network; n != nil && n.Enabled {
-			reqNet = n.Allowlist
-			wantFull = n.FullEgress
-			wantCIDR = len(n.AllowlistCIDR) > 0
-		}
-		if err := errors.Join(
-			pol.CheckNetAllow(reqNet),
-			pol.CheckFullEgress(wantFull, wantCIDR),
-		); err != nil {
-			writeError(w, http.StatusForbidden, err)
-			return
-		}
+	if err := s.checkAppEgressPolicy(r, req.Network); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
 	}
 
 	desiredRunning := req.DesiredState != "stopped"
@@ -68,6 +53,61 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// checkAppEgressPolicy applies the scoped-token egress ceiling to an app's
+// network request — an app's instance is created through the same path a
+// sandbox is, so the network grants must apply here too (the sandbox-create
+// handler is bypassed for apps). Shared by create and update. Nil policy (no
+// token) permits everything, as elsewhere.
+func (s *Server) checkAppEgressPolicy(r *http.Request, n *api.NetworkRequest) error {
+	pol := policyFor(r)
+	if pol == nil {
+		return nil
+	}
+	var reqNet []string
+	wantFull, wantCIDR := false, false
+	if n != nil && n.Enabled {
+		reqNet = n.Allowlist
+		wantFull = n.FullEgress
+		wantCIDR = len(n.AllowlistCIDR) > 0
+	}
+	return errors.Join(pol.CheckNetAllow(reqNet), pol.CheckFullEgress(wantFull, wantCIDR))
+}
+
+// handleUpdateApp — PUT /apps/{name}. Body is a full AppSpec (name immutable).
+// Bumps the app's generation → the reconciler redeploys the instance from the
+// new spec (destroy-then-boot). Desired running/stopped is retained (use the
+// create/stopped path or a future desired-state route to change that).
+func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	name := r.PathValue("name")
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var spec api.AppSpec
+	if err := json.NewDecoder(r.Body).Decode(&spec); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if spec.Name == "" {
+		spec.Name = name // the path is authoritative; a mismatch is rejected below
+	}
+	if err := s.checkAppEgressPolicy(r, spec.Network); err != nil {
+		writeError(w, http.StatusForbidden, err)
+		return
+	}
+	rec, err := s.cfg.AppManager.Update(name, spec)
+	if err != nil {
+		writeError(w, appErrStatus(err), err)
+		return
+	}
+	resp, err := s.cfg.AppManager.Get(rec.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleListApps — GET /apps.
@@ -130,7 +170,7 @@ func appErrStatus(err error) int {
 // otherwise. Kept narrow: only the known validation prefixes.
 func isValidationErr(err error) bool {
 	msg := err.Error()
-	for _, p := range []string{"app: invalid name", "app: image is required", "app: unknown restart policy"} {
+	for _, p := range []string{"app: invalid name", "app: image is required", "app: unknown restart policy", "app: name is immutable"} {
 		if len(msg) >= len(p) && msg[:len(p)] == p {
 			return true
 		}

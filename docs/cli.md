@@ -122,6 +122,7 @@ throwaway work; `app` is for a server you want to stay up.
 | Command | Description |
 |---|---|
 | `create <name> --image <ref> [flags]` | create a durable app; prints its name |
+| `update <name> [flags]` | replace the app's spec (same flags as create) and redeploy; name immutable |
 | `ls` | list apps (table: name, desired, phase, health, restarts, instance) |
 | `get <name>` | full app JSON (desired state + observed status) |
 | `rm <name>` | delete the app and tear down its instance |

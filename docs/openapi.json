@@ -203,6 +203,87 @@
             }
           }
         }
+      },
+      "put": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Update an app",
+        "description": "Replaces the app's spec (name immutable) and redeploys its instance from the new spec — the daemon bumps the app's generation and the reconciler destroys the old instance and boots a fresh one. Desired running/stopped is retained.",
+        "operationId": "updateApp",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAppReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/healthz": {
@@ -2253,6 +2334,57 @@
           },
           "state_path": {
             "type": "string"
+          },
+          "vcpus": {
+            "type": "integer"
+          }
+        }
+      },
+      "UpdateAppReq": {
+        "type": "object",
+        "properties": {
+          "disk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "health": {
+            "$ref": "#/components/schemas/HealthCheck"
+          },
+          "image": {
+            "$ref": "#/components/schemas/ImageRef"
+          },
+          "memory_mib": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "network": {
+            "$ref": "#/components/schemas/NetworkRequest"
+          },
+          "publish": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PortMapping"
+            }
+          },
+          "publish_all": {
+            "type": "boolean"
+          },
+          "pull": {
+            "type": "string"
+          },
+          "restart": {
+            "$ref": "#/components/schemas/WireRestartPolicy"
+          },
+          "service": {
+            "$ref": "#/components/schemas/WireServiceSpec"
           },
           "vcpus": {
             "type": "integer"

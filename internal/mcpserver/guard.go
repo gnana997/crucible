@@ -131,9 +131,9 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpCreate, policy.OpExec, policy.OpDelete}
 	case "create_sandbox":
 		return []policy.Operation{policy.OpCreate}
-	case "create_app":
+	case "create_app", "update_app":
 		// An app configures an entrypoint the daemon runs — exec-grade
-		// (matches the daemon's POST /apps gate).
+		// (matches the daemon's POST/PUT /apps gate).
 		return []policy.Operation{policy.OpExec}
 	case "delete_app":
 		return []policy.Operation{policy.OpDelete}

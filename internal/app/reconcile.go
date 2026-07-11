@@ -44,6 +44,11 @@ type Instantiator interface {
 
 	// Destroy tears the instance down. Absent/already-gone is not an error.
 	Destroy(ctx context.Context, instanceID string) error
+
+	// ImageHealth returns the health check derived from the image's Docker
+	// HEALTHCHECK, or nil if the image declares none (or NONE). Used to seed an
+	// app's health when it declares none of its own.
+	ImageHealth(ctx context.Context, spec api.AppSpec) (*api.HealthCheck, error)
 }
 
 // observed is an app's runtime (never persisted) state, rebuilt from
@@ -196,6 +201,35 @@ func (m *Manager) SetDesired(id string, running bool) error {
 	}
 	m.Trigger()
 	return nil
+}
+
+// Update replaces an app's spec and bumps its generation, which the reconciler
+// observes as a redeploy: the old instance is destroyed and a fresh one booted
+// from the new spec (P1b redeploy — not zero-downtime). The app's name is
+// immutable and desired running/stopped is retained (use SetDesired to change
+// that). Absent name is ErrNotFound.
+func (m *Manager) Update(name string, spec api.AppSpec) (Record, error) {
+	if spec.Name != name {
+		return Record{}, fmt.Errorf("app: name is immutable (%q cannot become %q)", name, spec.Name)
+	}
+	if err := validateSpec(spec); err != nil {
+		return Record{}, err
+	}
+	rec, found, err := m.store.GetByName(name)
+	if err != nil {
+		return Record{}, err
+	}
+	if !found {
+		return Record{}, ErrNotFound
+	}
+	rec.Spec = spec
+	rec.Generation++
+	rec.UpdatedAt = m.now().UTC()
+	if err := m.store.Put(rec); err != nil {
+		return Record{}, err
+	}
+	m.Trigger()
+	return rec, nil
 }
 
 // Get returns the app's desired state plus observed status.
@@ -410,8 +444,34 @@ func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
 	m.maybeResetStable(rec.ID, now)
 }
 
+// seedHealthFromImage defaults an app's health from the image's Docker
+// HEALTHCHECK when the app declares none, persisting it once (a defaulting
+// write — generation unchanged). Called at boot, where the image is resolvable;
+// a no-HEALTHCHECK image just leaves health nil (process-alive liveness).
+func (m *Manager) seedHealthFromImage(ctx context.Context, rec Record) Record {
+	if rec.Spec.Health != nil {
+		return rec
+	}
+	hc, err := m.inst.ImageHealth(ctx, rec.Spec)
+	if err != nil {
+		m.log.Warn("app: resolve image health", "app", rec.ID, "err", err)
+		return rec
+	}
+	if hc == nil {
+		return rec
+	}
+	rec.Spec.Health = hc
+	if err := m.store.Put(rec); err != nil {
+		m.log.Warn("app: persist seeded health", "app", rec.ID, "err", err)
+		return rec // boot with it in-memory even if the persist failed
+	}
+	m.log.Info("app: seeded health from image HEALTHCHECK", "app", rec.ID, "name", rec.Spec.Name)
+	return rec
+}
+
 // bootInstance creates a fresh instance and records observed state.
 func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, now time.Time) {
+	rec = m.seedHealthFromImage(ctx, rec)
 	id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
 	next := &observed{generation: rec.Generation, bootedAt: now}
 	if prev != nil {

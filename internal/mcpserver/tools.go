@@ -252,6 +252,8 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.fork) })
 	add("create_app", "Create a durable app: a named workload the daemon keeps a healthy instance of, restarting it on failure and re-creating it after a daemon restart. Publish a port to reach it.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createApp) })
+	add("update_app", "Update a durable app: replace its spec (same fields as create_app; name immutable) and redeploy — the old instance is destroyed and a fresh one booted from the new spec. Desired running/stopped is retained (the stopped field is ignored).",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.updateApp) })
 	add("list_apps", "List durable apps with their phase, health, and restart count.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listApps) })
 	add("get_app", "Get one app's desired state and observed status (instance id, phase, health, restarts).",

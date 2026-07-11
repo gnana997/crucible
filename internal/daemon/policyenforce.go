@@ -71,6 +71,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasSuffix(path, "/service") {
 			return policy.OpExec, true
 		}
+		// PUT /apps/{name} replaces the app's entrypoint spec — exec-grade,
+		// same as creating one.
+		if strings.HasPrefix(path, "/apps/") {
+			return policy.OpExec, true
+		}
 	case http.MethodPost:
 		switch {
 		case path == "/sandboxes":

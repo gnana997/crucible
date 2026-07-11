@@ -63,23 +63,25 @@ func toAppOutput(a api.AppResponse) appOutput {
 	return out
 }
 
-func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in createAppInput) (*mcp.CallToolResult, appOutput, error) {
+// appSpecFrom builds a validated AppSpec from the tool input, applying the
+// operator's egress guardrails. Shared by create_app and update_app.
+func (h *handlers) appSpecFrom(in createAppInput) (api.AppSpec, error) {
 	if in.Name == "" || in.Image == "" {
-		return nil, appOutput{}, fmt.Errorf("name and image are required")
+		return api.AppSpec{}, fmt.Errorf("name and image are required")
+	}
+	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
+		return api.AppSpec{}, err
+	}
+	if err := h.cfg.checkFullEgress(in.NetFullEgress, len(in.NetAllowCIDR) > 0); err != nil {
+		return api.AppSpec{}, err
+	}
+	envMap, err := api.ParseEnv(in.Env)
+	if err != nil {
+		return api.AppSpec{}, err
 	}
 	restart := in.Restart
 	if restart == "" {
 		restart = wire.RestartAlways
-	}
-	if err := h.cfg.checkNetAllow(in.NetAllow); err != nil {
-		return nil, appOutput{}, err
-	}
-	if err := h.cfg.checkFullEgress(in.NetFullEgress, len(in.NetAllowCIDR) > 0); err != nil {
-		return nil, appOutput{}, err
-	}
-	envMap, err := api.ParseEnv(in.Env)
-	if err != nil {
-		return nil, appOutput{}, err
 	}
 	spec := api.AppSpec{
 		Name:       in.Name,
@@ -93,20 +95,43 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 		Restart:    wire.RestartPolicy{Policy: restart},
 	}
 	for _, p := range in.Publish {
-		pm, err := api.ParsePublish(p)
-		if err != nil {
-			return nil, appOutput{}, err
+		pm, perr := api.ParsePublish(p)
+		if perr != nil {
+			return api.AppSpec{}, perr
 		}
 		spec.Publish = append(spec.Publish, pm)
 	}
 	if in.HealthType != "" {
 		spec.Health = &api.HealthCheck{Type: in.HealthType, Port: in.HealthPort, Path: in.HealthPath, Cmd: in.HealthCmd}
 	}
+	return spec, nil
+}
+
+func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in createAppInput) (*mcp.CallToolResult, appOutput, error) {
+	spec, err := h.appSpecFrom(in)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
 	desired := "running"
 	if in.Stopped {
 		desired = "stopped"
 	}
 	resp, err := h.cfg.Client.CreateApp(ctx, api.CreateAppRequest{AppSpec: spec, DesiredState: desired})
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	return nil, toAppOutput(resp), nil
+}
+
+// updateApp replaces an app's spec and redeploys it (destroy the old instance,
+// boot a fresh one from the new spec). The name is immutable and desired
+// running/stopped is retained (the "stopped" input field is ignored here).
+func (h *handlers) updateApp(ctx context.Context, _ *mcp.CallToolRequest, in createAppInput) (*mcp.CallToolResult, appOutput, error) {
+	spec, err := h.appSpecFrom(in)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	resp, err := h.cfg.Client.UpdateApp(ctx, in.Name, spec)
 	if err != nil {
 		return nil, appOutput{}, err
 	}

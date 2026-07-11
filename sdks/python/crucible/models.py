@@ -264,6 +264,22 @@ class SnapshotListResponse(BaseModel):
     snapshots: list[SnapshotResponse] | None = None
 
 
+class UpdateAppReq(BaseModel):
+    disk_bytes: int | None = None
+    env: dict[str, str] | None = None
+    health: HealthCheck | None = None
+    image: ImageRef | None = None
+    memory_mib: int | None = None
+    name: str | None = None
+    network: NetworkRequest | None = None
+    publish: list[PortMapping] | None = None
+    publish_all: bool | None = None
+    pull: str | None = None
+    restart: WireRestartPolicy | None = None
+    service: WireServiceSpec | None = None
+    vcpus: int | None = None
+
+
 class WireExecResult(BaseModel):
     duration_ms: int | None = None
     error: str | None = None

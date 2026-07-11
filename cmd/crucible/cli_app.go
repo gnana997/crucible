@@ -21,6 +21,7 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newAppCreateCmd(o),
+		newAppUpdateCmd(o),
 		newAppListCmd(o),
 		newAppGetCmd(o),
 		newAppRmCmd(o),
@@ -31,70 +32,96 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 	return cmd
 }
 
+// appSpecOpts holds the flags shared by `app create` and `app update` and
+// builds an AppSpec from them, so the two commands can never drift.
+type appSpecOpts struct {
+	image, pull, restart, health, healthCmd, disk string
+	vcpus, memory                                 int
+	netAllow, publish, env, netAllowCIDR          []string
+	netFullEgress, publishAll                     bool
+}
+
+func (a *appSpecOpts) register(cmd *cobra.Command) {
+	f := cmd.Flags()
+	f.StringVar(&a.image, "image", "", "OCI image the app boots from (required)")
+	f.StringVar(&a.pull, "pull", "", "image pull policy: missing|always|never")
+	f.StringVar(&a.restart, "restart", wire.RestartAlways, "instance restart policy: always|on-failure|never")
+	f.StringVar(&a.health, "health", "", "health check: http:PORT[:PATH] or tcp:PORT (e.g. http:80:/ )")
+	f.StringVar(&a.healthCmd, "health-cmd", "", "exec health check: a shell command run in the guest, exit 0 = healthy (e.g. 'pg_isready -U postgres')")
+	f.IntVar(&a.vcpus, "vcpus", 0, "vCPUs (0 = daemon default)")
+	f.IntVar(&a.memory, "memory", 0, "memory in MiB (0 = daemon default)")
+	f.StringVar(&a.disk, "disk", "", "writable rootfs size (e.g. 2G)")
+	f.StringArrayVar(&a.netAllow, "net-allow", nil, "egress hostname allowlist entry (repeatable)")
+	f.StringArrayVar(&a.netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
+	f.BoolVar(&a.netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
+	f.StringArrayVarP(&a.publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
+	f.BoolVarP(&a.publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
+	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
+}
+
+func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
+	if a.image == "" {
+		return api.AppSpec{}, fmt.Errorf("--image is required")
+	}
+	ref, effPull, err := resolveCreateImage(cmd.Context(), o.client(), a.image, a.pull, cmd.ErrOrStderr())
+	if err != nil {
+		return api.AppSpec{}, err
+	}
+	diskBytes, err := parseDiskSize(a.disk)
+	if err != nil {
+		return api.AppSpec{}, err
+	}
+	envMap, err := api.ParseEnv(a.env)
+	if err != nil {
+		return api.AppSpec{}, err
+	}
+	spec := api.AppSpec{
+		Name:       name,
+		Image:      &api.ImageRef{OCI: ref},
+		Pull:       effPull,
+		VCPUs:      a.vcpus,
+		MemoryMiB:  a.memory,
+		DiskBytes:  diskBytes,
+		Env:        envMap,
+		PublishAll: a.publishAll,
+		Restart:    wire.RestartPolicy{Policy: a.restart},
+	}
+	for _, p := range a.publish {
+		pm, perr := parsePublish(p)
+		if perr != nil {
+			return api.AppSpec{}, perr
+		}
+		spec.Publish = append(spec.Publish, pm)
+	}
+	spec.Network = buildNetworkRequest(a.netAllow, a.netAllowCIDR, a.netFullEgress)
+	if a.health != "" {
+		hc, herr := parseHealth(a.health)
+		if herr != nil {
+			return api.AppSpec{}, herr
+		}
+		spec.Health = hc
+	}
+	if a.healthCmd != "" {
+		if spec.Health != nil {
+			return api.AppSpec{}, fmt.Errorf("--health and --health-cmd are mutually exclusive")
+		}
+		// Shell form (docker HEALTHCHECK CMD-SHELL): exit 0 = healthy.
+		spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", a.healthCmd}}
+	}
+	return spec, nil
+}
+
 func newAppCreateCmd(o *globalOpts) *cobra.Command {
-	var (
-		image, pull, restart, health string
-		healthCmd                    string
-		vcpus, memory                int
-		disk                         string
-		netAllow, publish, env       []string
-		netAllowCIDR                 []string
-		netFullEgress                bool
-		publishAll                   bool
-		stopped                      bool
-	)
+	var opts appSpecOpts
+	var stopped bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a durable app",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if image == "" {
-				return fmt.Errorf("--image is required")
-			}
-			ref, effPull, err := resolveCreateImage(cmd.Context(), o.client(), image, pull, cmd.ErrOrStderr())
+			spec, err := opts.build(cmd, o, args[0])
 			if err != nil {
 				return err
-			}
-			diskBytes, err := parseDiskSize(disk)
-			if err != nil {
-				return err
-			}
-			envMap, err := api.ParseEnv(env)
-			if err != nil {
-				return err
-			}
-			spec := api.AppSpec{
-				Name:       args[0],
-				Image:      &api.ImageRef{OCI: ref},
-				Pull:       effPull,
-				VCPUs:      vcpus,
-				MemoryMiB:  memory,
-				DiskBytes:  diskBytes,
-				Env:        envMap,
-				PublishAll: publishAll,
-				Restart:    wire.RestartPolicy{Policy: restart},
-			}
-			for _, p := range publish {
-				pm, perr := parsePublish(p)
-				if perr != nil {
-					return perr
-				}
-				spec.Publish = append(spec.Publish, pm)
-			}
-			spec.Network = buildNetworkRequest(netAllow, netAllowCIDR, netFullEgress)
-			if health != "" {
-				hc, herr := parseHealth(health)
-				if herr != nil {
-					return herr
-				}
-				spec.Health = hc
-			}
-			if healthCmd != "" {
-				if spec.Health != nil {
-					return fmt.Errorf("--health and --health-cmd are mutually exclusive")
-				}
-				// Shell form (docker HEALTHCHECK CMD-SHELL): exit 0 = healthy.
-				spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", healthCmd}}
 			}
 			resp, err := o.client().CreateApp(cmd.Context(), api.CreateAppRequest{
 				AppSpec:      spec,
@@ -110,22 +137,35 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 			return nil
 		},
 	}
-	f := cmd.Flags()
-	f.StringVar(&image, "image", "", "OCI image the app boots from (required)")
-	f.StringVar(&pull, "pull", "", "image pull policy: missing|always|never")
-	f.StringVar(&restart, "restart", wire.RestartAlways, "instance restart policy: always|on-failure|never")
-	f.StringVar(&health, "health", "", "health check: http:PORT[:PATH] or tcp:PORT (e.g. http:80:/ )")
-	f.StringVar(&healthCmd, "health-cmd", "", "exec health check: a shell command run in the guest, exit 0 = healthy (e.g. 'pg_isready -U postgres')")
-	f.IntVar(&vcpus, "vcpus", 0, "vCPUs (0 = daemon default)")
-	f.IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
-	f.StringVar(&disk, "disk", "", "writable rootfs size (e.g. 2G)")
-	f.StringArrayVar(&netAllow, "net-allow", nil, "egress hostname allowlist entry (repeatable)")
-	f.StringArrayVar(&netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
-	f.BoolVar(&netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
-	f.StringArrayVarP(&publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
-	f.BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
-	f.StringArrayVarP(&env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
-	f.BoolVar(&stopped, "stopped", false, "create the app without starting an instance")
+	opts.register(cmd)
+	cmd.Flags().BoolVar(&stopped, "stopped", false, "create the app without starting an instance")
+	return cmd
+}
+
+func newAppUpdateCmd(o *globalOpts) *cobra.Command {
+	var opts appSpecOpts
+	cmd := &cobra.Command{
+		Use:   "update <name>",
+		Short: "Update a durable app's spec and redeploy it",
+		Long:  "Replace the app's spec (same flags as create) and redeploy its instance — the old instance is destroyed and a fresh one is booted from the new spec. The app's name is immutable; desired running/stopped is retained.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spec, err := opts.build(cmd, o, args[0])
+			if err != nil {
+				return err
+			}
+			resp, err := o.client().UpdateApp(cmd.Context(), args[0], spec)
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), resp)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), resp.Name)
+			return nil
+		},
+	}
+	opts.register(cmd)
 	return cmd
 }
 

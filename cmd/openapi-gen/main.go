@@ -44,6 +44,12 @@ type idParam struct {
 type appNameParam struct {
 	Name string `path:"name" description:"App name (a DNS label, e.g. web)."`
 }
+
+// updateAppReq is PUT /apps/{name}: the {name} path param plus the AppSpec body.
+type updateAppReq struct {
+	appNameParam
+	api.AppSpec
+}
 type snapIDParam struct {
 	ID string `path:"id" description:"Snapshot ID, e.g. snap_ab12cd34."`
 }
@@ -199,6 +205,12 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodGet, "/apps/{name}", "getApp", "apps", "Get an app",
 		"Desired state plus observed status (instance id, phase, health, restarts).",
 		appNameParam{}, api.AppResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodPut, "/apps/{name}", "updateApp", "apps", "Update an app",
+		"Replaces the app's spec (name immutable) and redeploys its instance from the "+
+			"new spec — the daemon bumps the app's generation and the reconciler destroys "+
+			"the old instance and boots a fresh one. Desired running/stopped is retained.",
+		updateAppReq{}, api.AppResponse{}, http.StatusOK,
+		http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusNotImplemented)
 	jsonOp(http.MethodDelete, "/apps/{name}", "deleteApp", "apps", "Delete an app",
 		"Removes the app and tears down its instance on the next reconcile.",
 		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)

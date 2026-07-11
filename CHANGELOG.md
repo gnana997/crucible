@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [Unreleased]
+
+### Added
+
+- **Update a running app — `crucible app update <name>` / `PUT /apps/{name}`.**
+  Replaces the app's spec (same flags as `create`; name immutable) and redeploys
+  its instance — the daemon bumps the app's generation and the reconciler
+  destroys the old instance and boots a fresh one from the new spec. Desired
+  running/stopped is retained. Also on the Go SDK (`UpdateApp`) and the MCP
+  `update_app` tool (→ 20 tools).
+- **Seed app health from the image's `HEALTHCHECK`.** An app that declares no
+  health of its own now inherits the image's Docker `HEALTHCHECK` when present —
+  derived as an `exec` check at first boot and persisted. `--health`/`--health-cmd`
+  still override.
+
 ## [0.4.1] — 2026-07-12
 
 Apps you can actually deploy: real config, real egress. Everything here builds on

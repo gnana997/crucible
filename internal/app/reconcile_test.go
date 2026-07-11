@@ -17,13 +17,20 @@ import (
 // fakeInstantiator records Create/Destroy and lets a test flip an
 // instance's liveness to simulate a crash.
 type fakeInstantiator struct {
-	mu        sync.Mutex
-	next      int
-	live      map[string]string // instanceID -> appID
-	creates   []string          // appIDs, in order
-	destroys  []string          // instanceIDs, in order
-	createErr error
-	probe     Health // result Probe returns for live instances
+	mu          sync.Mutex
+	next        int
+	live        map[string]string // instanceID -> appID
+	creates     []string          // appIDs, in order
+	destroys    []string          // instanceIDs, in order
+	createErr   error
+	probe       Health           // result Probe returns for live instances
+	imageHealth *api.HealthCheck // what ImageHealth returns (nil = image has none)
+}
+
+func (f *fakeInstantiator) ImageHealth(_ context.Context, _ api.AppSpec) (*api.HealthCheck, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.imageHealth, nil
 }
 
 func mustCreate(t *testing.T, m *Manager, spec api.AppSpec, running bool) Record {
@@ -467,5 +474,64 @@ func TestStartPeriodGrace(t *testing.T) {
 	}
 	if f.createCount() != createsBefore {
 		t.Error("restarted during start-period grace")
+	}
+}
+
+func TestUpdateBumpsGenerationAndReplacesSpec(t *testing.T) {
+	m, _ := newMgr(t, newFake())
+	mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+
+	updated := nginxSpec("web", wire.RestartOnFailure)
+	updated.MemoryMiB = 512
+	rec, err := m.Update("web", updated)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if rec.Generation != 2 {
+		t.Errorf("generation = %d, want 2 (a bump triggers redeploy)", rec.Generation)
+	}
+	if rec.Spec.Restart.Policy != wire.RestartOnFailure || rec.Spec.MemoryMiB != 512 {
+		t.Errorf("spec not replaced: %+v", rec.Spec)
+	}
+	if !rec.DesiredRunning {
+		t.Error("desired running should be retained across update")
+	}
+
+	// Name is immutable.
+	if _, err := m.Update("web", nginxSpec("web2", wire.RestartAlways)); err == nil {
+		t.Error("name change accepted; want an immutable-name error")
+	}
+	// Unknown app.
+	if _, err := m.Update("nope", nginxSpec("nope", wire.RestartAlways)); !errors.Is(err, ErrNotFound) {
+		t.Errorf("update unknown err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSeedHealthFromImage(t *testing.T) {
+	// No app health + image declares one → seeded and persisted at boot.
+	f := newFake()
+	f.imageHealth = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", "true"}}
+	m, s := newMgr(t, f)
+	_, _ = m.Create(nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(context.Background())
+	got, found, err := s.GetByName("web")
+	if err != nil || !found {
+		t.Fatalf("GetByName: found=%v err=%v", found, err)
+	}
+	if got.Spec.Health == nil || got.Spec.Health.Type != "exec" {
+		t.Fatalf("image health not seeded: %+v", got.Spec.Health)
+	}
+
+	// Explicit app health is never overwritten by the image seed.
+	f2 := newFake()
+	f2.imageHealth = &api.HealthCheck{Type: "exec", Cmd: []string{"x"}}
+	m2, s2 := newMgr(t, f2)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Health = &api.HealthCheck{Type: "tcp", Port: 5432}
+	_, _ = m2.Create(spec, true)
+	m2.reconcile(context.Background())
+	got2, _, _ := s2.GetByName("web")
+	if got2.Spec.Health == nil || got2.Spec.Health.Type != "tcp" {
+		t.Errorf("explicit health overwritten by seed: %+v", got2.Spec.Health)
 	}
 }

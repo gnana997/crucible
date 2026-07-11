@@ -71,6 +71,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /apps", s.handleCreateApp)
 	mux.HandleFunc("GET /apps", s.handleListApps)
 	mux.HandleFunc("GET /apps/{name}", s.handleGetApp)
+	mux.HandleFunc("PUT /apps/{name}", s.handleUpdateApp)
 	mux.HandleFunc("DELETE /apps/{name}", s.handleDeleteApp)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.

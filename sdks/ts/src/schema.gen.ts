@@ -37,7 +37,11 @@ export interface paths {
          * @description Desired state plus observed status (instance id, phase, health, restarts).
          */
         get: operations["getApp"];
-        put?: never;
+        /**
+         * Update an app
+         * @description Replaces the app's spec (name immutable) and redeploys its instance from the new spec — the daemon bumps the app's generation and the reconciler destroys the old instance and boots a fresh one. Desired running/stopped is retained.
+         */
+        put: operations["updateApp"];
         post?: never;
         /**
          * Delete an app
@@ -661,6 +665,24 @@ export interface components {
             state_path?: string;
             vcpus?: number;
         };
+        UpdateAppReq: {
+            /** Format: int64 */
+            disk_bytes?: number;
+            env?: {
+                [key: string]: string;
+            };
+            health?: components["schemas"]["HealthCheck"];
+            image?: components["schemas"]["ImageRef"];
+            memory_mib?: number;
+            name?: string;
+            network?: components["schemas"]["NetworkRequest"];
+            publish?: components["schemas"]["PortMapping"][];
+            publish_all?: boolean;
+            pull?: string;
+            restart?: components["schemas"]["WireRestartPolicy"];
+            service?: components["schemas"]["WireServiceSpec"];
+            vcpus?: number;
+        };
         Whoami: {
             policy?: components["schemas"]["Policy"];
             scoped?: boolean;
@@ -851,6 +873,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AppResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    updateApp: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UpdateAppReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Not Found */

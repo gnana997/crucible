@@ -40,6 +40,18 @@ func (c *Client) GetApp(ctx context.Context, name string) (api.AppResponse, erro
 	return decodeInto[api.AppResponse](resp)
 }
 
+// UpdateApp replaces an app's spec (name immutable) and redeploys its instance
+// from the new spec — the daemon bumps the app's generation and the reconciler
+// destroys the old instance and boots a fresh one. Desired running/stopped is
+// retained.
+func (c *Client) UpdateApp(ctx context.Context, name string, spec api.AppSpec) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPut, "/apps/"+url.PathEscape(name), spec)
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
 // DeleteApp removes an app and tears down its instance (DELETE /apps/{name}).
 func (c *Client) DeleteApp(ctx context.Context, name string) error {
 	resp, err := c.do(ctx, http.MethodDelete, "/apps/"+url.PathEscape(name), nil)

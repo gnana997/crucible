@@ -67,6 +67,7 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 | `inspect_sandbox` | Full detail for one sandbox. | `sandbox_id` |
 | `stop_sandbox` | Gracefully stop a sandbox's entrypoint (StopSignal + grace); the sandbox remains. | `sandbox_id`, `grace_s?` |
 | `create_app` | Create a **durable app** the daemon keeps alive and re-creates after a restart ([apps.md](apps.md)). | `name`, `image`, `pull?`, `publish?[]`, `publish_all?`, `env?[]`, `restart?`, `vcpus?`, `memory_mib?`, `health_type?` (http/tcp/exec) +`health_port?`+`health_path?`+`health_cmd?[]`, `net_allow?[]`, `net_allow_cidr?[]`, `net_full_egress?`, `stopped?` |
+| `update_app` | Replace a durable app's spec (same fields as `create_app`; name immutable) and redeploy — the old instance is destroyed and a fresh one booted from the new spec. | same as `create_app` (`stopped` ignored) |
 | `list_apps` | List durable apps with phase, health, and restart count. | — |
 | `get_app` | One app's desired state + observed status. | `name` |
 | `delete_app` | Delete a durable app and tear down its instance. | `name` |

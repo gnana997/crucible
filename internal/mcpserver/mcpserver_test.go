@@ -114,7 +114,7 @@ func TestServerAdvertisesFullCatalog(t *testing.T) {
 		"create_app", "create_sandbox", "delete_app", "delete_sandbox", "delete_snapshot",
 		"exec", "fork", "get_app", "inspect_sandbox", "list_apps", "list_profiles",
 		"list_sandboxes", "list_snapshots", "logs", "read_file", "run", "snapshot",
-		"stop_sandbox", "write_files",
+		"stop_sandbox", "update_app", "write_files",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("tools = %v (%d), want %d", got, len(got), len(want))

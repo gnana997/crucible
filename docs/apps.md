@@ -84,15 +84,17 @@ An instance that fails its health check past the threshold is destroyed and
 restarted (subject to the backoff above). A start-period grace window means slow
 starters aren't killed while warming up. Without a health check, "process alive"
 is the liveness signal. The `exec` check (`--health-cmd`) runs its command in the
-guest over vsock, so it works even for an app with no network. (Auto-seeding a
-check from an image's own `HEALTHCHECK` is a follow-up — set one explicitly for
-now.)
+guest over vsock, so it works even for an app with no network. An app that
+declares no health of its own **inherits the image's Docker `HEALTHCHECK`** when
+it has one (seeded as an `exec` check at first boot and persisted); pass
+`--health`/`--health-cmd` to override.
 
 ## The `crucible app` commands
 
 | Command | What |
 |---|---|
 | `app create <name> --image <ref> [flags]` | create a durable app; prints its name |
+| `app update <name> [flags]` | replace the app's spec and redeploy (destroy the old instance, boot a fresh one); name immutable |
 | `app ls` | list apps with desired state, phase, health, restarts, instance |
 | `app get <name>` | full desired state + observed status (JSON) |
 | `app rm <name>` | delete the app and tear down its instance |

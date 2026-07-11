@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/app"
+	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
@@ -76,6 +77,62 @@ func mergeAppEnv(svc *wire.ServiceSpec, appEnv map[string]string) {
 		merged[k] = v
 	}
 	svc.Env = merged
+}
+
+// ImageHealth resolves the app's image (store-hit or a one-time pull) and
+// returns the health check derived from its Docker HEALTHCHECK, or nil when the
+// image declares none / NONE. The reconciler uses it to seed an app that
+// declares no health of its own.
+func (a appInstantiator) ImageHealth(ctx context.Context, spec api.AppSpec) (*api.HealthCheck, error) {
+	if spec.Image == nil || spec.Image.OCI == "" {
+		return nil, nil
+	}
+	rec, _, ierr := a.s.resolveImage(ctx, spec.Image, pullMissing)
+	if ierr != nil {
+		return nil, ierr.err
+	}
+	if rec == nil || rec.RunConfig == nil {
+		return nil, nil
+	}
+	return healthFromImage(rec.RunConfig.Healthcheck), nil
+}
+
+// healthFromImage converts a Docker HEALTHCHECK (oci.Healthcheck) into an
+// app.HealthCheck. Test[0] selects the form: CMD → exec argv; CMD-SHELL →
+// /bin/sh -c; NONE (or absent/unknown) → nil (no seed).
+func healthFromImage(hc *oci.Healthcheck) *api.HealthCheck {
+	if hc == nil || len(hc.Test) == 0 {
+		return nil
+	}
+	var cmd []string
+	switch hc.Test[0] {
+	case "CMD":
+		cmd = append([]string(nil), hc.Test[1:]...)
+	case "CMD-SHELL":
+		if len(hc.Test) < 2 {
+			return nil
+		}
+		cmd = []string{"/bin/sh", "-c", hc.Test[1]}
+	default: // "NONE" or an unrecognized form
+		return nil
+	}
+	if len(cmd) == 0 {
+		return nil
+	}
+	out := &api.HealthCheck{Type: "exec", Cmd: cmd}
+	if hc.IntervalMs > 0 {
+		out.IntervalSec = int(hc.IntervalMs / 1000)
+	}
+	if hc.TimeoutMs > 0 {
+		out.TimeoutSec = int(hc.TimeoutMs / 1000)
+	}
+	if hc.StartPeriodMs > 0 {
+		out.StartPeriodSec = int(hc.StartPeriodMs / 1000)
+	}
+	if hc.Retries > 0 {
+		out.UnhealthyThreshold = hc.Retries
+	}
+	return out
 }
 
 // Exists reports whether the instance is still registered in the Manager.
