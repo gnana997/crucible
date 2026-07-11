@@ -1,7 +1,7 @@
 # crucible Go SDK
 
 The official Go client for the [crucible](https://github.com/gnana997/crucible)
-daemon — Firecracker microVM sandboxes for untrusted / AI-generated code.
+daemon: Firecracker microVM sandboxes for untrusted / AI-generated code.
 Zero dependencies beyond the standard library.
 
 ```sh
@@ -47,9 +47,9 @@ func main() {
 - **Flat methods** on `Client` map 1:1 to the daemon's REST routes and
   return the full wire DTOs (`api.SandboxResponse`, …).
 - **Handles** (`cr.Sandbox(id)`, `cr.SnapshotHandle(id)`) are chaining
-  sugar over them — cheap value structs, no hidden round-trips.
+  sugar over them: cheap value structs, no hidden round-trips.
 - **Lists** return `Page[T]` (`.Items`, plus a `NextCursor` reserved for a
-  future control-plane — always empty against a single-node daemon).
+  future control-plane; always empty against a single-node daemon).
 - **Errors** are structured: every daemon error is a `*crucible.Error`
   (`Status`, `Message`, reserved `Code`), and 404/401/403 also match the
   `ErrNotFound` / `ErrUnauthorized` / `ErrPolicyDenied` sentinels via
@@ -61,7 +61,7 @@ func main() {
 
 ## Security model
 
-A daemon bearer token grants control of that host's microVMs — treat this
+A daemon bearer token grants control of that host's microVMs, so treat this
 as a **server-side** library and never embed a token in code shipped to
 browsers or other untrusted clients. A loopback daemon with no keys
 configured accepts unauthenticated requests (development convenience).
@@ -70,6 +70,6 @@ configured accepts unauthenticated requests (development convenience).
 
 This module versions independently of the daemon, with tags prefixed
 `sdk/` (e.g. `sdk/v0.1.0`). It is pre-1.0: the surface can still move
-between minor versions. The wire contract itself is frozen — see
+between minor versions. The wire contract itself is frozen; see
 [docs/wire.md](../docs/wire.md) and the generated
 [openapi.json](../docs/openapi.json).

@@ -2,12 +2,12 @@
 
 A typed, zero-runtime-dependency `fetch` client for the
 [crucible](https://github.com/gnana997/crucible) daemon. Server-side
-runtimes only (Node ≥ 22.18, Bun, Deno) — a daemon token grants control of
+runtimes only (Node ≥ 22.18, Bun, Deno): a daemon token grants control of
 the host's microVMs and must never ship to a browser.
 
-**Status: scaffold, not yet published to npm.** The core works — typed
+**Status: scaffold, not yet published to npm.** The core works (typed
 client, streaming exec, the frame codec verified against the conformance
-fixtures — and contributions are welcome (see below).
+fixtures) and contributions are welcome (see below).
 
 ```ts
 import { Crucible } from "@crucible/sdk";
@@ -37,14 +37,14 @@ const forks = await cr.fork(snap.id!, 8); // warm copies in ~100ms each
 ```sh
 npm ci
 npm run typecheck   # tsc --noEmit
-npm test            # node --test — decodes every conformance fixture
+npm test            # node --test: decodes every conformance fixture
 ```
 
-## Contributing — good first issues
+## Contributing: good first issues
 
-- **Interactive exec over WebSocket** — the daemon endpoint exists
+- **Interactive exec over WebSocket**: the daemon endpoint exists
   (`GET /sandboxes/{id}/exec` + upgrade; contract in
   [docs/wire.md](../../docs/wire.md), reference client in Go at
   `scripts/wsexec`). The frame codec here already encodes stdin frames.
-- **`followLogs` helper** — poll `logs()` with the `next_offset` cursor.
-- **Tar helper for `putFiles`** — build a tar stream from a directory.
+- **`followLogs` helper**: poll `logs()` with the `next_offset` cursor.
+- **Tar helper for `putFiles`**: build a tar stream from a directory.

@@ -109,7 +109,9 @@ type NetworkRequest struct {
 }
 
 // ImageRef identifies a per-sandbox rootfs override. Exactly one of
-// Path / OCI must be set. Reserved in v0.1 — any value returns 501.
+// Path / OCI must be set. OCI names a registry image (pulled and
+// converted on demand, then cached); Path is a prepared rootfs on the
+// daemon host. A daemon without an image store answers 501.
 type ImageRef struct {
 	Path string `json:"path,omitempty"`
 	OCI  string `json:"oci,omitempty"`
