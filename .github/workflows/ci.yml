@@ -133,3 +133,20 @@ jobs:
             echo "::error::generated artifacts drifted — run 'make gen' and commit the result"
             exit 1
           fi
+
+  # The TS SDK scaffold: typecheck + the frame-codec conformance tests
+  # (decodes every fixture in sdks/fixtures per docs/wire.md).
+  sdk-ts:
+    name: TS SDK (typecheck + fixtures)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
