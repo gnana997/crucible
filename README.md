@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.4.0](https://img.shields.io/badge/status-v0.4.0-orange)
+![Status: v0.4.2](https://img.shields.io/badge/status-v0.4.2-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -28,9 +28,9 @@ Full motivation and design: [docs/VISION.md](docs/VISION.md).
 
 - **Real isolation, not containers.** Every sandbox is a Firecracker microVM under [jailer](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md): its own chroot, mount/PID namespaces, a dropped uid, and cgroup v2 quotas. Not a shared kernel.
 - **Snapshot & fork as primitives.** Run setup once, snapshot the warm state, fork *N* parallel children from it. Forks restore with **lazy `userfaultfd` memory**: guest RAM is served from the snapshot on demand, never byte-copied per fork (the AWS Lambda SnapStart technique).
-- **Durable, self-healing apps.** Promote a workload to a named **app** the daemon keeps alive: restart-on-failure with exponential backoff + a crash-loop guard, http/tcp health checks, and re-creation from persisted desired state after a daemon restart or host reboot ([docs/apps.md](docs/apps.md)).
+- **Durable, self-healing apps you reach by name.** Promote a workload to a named **app** the daemon keeps alive: restart-on-failure with exponential backoff + a crash-loop guard, http/tcp/exec health checks, config (`--env`), and re-creation from persisted desired state after a daemon restart or host reboot. Reach it through the built-in **ingress proxy** by name (`web.<domain>`) instead of a fixed port; the route follows the app across self-heal and redeploy ([docs/apps.md](docs/apps.md) · [docs/proxy.md](docs/proxy.md)).
 - **Clone-safety.** Each fork wakes with a fresh kernel RNG seed, a rotated `machine-id`, and its own hostname, ordered *before* the fork is reachable, so no two forks silently share UUIDs, secrets, or entropy.
-- **Default-deny networking.** No egress unless you allowlist hostnames, and only those; resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. Enforced in host nftables + a DNS proxy the guest is forced through.
+- **Default-deny networking, opt-in wider.** No egress unless you allowlist hostnames; resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. A trusted app can opt into full public egress (`--net-full-egress`) or public CIDRs (`--net-allow-cidr`) — still public-unicast only, never metadata/RFC1918. Enforced in host nftables + a DNS proxy the guest is forced through.
 - **Three ways to drive it.** A [CLI](docs/cli.md), a live [TUI dashboard](docs/tui.md), and an [MCP server](docs/mcp.md): all thin clients over one REST API, so they can't drift.
 - **Scoped tokens.** Bind an API key to a policy the daemon enforces (allowed operations, egress ceiling, profile allowlist, resource caps, expiry). See [docs/policy.md](docs/policy.md).
 - **Observability.** Per-exec structured results (exit code, wall-clock, and CPU/memory/I/O usage), durable per-sandbox logs, and a Prometheus `/metrics` endpoint.
@@ -102,9 +102,11 @@ Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent
 
 ## Roadmap
 
-- **v0.4** (current): **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart-on-failure + backoff + crash-loop guard, http/tcp health checks) and **re-creates from spec after a daemon restart or reboot** ([docs/apps.md](docs/apps.md)); plus fork with `-p` port publish. Sandboxes stay the ephemeral primitive.
+- **v0.4.2** (current): **reach an app by name** — a daemon-owned ingress proxy routes inbound traffic to an app's *current* instance by name (`web.<domain>`, Host-header L7 or SNI passthrough L4), the route following the app across self-heal and redeploy; plus in-place `crucible app update` and health seeded from an image's Docker `HEALTHCHECK` ([docs/proxy.md](docs/proxy.md)).
+- **v0.4.1**: **apps you can actually deploy** — `-e/--env` config, exec (`--health-cmd`) health checks, `-P` publish-all from the image's `EXPOSE`, and real egress for trusted workloads (`--net-full-egress` + `--net-allow-cidr`, public-hosts-only).
+- **v0.4.0**: **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart + backoff + crash-loop guard, http/tcp health) and **re-creates from spec after a daemon restart or reboot** ([docs/apps.md](docs/apps.md)); plus fork with `-p` port publish. Sandboxes stay the ephemeral primitive.
 - **v0.3.x**: the safe `docker run` for untrusted/AI code — OCI image boot + `crucible build`, `crucible cp` + MCP `write_files`/`read_file`, an interactive `crucible shell`, a TUI logs view, `--disk` sizing, top-level `stop`/`rm`, durable logs, and the public Go SDK.
-- **v0.4.1 (planned):** reach an app by name through a routing proxy; a PTY for full-terminal sessions.
+- **Next (planned):** private/authenticated registry pull, zero-downtime deploys, TLS termination at the proxy, a PTY for full-terminal sessions, and volumes for stateful apps.
 
 Full shipped-vs-planned capability matrix: [docs/ROADMAP.md](docs/ROADMAP.md).
 

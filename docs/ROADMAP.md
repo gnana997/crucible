@@ -52,7 +52,9 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - [x] **`--disk`** per-sandbox writable sizing (`resize2fs` the clone, never the shared image); top-level **`stop`/`rm`** ops verbs; durable **`logs`**.
 - [x] **MCP for the wedge** — `image`/`pull`/`publish`/`disk_mib` on `create_sandbox`/`run`, plus `logs` and `stop_sandbox` tools ([mcp.md](mcp.md)).
 - [x] **Complete orphan reaping** — startup sweeps live orphan processes and empty orphan cgroups; a killed daemon leaves no lingering firecracker.
-### v0.4.0 — Durable, self-healing apps *(current)*
+- [x] **Copy files in / out** — `crucible cp <local> <sbx>:<path>` (and back out), tar over vsock — the safe-*copy* model (not a host bind-mount), tar-slip-safe and size-bounded on the way out; plus MCP `write_files`/`read_file`. Drop code in and run it, no image build.
+
+### v0.4.0 — Durable, self-healing apps
 
 - [x] **Durable app model** — `crucible app create <name> --image …` promotes a workload to a named **app** the daemon keeps a healthy instance of. Desired state lives in a bbolt control-plane store; the ephemeral `sandbox` primitive is unchanged ([apps.md](apps.md)).
 - [x] **Survives restart** — the app reconciler re-creates each app's instance from spec after a daemon restart or host reboot (desired-state reconcile, the Fly/k8s model — *re-created*, not live-re-attached; in-VM memory is lost, cost is one cold boot).
@@ -62,27 +64,36 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 - **Durability contract:** an **app** survives a daemon restart (re-created from desired state); a bare **sandbox** does not (it stays the throwaway primitive). Live-VM re-attach (avoiding the cold boot) is later trajectory work.
 
+### v0.4.1 — Apps you can actually deploy
+
+Turn a durable app from *survivable* into *deployable*: real config and real egress, across `app create`, `run`, and `sandbox create`.
+
+- [x] **App env** — `-e/--env KEY=VALUE` delivered to the entrypoint (image `ENV` < your `--env`).
+- [x] **Real egress (A6)** — `--net-full-egress` (reach any public host) and `--net-allow-cidr 203.0.113.0/24` (public IP literals) for a workload you deploy yourself. **Public-hosts-only, no exceptions** — metadata/link-local/RFC1918/CGNAT/reserved are always dropped (the nft guard is unit-tested to agree with the DNS-layer SSRF filter), gated by a `net_full_egress` scoped-token grant.
+- [x] **Exec health checks** — `--health-cmd '<command>'` runs a command in the guest (exit 0 = healthy), joining http/tcp.
+- [x] **Publish declared ports** — `-P/--publish-all` publishes every port the image `EXPOSE`s (guest N → host N).
+
+### v0.4.2 — Reach it by name *(current)*
+
+Closes P1b: the durable app is now reachable by name and updatable in place.
+
+- [x] **Ingress proxy** — reach an app by name instead of a published port. Off by default; `--proxy-listen :80` (Host-header routing, L7), `--proxy-tls-listen :443` (SNI passthrough, L4 — the guest terminates its own TLS), `--proxy-domain <domain>` (`web.<domain>` → app `web`). Resolution is live, so the route follows the app across self-heal and redeploy and never points at a stale IP ([proxy.md](proxy.md)).
+- [x] **`crucible app update`** — replace an app's spec (name immutable) and redeploy: the reconciler bumps the generation, destroys the old instance, and boots a fresh one. Also on the Go SDK (`UpdateApp`) and the MCP `update_app` tool (→ 20 tools).
+- [x] **Health seeded from the image** — an app that declares no health inherits the image's Docker `HEALTHCHECK` (as an `exec` check) when present.
+- [x] **Inbound isolation** — inbound reaches a guest only from the daemon over its veth; peers can't reach each other and a guest can't reach the proxy listeners at all, so the proxy is not a lateral path.
+
 ## Planned
 
-### v0.3.x — Copy files into/out of a sandbox (`crucible cp`) *(next)*
+### Next — Production images & deploys
 
-The most-requested gap in the agentic iteration loop: get *your* files in and run them, with no image build and no Dockerfile. A small follow-up to v0.3.0, independent of the v0.4 work.
-
-- • **`crucible cp <local> <sbx>:<path>`** — copy a file or directory into a running sandbox (tar over vsock; the safe-*copy* model, not a host bind-mount, so the guest gets files it can't use to reach back). Turns any sandbox into a scratch workspace: `run python:3.12` → `cp ./script.py <sbx>:/app/` → `exec`/`shell`. Pairs with snapshot + fork — `cp` a project in once, then fork N variations that all inherit it.
-- • **`crucible cp <sbx>:<path> <local>`** — copy artifacts back out. The security-sensitive direction: the tar comes from untrusted guest code, so host-side extraction is tar-slip-safe and size-bounded (adversarial-input handling).
-- • **MCP `write_files` / `read_file`** — the "drop code in and run it" primitive for agents, alongside `exec`.
-
-### v0.4.1 — Reach an app by name
-
-The durable app object exists (v0.4.0); v0.4.1 makes it addressable by a stable name rather than an ephemeral instance id.
-
-- • **Name → instance routing + ingress proxy.** A host-header/SNI proxy that keys on app identity, so a stable name (later a hostname) is how you address a workload.
-- • **Inbound isolation policy** on the app's published surface.
-- • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
-
-### v0.4.2 — Production polish
+The app model and its front door exist (v0.4.0–v0.4.2); next is making deploys production-grade.
 
 - • **Private / authenticated registry pull** — credentialed pulls from private registries (ghcr.io, ECR, …).
+- • **Zero-downtime deploys.** `app update` is destroy-then-boot today; add connection draining + rolling redeploy behind the proxy so an update doesn't drop in-flight requests.
+- • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
+- • **Volumes.** Persistent block storage decoupled from an instance, so stateful apps (postgres, sqlite) survive a redeploy — the real ceiling of today's stateless re-create model.
+- • **Image `HEALTHCHECK` polish & exec-into apps** — richer defaults and the remaining app ergonomics.
+- • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.
 - • **Growable live disk + accounting.** `--disk` sizes the writable rootfs at create today; this adds growing a live sandbox's disk and per-sandbox disk accounting.
 
@@ -115,7 +126,7 @@ Make parallel agent exploration a first-class workflow, not just a primitive. Fo
 
 Directions that matter once the core is solid. Not committed to a version or order yet.
 
-- • **Persistent workspaces & richer interactive sessions.** Bidirectional stdin ships (`crucible shell` / `exec -i`) and a full PTY is v0.4.1; what's left is longer-lived named workspaces an agent reattaches to, and first-class REPL / language-server ergonomics on top of the shell.
+- • **Persistent workspaces & richer interactive sessions.** Bidirectional stdin ships (`crucible shell` / `exec -i`) and a full PTY is planned (see Next); what's left is longer-lived named workspaces an agent reattaches to, and first-class REPL / language-server ergonomics on top of the shell.
 - • **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and common agent frameworks, building on the MCP server, plus a typed SDK (Python/TS) so the fork/snapshot workflow isn't hand-rolled over HTTP.
 - • **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
 - • **Published regression benchmarks.** The harness ships (`make bench`, [benchmarks.md](benchmarks.md)); tracking cold-start / fork-latency / throughput numbers over releases in CI is the remainder.

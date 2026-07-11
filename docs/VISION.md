@@ -27,6 +27,8 @@ The same need shows up any time you want to **run code you don't trust** — a r
 
 A single Go binary you run on a Linux host. It speaks HTTP: you hand it a command, it gives you back stdout, stderr, an exit code, and a structured execution record. Behind the scenes it boots Firecracker microVMs, restores them from snapshots, forks them cheaply, isolates their networking, and cleans up when you're done. Drive it with the CLI, a live TUI dashboard, or an MCP server for agents — all thin clients over the same API, so they can't drift.
 
+There are two tiers. A **sandbox** is ephemeral — spin it up, run something, tear it down; a daemon restart drops it. A **durable app** is the opposite: a named workload the daemon keeps alive — restarted on failure with backoff, health-checked, re-created from spec after a restart or reboot, and reachable by name through a built-in ingress proxy rather than a fixed port. `crucible run` for code you're testing; `crucible app create` for a workload you deploy and manage over time.
+
 The interesting features are the ones you don't have to ask for:
 
 - **Fast cold starts** via Firecracker snapshot restore + lazy `userfaultfd` memory — not a cold boot.
@@ -113,7 +115,7 @@ with c.sandbox(profile="python") as parent:
 
 Setup in the parent happens once; forking is cheap (no per-fork RAM copy). This is the pattern every serious coding agent wants and almost nobody has a clean primitive for. That's why it's first-class here.
 
-The `write_file` step above hints at the other half of the iteration loop: **getting your working files into a sandbox without building an image**. A file-copy primitive — `crucible cp ./script.py <sbx>:/app/` — is the near-term roadmap: drop code into a running `python`/`node`/`go` sandbox and run it directly, no Dockerfile round-trip. It's the safe-*copy* model (the guest gets a copy it can't use to reach your host), and it composes with fork — copy a project in once, then fork N variations that all inherit it.
+The `write_file` step above hints at the other half of the iteration loop: **getting your working files into a sandbox without building an image**. A file-copy primitive — `crucible cp ./script.py <sbx>:/app/` — ships for exactly this: drop code into a running `python`/`node`/`go` sandbox and run it directly, no Dockerfile round-trip. It's the safe-*copy* model (the guest gets a copy it can't use to reach your host), and it composes with fork — copy a project in once, then fork N variations that all inherit it.
 
 ## Design principles
 
