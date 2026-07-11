@@ -50,6 +50,19 @@ type updateAppReq struct {
 	appNameParam
 	api.AppSpec
 }
+
+// appExecReq / appLogsReq mirror execReq / logsReq but key on the app {name};
+// the daemon resolves it to the current instance before delegating.
+type appExecReq struct {
+	appNameParam
+	Stdin string `query:"stdin" description:"Set to \"1\" for an interactive, full-duplex exec (hijacked stream)."`
+	wire.ExecRequest
+}
+type appLogsReq struct {
+	appNameParam
+	Since  int64  `query:"since" description:"Byte offset to read from; -1 (default) tails the recent log."`
+	Source string `query:"source" description:"Filter by source: service | exec | all (default all)."`
+}
 type snapIDParam struct {
 	ID string `path:"id" description:"Snapshot ID, e.g. snap_ab12cd34."`
 }
@@ -119,7 +132,7 @@ func buildReflector() *openapi3.Reflector {
 	spec := r.SpecEns()
 	spec.Info.
 		WithTitle("crucible").
-		WithVersion("0.4.2").
+		WithVersion("0.4.3").
 		WithDescription("REST API for the crucible daemon, a Firecracker microVM sandbox runtime. " +
 			"The daemon is the contract every SDK mirrors. Auth is a bearer token " +
 			"(`Authorization: Bearer <key>`); `/healthz` is always exempt, and a loopback daemon " +
@@ -211,6 +224,20 @@ func buildReflector() *openapi3.Reflector {
 			"the old instance and boots a fresh one. Desired running/stopped is retained.",
 		updateAppReq{}, api.AppResponse{}, http.StatusOK,
 		http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusNotImplemented)
+	streamOp(http.MethodPost, "/apps/{name}/exec", "appExec", "apps", "Run a command in an app's current instance (streams frames)",
+		"Resolves the app to its current instance and runs the command there, streaming the same "+
+			"length-prefixed frame protocol as POST /sandboxes/{id}/exec (?stdin=1 for a hijacked "+
+			"interactive session). Resolution is per-request, so it targets whatever instance is "+
+			"current across a self-heal or rolling update. 409 when the app has no running instance.",
+		appExecReq{}, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict)
+	jsonOp(http.MethodGet, "/apps/{name}/exec", "appExecWS", "apps", "Interactive exec into an app (WebSocket)",
+		"WebSocket interactive exec against the app's current instance; identical contract to "+
+			"GET /sandboxes/{id}/exec. 409 when the app has no running instance.",
+		appNameParam{}, nil, http.StatusSwitchingProtocols, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict)
+	jsonOp(http.MethodGet, "/apps/{name}/logs", "appLogs", "apps", "Read an app's current-instance logs",
+		"Durable logs (service output + exec activity) of the app's current instance; same shape as "+
+			"GET /sandboxes/{id}/logs. 409 when the app has no running instance, 501 with no log store.",
+		appLogsReq{}, api.LogsResponse{}, http.StatusOK, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 	jsonOp(http.MethodDelete, "/apps/{name}", "deleteApp", "apps", "Delete an app",
 		"Removes the app and tears down its instance on the next reconcile.",
 		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)

@@ -53,6 +53,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{name}/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Interactive exec into an app (WebSocket)
+         * @description WebSocket interactive exec against the app's current instance; identical contract to GET /sandboxes/{id}/exec. 409 when the app has no running instance.
+         */
+        get: operations["appExecWS"];
+        put?: never;
+        /**
+         * Run a command in an app's current instance (streams frames)
+         * @description Resolves the app to its current instance and runs the command there, streaming the same length-prefixed frame protocol as POST /sandboxes/{id}/exec (?stdin=1 for a hijacked interactive session). Resolution is per-request, so it targets whatever instance is current across a self-heal or rolling update. 409 when the app has no running instance.
+         */
+        post: operations["appExec"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{name}/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an app's current-instance logs
+         * @description Durable logs (service output + exec activity) of the app's current instance; same shape as GET /sandboxes/{id}/logs. 409 when the app has no running instance, 501 with no log store.
+         */
+        get: operations["appLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -447,6 +491,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AppExecReq: {
+            cmd?: string[] | null;
+            cwd?: string;
+            env?: {
+                [key: string]: string;
+            };
+            timeout_s?: number;
+        };
         AppListResponse: {
             apps?: components["schemas"]["AppResponse"][] | null;
         };
@@ -983,6 +1035,175 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    appExecWS: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    appExec: {
+        parameters: {
+            query?: {
+                /** @description Set to "1" for an interactive, full-duplex exec (hijacked stream). */
+                stdin?: string;
+            };
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AppExecReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    appLogs: {
+        parameters: {
+            query?: {
+                /** @description Byte offset to read from; -1 (default) tails the recent log. */
+                since?: number;
+                /** @description Filter by source: service | exec | all (default all). */
+                source?: string;
+            };
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LogsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

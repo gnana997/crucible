@@ -73,6 +73,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /apps/{name}", s.handleGetApp)
 	mux.HandleFunc("PUT /apps/{name}", s.handleUpdateApp)
 	mux.HandleFunc("DELETE /apps/{name}", s.handleDeleteApp)
+	// Operate a deployed app by name: resolve name → current instance per
+	// request (redeploy-safe), then delegate to the sandbox exec/logs handlers.
+	mux.HandleFunc("POST /apps/{name}/exec", s.handleAppExec)
+	mux.HandleFunc("GET /apps/{name}/exec", s.handleAppExecWS)
+	mux.HandleFunc("GET /apps/{name}/logs", s.handleAppLogs)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	mux.HandleFunc("POST /images", s.handlePullImage)

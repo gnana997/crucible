@@ -3,7 +3,7 @@
   "info": {
     "title": "crucible",
     "description": "REST API for the crucible daemon, a Firecracker microVM sandbox runtime. The daemon is the contract every SDK mirrors. Auth is a bearer token (`Authorization: Bearer \u003ckey\u003e`); `/healthz` is always exempt, and a loopback daemon with no keys configured serves unauthenticated. The exec and service-log endpoints stream a binary frame protocol OpenAPI cannot model — see the guides for the frame format.",
-    "version": "0.4.2"
+    "version": "0.4.3"
   },
   "paths": {
     "/apps": {
@@ -265,6 +265,237 @@
           },
           "404": {
             "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{name}/exec": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Interactive exec into an app (WebSocket)",
+        "description": "WebSocket interactive exec against the app's current instance; identical contract to GET /sandboxes/{id}/exec. 409 when the app has no running instance.",
+        "operationId": "appExecWS",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Run a command in an app's current instance (streams frames)",
+        "description": "Resolves the app to its current instance and runs the command there, streaming the same length-prefixed frame protocol as POST /sandboxes/{id}/exec (?stdin=1 for a hijacked interactive session). Resolution is per-request, so it targets whatever instance is current across a self-heal or rolling update. 409 when the app has no running instance.",
+        "operationId": "appExec",
+        "parameters": [
+          {
+            "name": "stdin",
+            "in": "query",
+            "description": "Set to \"1\" for an interactive, full-duplex exec (hijacked stream).",
+            "schema": {
+              "type": "string",
+              "description": "Set to \"1\" for an interactive, full-duplex exec (hijacked stream)."
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppExecReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "base64"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{name}/logs": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Read an app's current-instance logs",
+        "description": "Durable logs (service output + exec activity) of the app's current instance; same shape as GET /sandboxes/{id}/logs. 409 when the app has no running instance, 501 with no log store.",
+        "operationId": "appLogs",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Byte offset to read from; -1 (default) tails the recent log.",
+            "schema": {
+              "type": "integer",
+              "description": "Byte offset to read from; -1 (default) tails the recent log.",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Filter by source: service | exec | all (default all).",
+            "schema": {
+              "type": "string",
+              "description": "Filter by source: service | exec | all (default all)."
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -1669,6 +1900,30 @@
   },
   "components": {
     "schemas": {
+      "AppExecReq": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "timeout_s": {
+            "type": "integer"
+          }
+        }
+      },
       "AppListResponse": {
         "type": "object",
         "properties": {

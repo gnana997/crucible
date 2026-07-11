@@ -6,6 +6,13 @@ from __future__ import annotations
 from pydantic import AwareDatetime, BaseModel, Field, conint
 
 
+class AppExecReq(BaseModel):
+    cmd: list[str] | None = None
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+    timeout_s: int | None = None
+
+
 class AppStatus(BaseModel):
     health: str | None = None
     instance_generation: conint(ge=0) | None = None

@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
@@ -147,6 +148,59 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveAppInstance maps the {name} path value to the app's CURRENT instance
+// (sandbox) id and stamps it as the request's {id} path value, so the delegated
+// sandbox handler reads it transparently. Resolution is per-request, so an
+// exec/logs call issued across a self-heal or rolling update targets whatever
+// instance is current at call time — never a stale id captured by the client.
+// Returns false (and writes the error) when apps are disabled (501), the app is
+// unknown (404), or it has no running instance yet (409).
+func (s *Server) resolveAppInstance(w http.ResponseWriter, r *http.Request) bool {
+	if !s.appsEnabled(w) {
+		return false
+	}
+	name := r.PathValue("name")
+	resp, err := s.cfg.AppManager.GetByName(name)
+	if err != nil {
+		writeError(w, appErrStatus(err), err)
+		return false
+	}
+	if resp.Status == nil || resp.Status.InstanceID == "" {
+		writeError(w, http.StatusConflict, fmt.Errorf("app %s has no running instance", name))
+		return false
+	}
+	r.SetPathValue("id", resp.Status.InstanceID)
+	return true
+}
+
+// handleAppExec — POST /apps/{name}/exec (one-shot streaming, or ?stdin=1 for a
+// hijacked interactive session). Resolves the app to its current instance, then
+// delegates to the sandbox exec handler.
+func (s *Server) handleAppExec(w http.ResponseWriter, r *http.Request) {
+	if !s.resolveAppInstance(w, r) {
+		return
+	}
+	s.handleExecSandbox(w, r)
+}
+
+// handleAppExecWS — GET /apps/{name}/exec: the WebSocket interactive exec
+// (backing `crucible app shell`), resolved to the app's current instance.
+func (s *Server) handleAppExecWS(w http.ResponseWriter, r *http.Request) {
+	if !s.resolveAppInstance(w, r) {
+		return
+	}
+	s.handleExecWS(w, r)
+}
+
+// handleAppLogs — GET /apps/{name}/logs: tail the current instance's durable
+// logs (service + exec activity), resolved to the app's current instance.
+func (s *Server) handleAppLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.resolveAppInstance(w, r) {
+		return
+	}
+	s.handleSandboxLogs(w, r)
 }
 
 // appErrStatus maps app-manager errors to HTTP statuses.
