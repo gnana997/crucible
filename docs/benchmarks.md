@@ -1,6 +1,6 @@
 # Benchmarks
 
-Reproducible measurements from `crucible-bench`, a harness that drives a real daemon through `internal/client` (the same typed client the CLI, TUI, and MCP server use). It reports latency distributions, fork fan-out scaling, the lazy-memory efficiency of fork, and sandbox density.
+Reproducible measurements from `crucible-bench`, a harness that drives a real daemon through the `sdk` Go package (the same typed client the CLI, TUI, and MCP server use). It reports latency distributions, fork fan-out scaling, the lazy-memory efficiency of fork, and sandbox density.
 
 ![crucible-bench](../demo/bench.gif)
 

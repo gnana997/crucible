@@ -15,7 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -214,7 +214,7 @@ func envMap(kv []string) (map[string]string, error) {
 
 // registerTools wires the crucible catalog to handlers backed by the daemon
 // client. Each handler is a thin translation: MCP input → guardrail checks →
-// one (or, for run, a few) internal/client calls → MCP output. Business logic
+// one (or, for run, a few) SDK client calls → MCP output. Business logic
 // lives in the daemon, so a tool and the equivalent CLI command cannot drift.
 //
 // A tool disabled by --tools/--deny-tools is never registered, so it never
@@ -565,8 +565,8 @@ func (h *handlers) listSandboxes(ctx context.Context, _ *mcp.CallToolRequest, _ 
 	if err != nil {
 		return nil, sandboxListOutput{}, err
 	}
-	out := sandboxListOutput{Sandboxes: make([]sandboxOutput, len(sbs))}
-	for i, s := range sbs {
+	out := sandboxListOutput{Sandboxes: make([]sandboxOutput, len(sbs.Items))}
+	for i, s := range sbs.Items {
 		out.Sandboxes[i] = toSandboxOutput(s)
 	}
 	return nil, out, nil
@@ -598,8 +598,8 @@ func (h *handlers) listSnapshots(ctx context.Context, _ *mcp.CallToolRequest, _ 
 	if err != nil {
 		return nil, snapshotListOutput{}, err
 	}
-	out := snapshotListOutput{Snapshots: make([]snapshotOutput, len(snaps))}
-	for i, s := range snaps {
+	out := snapshotListOutput{Snapshots: make([]snapshotOutput, len(snaps.Items))}
+	for i, s := range snaps.Items {
 		out.Snapshots[i] = toSnapshotOutput(s)
 	}
 	return nil, out, nil

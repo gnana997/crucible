@@ -44,7 +44,7 @@ func newPolicyCmd(o *globalOpts) *cobra.Command {
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), wa)
 			}
-			if !wa.Scoped || wa.Policy == nil {
+			if !wa.Scoped || len(wa.Policy) == 0 {
 				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "full access (unscoped token or loopback daemon)")
 				return nil
 			}

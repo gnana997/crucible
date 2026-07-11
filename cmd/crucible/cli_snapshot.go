@@ -47,10 +47,11 @@ func newSnapshotLsCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"list"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			snaps, err := o.client().ListSnapshots(cmd.Context())
+			snapsPage, err := o.client().ListSnapshots(cmd.Context())
 			if err != nil {
 				return err
 			}
+			snaps := snapsPage.Items
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), snaps)
 			}

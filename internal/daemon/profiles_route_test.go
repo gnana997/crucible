@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 func TestProfilesRouteReturnsSortedNames(t *testing.T) {

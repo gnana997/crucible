@@ -1,6 +1,6 @@
 // Command crucible is the CLI and daemon for the crucible sandbox
 // runtime. `crucible daemon` runs the HTTP server; the other subcommands
-// are a thin client over its REST API (see internal/client).
+// are a thin client over its REST API (see the sdk package).
 package main
 
 import (
@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/client"
+	client "github.com/gnana997/crucible/sdk"
 )
 
 func main() {

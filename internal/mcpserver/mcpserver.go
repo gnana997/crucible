@@ -1,5 +1,5 @@
 // Package mcpserver exposes crucible as MCP tools over stdio. It is a thin
-// consumer of internal/client: every tool call becomes one typed client call
+// consumer of the crucible SDK: every tool call becomes one typed client call
 // against the daemon's REST API, so an MCP tool and the equivalent CLI command
 // hit the identical code path and cannot drift. The server owns no sandbox
 // state — all state lives in the daemon.
@@ -7,13 +7,14 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/gnana997/crucible/internal/client"
 	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/version"
+	client "github.com/gnana997/crucible/sdk"
 )
 
 // Config is the operator-set policy for one `mcp serve` session. The operator
@@ -84,8 +85,14 @@ func New(cfg Config) *mcp.Server {
 // daemon rejects anything out of policy either way.
 func Serve(ctx context.Context, cfg Config) error {
 	if cfg.Client != nil {
-		if wa, err := cfg.Client.Whoami(ctx); err == nil && wa.Scoped {
-			cfg.Policy = wa.Policy
+		if wa, err := cfg.Client.Whoami(ctx); err == nil && wa.Scoped && len(wa.Policy) > 0 {
+			// The SDK keeps the policy document opaque; decode it here for
+			// tool filtering (best-effort — on an unknown shape we fall
+			// back to the full catalog and let the daemon enforce).
+			var p policy.Policy
+			if json.Unmarshal(wa.Policy, &p) == nil {
+				cfg.Policy = &p
+			}
 		}
 	}
 	return New(cfg).Run(ctx, &mcp.StdioTransport{})

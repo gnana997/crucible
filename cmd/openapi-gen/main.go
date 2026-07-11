@@ -1,5 +1,5 @@
 // Command openapi-gen emits the crucible daemon's OpenAPI 3.0 spec by reflecting
-// the wire DTOs in internal/api (and the sdk/wire + policy types they reference)
+// the wire DTOs in sdk/api (and the sdk/wire + policy types they reference)
 // and declaring one operation per REST route.
 //
 // The Go types are the source of truth: request/response schemas are reflected
@@ -31,8 +31,8 @@ import (
 	oapi "github.com/swaggest/openapi-go"
 	"github.com/swaggest/openapi-go/openapi3"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -186,7 +186,8 @@ func buildReflector() *openapi3.Reflector {
 	// --- sandboxes ---
 	jsonOp(http.MethodPost, "/sandboxes", "createSandbox", "sandboxes", "Create a sandbox",
 		"Boots a Firecracker microVM. All fields are optional; an empty body uses the daemon "+
-			"defaults. `image` is a frozen wire lock returning 501 until the image builder ships.",
+			"defaults. `image` boots from a converted OCI image (pulled on demand — see the images "+
+			"endpoints); a daemon without an image store answers 501.",
 		api.CreateSandboxRequest{}, api.SandboxResponse{}, http.StatusCreated,
 		http.StatusBadRequest, http.StatusForbidden, http.StatusNotImplemented, http.StatusBadGateway, http.StatusInternalServerError)
 	jsonOp(http.MethodGet, "/sandboxes", "listSandboxes", "sandboxes", "List sandboxes",

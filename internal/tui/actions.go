@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // actionTimeout bounds a mutating action. Create/fork boot a microVM, so it's

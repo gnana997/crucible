@@ -1,4 +1,4 @@
-package client
+package crucible
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // PullImage pulls and converts a registry image (POST /images). The
@@ -42,13 +42,13 @@ func (c *Client) ImportImage(ctx context.Context, r io.Reader, tag string) (api.
 }
 
 // ListImages returns the converted image cache (GET /images).
-func (c *Client) ListImages(ctx context.Context) ([]api.ImageResponse, error) {
+func (c *Client) ListImages(ctx context.Context) (Page[api.ImageResponse], error) {
 	resp, err := c.do(ctx, http.MethodGet, "/images", nil)
 	if err != nil {
-		return nil, err
+		return Page[api.ImageResponse]{}, err
 	}
 	out, err := decodeInto[api.ImageListResponse](resp)
-	return out.Images, err
+	return Page[api.ImageResponse]{Items: out.Images}, err
 }
 
 // GetImage fetches one image by digest, hex, unique prefix, or ref

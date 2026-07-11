@@ -419,7 +419,7 @@ type NetworkProvisioner interface {
 }
 
 // PortMapping is one host→guest port forward — the sandbox-layer view,
-// decoupled from internal/api (same reason NetworkAllowlist is an
+// decoupled from sdk/api (same reason NetworkAllowlist is an
 // interface here: keep the import graph clean).
 type PortMapping struct {
 	HostIP    string

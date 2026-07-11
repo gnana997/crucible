@@ -2,9 +2,9 @@
 // and response shapes exchanged over HTTP. They are pure data with no
 // behavior and no dependencies beyond the standard library and
 // sdk/wire (itself pure wire data, shared for the exec and
-// service contracts), so both the daemon (server) and internal/client
-// (and, later, the TUI, an MCP server, and the SDK) can share one
-// source of truth for the contract.
+// service contracts), so the daemon (server) and the SDK client
+// (package crucible, one directory up) — and the CLI, TUI, and MCP
+// server built on it — share one source of truth for the contract.
 //
 // Validation logic lives in the daemon, not here: keeping these types
 // dependency-free is what lets a client import them without pulling in

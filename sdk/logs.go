@@ -1,4 +1,4 @@
-package client
+package crucible
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // Logs reads a sandbox's durable logs (GET /sandboxes/{id}/logs). A

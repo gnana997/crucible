@@ -15,9 +15,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // newBareManager builds a Manager with a stub runner — enough to

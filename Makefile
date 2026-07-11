@@ -125,6 +125,7 @@ hooks:
 
 tidy:
 	go mod tidy
+	go -C sdk mod tidy
 
 clean:
 	rm -f $(BINARY) $(AGENT) $(EMBEDDED_AGENT)

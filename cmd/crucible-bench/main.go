@@ -1,5 +1,5 @@
 // crucible-bench is a reproducible benchmark harness for a crucible daemon. It
-// drives the daemon through internal/client (the same typed client the CLI, TUI,
+// drives the daemon through the crucible SDK (the same typed client the CLI, TUI,
 // and MCP server use) and reports latency distributions, fork fan-out scaling,
 // the lazy-memory efficiency of fork, and sandbox density.
 //
@@ -24,8 +24,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/client"
+	client "github.com/gnana997/crucible/sdk"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 

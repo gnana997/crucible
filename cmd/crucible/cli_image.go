@@ -87,10 +87,11 @@ func newImageLsCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"list"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			imgs, err := o.client().ListImages(cmd.Context())
+			imgsPage, err := o.client().ListImages(cmd.Context())
 			if err != nil {
 				return err
 			}
+			imgs := imgsPage.Items
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), imgs)
 			}

@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/oci"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // ImageStore is the daemon's view of the OCI image cache

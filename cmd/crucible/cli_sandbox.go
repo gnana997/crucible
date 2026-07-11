@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -136,10 +136,11 @@ func newSandboxLsCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"list"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			sbs, err := o.client().ListSandboxes(cmd.Context())
+			sbsPage, err := o.client().ListSandboxes(cmd.Context())
 			if err != nil {
 				return err
 			}
+			sbs := sbsPage.Items
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), sbs)
 			}

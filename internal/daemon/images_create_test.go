@@ -14,9 +14,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // newImageCreateServer wires a real Manager (service stub runner, so

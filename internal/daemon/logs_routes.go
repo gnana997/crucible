@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 

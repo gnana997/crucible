@@ -12,8 +12,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/client"
+	client "github.com/gnana997/crucible/sdk"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 

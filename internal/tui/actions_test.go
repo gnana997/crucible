@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // dashboardWith returns a ready dashboard model holding one selectable sandbox.

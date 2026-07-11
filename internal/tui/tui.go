@@ -1,5 +1,5 @@
 // Package tui is crucible's live terminal dashboard: a Bubble Tea app that
-// polls the daemon through internal/client and renders running sandboxes,
+// polls the daemon through the crucible SDK and renders running sandboxes,
 // snapshots, the fork tree, and streaming exec. Like the CLI and MCP server it
 // owns no sandbox logic — every view and action is a client call, so the
 // dashboard and the CLI can't drift.
@@ -7,6 +7,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -18,9 +19,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/client"
 	"github.com/gnana997/crucible/internal/policy"
+	client "github.com/gnana997/crucible/sdk"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // Config wires the dashboard to a daemon.
@@ -141,7 +142,7 @@ func (m model) fetch() tea.Cmd {
 		if err != nil {
 			return dataMsg{err: err}
 		}
-		return dataMsg{sandboxes: sbs, snapshots: snaps}
+		return dataMsg{sandboxes: sbs.Items, snapshots: snaps.Items}
 	}
 }
 
@@ -150,9 +151,17 @@ func (m model) fetchWhoami() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 		defer cancel()
-		wa, err := cl.Whoami(ctx)
+		id, err := cl.Whoami(ctx)
 		if err != nil {
 			return whoamiMsg{ok: false} // ignore; the header just omits the scope
+		}
+		// The SDK keeps the policy document opaque; the TUI renders its
+		// structure, so decode it here (best-effort — an unknown future
+		// shape just renders as unscoped detail).
+		wa := policy.Whoami{Scoped: id.Scoped}
+		var p policy.Policy
+		if len(id.Policy) > 0 && json.Unmarshal(id.Policy, &p) == nil {
+			wa.Policy = &p
 		}
 		return whoamiMsg{wa: wa, ok: true}
 	}

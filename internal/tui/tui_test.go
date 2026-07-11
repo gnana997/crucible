@@ -8,8 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // step applies a message and returns the concrete model back.

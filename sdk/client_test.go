@@ -1,4 +1,4 @@
-package client
+package crucible
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -42,16 +42,19 @@ func TestCreateSandbox(t *testing.T) {
 	}
 }
 
-func TestListSandboxesUnwraps(t *testing.T) {
+func TestListSandboxesPage(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(api.ListResponse{Sandboxes: []api.SandboxResponse{{ID: "a"}, {ID: "b"}}})
 	})
-	sbs, err := c.ListSandboxes(context.Background())
+	page, err := c.ListSandboxes(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sbs) != 2 || sbs[0].ID != "a" || sbs[1].ID != "b" {
-		t.Errorf("got %+v", sbs)
+	if len(page.Items) != 2 || page.Items[0].ID != "a" || page.Items[1].ID != "b" {
+		t.Errorf("got %+v", page.Items)
+	}
+	if page.NextCursor != "" {
+		t.Errorf("single-node daemon must not return a cursor, got %q", page.NextCursor)
 	}
 }
 
@@ -141,5 +144,29 @@ func TestExecPreStreamErrorNotStreamed(t *testing.T) {
 	_, err := c.Exec(context.Background(), "sbx_1", wire.ExecRequest{}, nil, nil)
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("cmd is required")) {
 		t.Fatalf("err = %v, want cmd-required error", err)
+	}
+}
+
+func TestTypedErrors(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		sentinel error
+	}{
+		{http.StatusNotFound, ErrNotFound},
+		{http.StatusUnauthorized, ErrUnauthorized},
+		{http.StatusForbidden, ErrPolicyDenied},
+	} {
+		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: "nope"})
+		})
+		_, err := c.GetSandbox(context.Background(), "sbx_x")
+		if !errors.Is(err, tc.sentinel) {
+			t.Fatalf("status %d: err = %v, want %v", tc.status, err, tc.sentinel)
+		}
+		var de *Error
+		if !errors.As(err, &de) || de.Status != tc.status || de.Message != "nope" {
+			t.Fatalf("status %d: not a structured *Error: %v", tc.status, err)
+		}
 	}
 }

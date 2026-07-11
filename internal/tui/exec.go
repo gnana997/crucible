@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/client"
+	client "github.com/gnana997/crucible/sdk"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 

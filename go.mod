@@ -6,6 +6,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/gnana997/crucible/sdk v0.0.0
 	github.com/google/go-containerregistry v0.21.7
 	github.com/mdlayher/vsock v1.2.1
 	github.com/miekg/dns v1.1.72
@@ -71,3 +72,5 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gotest.tools/v3 v3.5.2 // indirect
 )
+
+replace github.com/gnana997/crucible/sdk => ./sdk

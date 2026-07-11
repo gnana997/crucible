@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/gnana997/crucible/internal/client"
+	client "github.com/gnana997/crucible/sdk"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 

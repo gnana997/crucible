@@ -14,13 +14,13 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -74,7 +74,7 @@ func (s *Server) routes() *http.ServeMux {
 
 // --- request validation & response mapping ---------------------------
 //
-// The wire types themselves live in internal/api (shared with the
+// The wire types themselves live in sdk/api (shared with the
 // client). Validation stays here because it pulls in server-only deps
 // (internal/network); the response mappers stay here because they read
 // the manager's internal sandbox/snapshot structs.

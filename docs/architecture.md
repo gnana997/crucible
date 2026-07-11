@@ -15,13 +15,13 @@ The host never runs guest code directly — it hands an `ExecRequest` to the age
 
 ```mermaid
 flowchart TD
-    subgraph clients["Interfaces — thin clients over internal/client"]
+    subgraph clients["Interfaces — thin clients over the sdk package"]
         cli["CLI (cmd/crucible)"]
         tui["TUI (internal/tui)"]
         mcp["MCP server (internal/mcpserver)"]
         raw["curl / agent framework"]
     end
-    cli --> client["internal/client<br/>typed Go client"]
+    cli --> client["sdk (package crucible)<br/>typed Go client"]
     tui --> client
     mcp --> client
     client -- "REST + streamed frames" --> daemon
@@ -56,10 +56,10 @@ flowchart TD
 |---|---|
 | `cmd/crucible` | Entry point: the `daemon` subcommand and the client subcommands (`sandbox`, `snapshot`, `fork`, `run`, `profile`, `policy`, `mcp`, `tui`, `version`) |
 | `cmd/crucible-agent` | Guest agent: `/exec`, usage collection, `/identity/refresh`, `/network/refresh` |
-| `internal/client` | Typed Go client for the daemon's REST API — the CLI, MCP server, and TUI all sit on it |
-| `internal/tui` | Live terminal dashboard (`crucible tui`) — Bubble Tea; a thin consumer of `internal/client` |
-| `internal/mcpserver` | MCP server (`crucible mcp serve`) — thin wrapper over `internal/client` + operator guardrails |
-| `internal/api` | Shared REST wire types (used by both the daemon and the client) |
+| `sdk` | The public Go SDK (package `crucible`, its own Go module): typed client for the daemon's REST API — the CLI, MCP server, TUI, and external programs all sit on it |
+| `sdk/api` | Shared REST wire types (used by both the daemon and the SDK) |
+| `internal/tui` | Live terminal dashboard (`crucible tui`) — Bubble Tea; a thin consumer of the SDK |
+| `internal/mcpserver` | MCP server (`crucible mcp serve`) — thin wrapper over the SDK + operator guardrails |
 
 **Daemon internals:**
 

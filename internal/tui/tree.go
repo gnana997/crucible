@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // renderTree builds the fork genealogy from the sandbox + snapshot lists and

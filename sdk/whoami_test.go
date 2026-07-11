@@ -1,12 +1,11 @@
-package client
+package crucible
 
 import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
-
-	"github.com/gnana997/crucible/internal/policy"
 )
 
 func TestClientWhoamiScoped(t *testing.T) {
@@ -20,8 +19,13 @@ func TestClientWhoamiScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !wa.Scoped || wa.Policy == nil || wa.Policy.MaxSandboxes != 3 || !wa.Policy.Allows(policy.OpRead) {
-		t.Errorf("whoami = %+v (policy %+v)", wa, wa.Policy)
+	if !wa.Scoped || wa.Policy == nil {
+		t.Fatalf("whoami = %+v", wa)
+	}
+	// The policy document is opaque to the SDK — verify it round-trips
+	// verbatim rather than decoding it against a daemon-side type.
+	if !strings.Contains(string(wa.Policy), `"max_sandboxes":3`) {
+		t.Errorf("policy payload = %s", wa.Policy)
 	}
 }
 

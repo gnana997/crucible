@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 
-	"github.com/gnana997/crucible/internal/api"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // columns is the initial layout; columnsFor recomputes it for the real terminal

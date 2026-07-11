@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // Tests that exercise the NetworkRequest.validate path end-to-end

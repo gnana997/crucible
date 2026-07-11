@@ -1,0 +1,11 @@
+// Workspace so `go build/test/vet ./...` from the repo root covers both
+// modules (the daemon and the sdk/ module) — CI, lefthook, and the
+// Makefile all rely on this. The root go.mod additionally carries a
+// replace for github.com/gnana997/crucible/sdk so non-workspace builds
+// (GOWORK=off) resolve the local sdk too.
+go 1.25.0
+
+use (
+	.
+	./sdk
+)

@@ -1,10 +1,14 @@
-// Package client is a typed Go client for the crucible daemon's REST
+// Package crucible is the official Go SDK for the crucible daemon's REST
 // API. It is the single place that knows how to speak to the daemon over
-// HTTP, shared by the CLI today and — by design — the TUI, an MCP server,
-// and the SDK later. Everything is expressed in internal/api wire types
-// plus sdk/wire for the exec frame stream, so consumers never hand-roll
-// requests or parse frames themselves.
-package client
+// HTTP — the in-repo CLI, TUI, and MCP server are thin adapters over it,
+// and external programs import it the same way. Everything is expressed
+// in the sdk/api wire types plus sdk/wire for the exec frame stream, so
+// consumers never hand-roll requests or parse frames themselves.
+//
+// A daemon bearer token grants full control of that host's microVMs, so
+// treat this as a server-side library: never embed a token in code that
+// ships to a browser or an untrusted client.
+package crucible
 
 import (
 	"bytes"
@@ -21,16 +25,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gnana997/crucible/internal/api"
-	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
 // DefaultAddr is the daemon's default listen address.
 const DefaultAddr = "127.0.0.1:7878"
-
-// ErrNotFound wraps a 404 from the daemon so callers can branch on it.
-var ErrNotFound = errors.New("not found")
 
 // Client talks to a crucible daemon over HTTP.
 type Client struct {
@@ -97,13 +97,13 @@ func (c *Client) CreateSandbox(ctx context.Context, req api.CreateSandboxRequest
 }
 
 // ListSandboxes returns all live sandboxes (GET /sandboxes).
-func (c *Client) ListSandboxes(ctx context.Context) ([]api.SandboxResponse, error) {
+func (c *Client) ListSandboxes(ctx context.Context) (Page[api.SandboxResponse], error) {
 	resp, err := c.do(ctx, http.MethodGet, "/sandboxes", nil)
 	if err != nil {
-		return nil, err
+		return Page[api.SandboxResponse]{}, err
 	}
 	out, err := decodeInto[api.ListResponse](resp)
-	return out.Sandboxes, err
+	return Page[api.SandboxResponse]{Items: out.Sandboxes}, err
 }
 
 // GetSandbox fetches one sandbox (GET /sandboxes/{id}).
@@ -185,13 +185,13 @@ func (c *Client) Snapshot(ctx context.Context, sandboxID string) (api.SnapshotRe
 }
 
 // ListSnapshots returns all snapshots (GET /snapshots).
-func (c *Client) ListSnapshots(ctx context.Context) ([]api.SnapshotResponse, error) {
+func (c *Client) ListSnapshots(ctx context.Context) (Page[api.SnapshotResponse], error) {
 	resp, err := c.do(ctx, http.MethodGet, "/snapshots", nil)
 	if err != nil {
-		return nil, err
+		return Page[api.SnapshotResponse]{}, err
 	}
 	out, err := decodeInto[api.SnapshotListResponse](resp)
-	return out.Snapshots, err
+	return Page[api.SnapshotResponse]{Items: out.Snapshots}, err
 }
 
 // GetSnapshot fetches one snapshot (GET /snapshots/{id}).
@@ -236,15 +236,14 @@ func (c *Client) ListProfiles(ctx context.Context) ([]string, error) {
 	return out.Profiles, err
 }
 
-// Whoami returns the effective policy for the client's token (GET /whoami):
-// what this credential is actually permitted to do, as the daemon sees it.
-// Scoped is false for an unscoped key or an unauthenticated loopback daemon.
-func (c *Client) Whoami(ctx context.Context) (policy.Whoami, error) {
+// Whoami returns what the daemon knows about this client's credential
+// (GET /whoami): whether it is scoped, and if so its effective policy.
+func (c *Client) Whoami(ctx context.Context) (Identity, error) {
 	resp, err := c.do(ctx, http.MethodGet, "/whoami", nil)
 	if err != nil {
-		return policy.Whoami{}, err
+		return Identity{}, err
 	}
-	return decodeInto[policy.Whoami](resp)
+	return decodeInto[Identity](resp)
 }
 
 // Exec runs a command in a sandbox and streams its output. stdout/stderr
@@ -542,9 +541,9 @@ func expectNoContent(resp *http.Response) error {
 	return nil
 }
 
-// errorFrom turns a non-2xx response into an error, preferring the
-// daemon's {"error":...} message. 404 wraps ErrNotFound so callers can
-// branch on it. The body is consumed.
+// errorFrom turns a non-2xx response into an *Error, preferring the
+// daemon's {"error":...} message. The body is consumed. See errors.go
+// for the sentinel mapping (errors.Is(err, ErrNotFound) etc.).
 func errorFrom(resp *http.Response) error {
 	var e api.ErrorResponse
 	_ = json.NewDecoder(resp.Body).Decode(&e)
@@ -552,8 +551,5 @@ func errorFrom(resp *http.Response) error {
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
 	}
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %s", ErrNotFound, msg)
-	}
-	return fmt.Errorf("daemon returned %d: %s", resp.StatusCode, msg)
+	return &Error{Status: resp.StatusCode, Message: msg}
 }

@@ -1,4 +1,4 @@
-package client
+package crucible
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 func TestClientSendsBearerToken(t *testing.T) {

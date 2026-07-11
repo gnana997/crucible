@@ -315,7 +315,7 @@
           "sandboxes"
         ],
         "summary": "Create a sandbox",
-        "description": "Boots a Firecracker microVM. All fields are optional; an empty body uses the daemon defaults. `image` is a frozen wire lock returning 501 until the image builder ships.",
+        "description": "Boots a Firecracker microVM. All fields are optional; an empty body uses the daemon defaults. `image` boots from a converted OCI image (pulled on demand — see the images endpoints); a daemon without an image store answers 501.",
         "operationId": "createSandbox",
         "requestBody": {
           "content": {

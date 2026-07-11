@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gnana997/crucible/internal/api"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 func TestValidatePublish(t *testing.T) {

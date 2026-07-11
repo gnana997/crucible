@@ -28,7 +28,7 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 ### v0.1.2 — MCP server + API-key auth
 
-- [x] **MCP server** (`crucible mcp serve`) — a stdio [Model Context Protocol](https://modelcontextprotocol.io) server so any MCP agent (Claude Code, Cursor, …) drives crucible as native tools, with operator guardrails the agent can't widen. Built on `internal/client`, so an MCP call and the CLI hit the identical path and can't drift ([mcp.md](mcp.md)).
+- [x] **MCP server** (`crucible mcp serve`) — a stdio [Model Context Protocol](https://modelcontextprotocol.io) server so any MCP agent (Claude Code, Cursor, …) drives crucible as native tools, with operator guardrails the agent can't widen. Built on the `sdk` Go package, so an MCP call and the CLI hit the identical path and can't drift ([mcp.md](mcp.md)).
 - [x] **Daemon API-key auth** — bearer keys hashed at rest; once any key exists every request must present it, and binding a non-loopback address is refused without keys **and** TLS ([SECURITY.md](../SECURITY.md)).
 
 ### v0.1.3 — Scoped / policy tokens
@@ -37,7 +37,7 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 
 ### v0.2.0 — TUI + fork lineage
 
-- [x] **TUI** (`crucible tui`) — a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. A thin consumer of `internal/client` ([tui.md](tui.md)).
+- [x] **TUI** (`crucible tui`) — a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. A thin consumer of the `sdk` Go package ([tui.md](tui.md)).
 - [x] **Fork lineage on the API** — `source_snapshot_id` records which snapshot a sandbox was forked from, so the fork genealogy is reconstructable by any client (this is what the tree view draws).
 
 ### v0.3.0 — The safe `docker run` for untrusted/AI code *(current)*

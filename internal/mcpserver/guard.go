@@ -89,8 +89,8 @@ func (c Config) checkCapacity(ctx context.Context, want int) error {
 	if err != nil {
 		return err
 	}
-	if len(sbs)+want > c.MaxSandboxes {
-		return fmt.Errorf("would exceed this server's --max-sandboxes limit of %d (%d already live)", c.MaxSandboxes, len(sbs))
+	if len(sbs.Items)+want > c.MaxSandboxes {
+		return fmt.Errorf("would exceed this server's --max-sandboxes limit of %d (%d already live)", c.MaxSandboxes, len(sbs.Items))
 	}
 	return nil
 }
