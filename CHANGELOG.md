@@ -6,7 +6,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [Unreleased]
+## [0.4.2] — 2026-07-12
+
+Reach it by name. The durable app from v0.4.0/v0.4.1 is now reachable through a
+daemon-owned ingress proxy — many apps on one host, addressed by name, the route
+following the app across self-heal and redeploy — plus in-place `app update` and
+image-`HEALTHCHECK` seeding.
 
 ### Added
 

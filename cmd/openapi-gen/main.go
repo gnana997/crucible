@@ -119,7 +119,7 @@ func buildReflector() *openapi3.Reflector {
 	spec := r.SpecEns()
 	spec.Info.
 		WithTitle("crucible").
-		WithVersion("0.4.1").
+		WithVersion("0.4.2").
 		WithDescription("REST API for the crucible daemon, a Firecracker microVM sandbox runtime. " +
 			"The daemon is the contract every SDK mirrors. Auth is a bearer token " +
 			"(`Authorization: Bearer <key>`); `/healthz` is always exempt, and a loopback daemon " +
