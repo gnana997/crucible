@@ -37,11 +37,12 @@
 # The daemon path runs as root but never calls sudo itself. Env overrides:
 #   PREFIX (/usr/local), CLIENT_BINDIR (client install dir), FC_VERSION,
 #   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel),
-#   PROXY_LISTEN (:80), PROXY_TLS_LISTEN (:443), PROXY_DOMAIN (apps.local) —
-#   ingress-proxy defaults; any free TCP ports work (pin an interface with
-#   host:port). Set PROXY_TLS_LISTEN= or use --no-proxy to opt out. Example
-#   (non-privileged high ports; put env before sudo, or use sudo -E):
-#     PROXY_LISTEN=:8080 PROXY_TLS_LISTEN=:8443 sudo -E bash install.sh --enable
+#   PROXY_LISTEN (:8080), PROXY_TLS_LISTEN (:8443), PROXY_DOMAIN (apps.local) —
+#   ingress-proxy defaults (high ports, so :80/:443 stay free for -p/-P publish
+#   and a busy :80 can't abort startup); any free TCP ports work, and host:port
+#   pins an interface. Set PROXY_TLS_LISTEN= or use --no-proxy to opt out.
+#   For a production ingress on the standard ports (put env before sudo / sudo -E):
+#     PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 sudo -E bash install.sh --enable
 
 set -euo pipefail
 
@@ -91,11 +92,13 @@ TOKEN_NAME="remote-client"
 NO_EGRESS_AUTO=0
 NO_PROXY_AUTO=0
 # Ingress-proxy defaults (v0.4.2): reach an app by name (<app>.<domain>) instead
-# of publishing a host port. The daemon runs as root, so it binds :80/:443
-# without extra caps. Override the ports/domain via env; set PROXY_TLS_LISTEN=
-# to skip HTTPS, or pass --no-proxy to leave the proxy off entirely.
-PROXY_LISTEN="${PROXY_LISTEN:-:80}"
-PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-:443}"
+# of publishing a host port. Defaults to the high ports :8080/:8443 so it does
+# NOT contend for :80/:443 — those stay free for direct port-publishing
+# (`run -p 80:80`, `-P`) and won't collide with an existing web server (a busy
+# :80 would abort daemon start). Set PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 for
+# a production ingress; PROXY_TLS_LISTEN= skips HTTPS; --no-proxy turns it off.
+PROXY_LISTEN="${PROXY_LISTEN:-:8080}"
+PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-:8443}"
 PROXY_DOMAIN="${PROXY_DOMAIN-apps.local}"
 PROXY_ENABLED=""   # set to the HTTP listen addr once we actually enable it
 CLIENT_EXPLICIT=0

@@ -73,7 +73,7 @@ flowchart TD
 | `internal/daemon` | HTTP server, routing, middleware, auth, request/response validation |
 | `internal/sandbox` | `Manager` — the core lifecycle: create, exec, snapshot, fork, delete, and the durable registry |
 | `internal/app` | Durable-app control plane (v0.4): a bbolt store of app **desired state** + a reconcile loop that boots/heals/re-creates an instance (a sandbox) per app — the layer that makes a workload survive a daemon restart. Sits *above* `internal/sandbox`; the daemon supplies the instantiator |
-| `internal/ingress` | Ingress proxy (v0.4.2): a name→current-instance resolver + an in-process front door (`:80` Host-header routing via `httputil.ReverseProxy`, `:443` SNI passthrough) that reaches an app by name ([proxy.md](proxy.md)). Decoupled from `app`/`sandbox` via lookup interfaces the daemon wires in |
+| `internal/ingress` | Ingress proxy (v0.4.2): a name→current-instance resolver + an in-process front door (an HTTP listener for Host-header routing via `httputil.ReverseProxy`, a TLS listener for SNI passthrough) that reaches an app by name ([proxy.md](proxy.md)). Decoupled from `app`/`sandbox` via lookup interfaces the daemon wires in |
 | `internal/runner` | Firecracker driver: boot, snapshot, load, resume, rootfs patch — the load→vsock→rootfs→resume ordering lives here |
 | `internal/fcapi` | Thin typed client for the Firecracker REST API over its control socket |
 | `internal/jailer` | Builds the jailer argv (chroot, namespaces, uid drop) when running jailed |

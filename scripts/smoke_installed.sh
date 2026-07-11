@@ -27,9 +27,26 @@
 #   sudo systemctl start crucible        # make sure it's up
 #   scripts/smoke_installed.sh           # no sudo needed
 #
+# To also exercise the opt-in ingress-proxy step (16), point it at the daemon's
+# proxy listener. With install.sh's DEFAULT proxy values (--proxy-listen :8080
+# --proxy-domain apps.local):
+#
+#   sudo FIRECRACKER_BIN=/usr/local/bin/firecracker JAILER_BIN=/usr/local/bin/jailer \
+#        KERNEL=/var/lib/crucible/vmlinux ROOTFS=./assets/rootfs-with-agent.ext4 \
+#        PROXY_ADDR=127.0.0.1:8080 PROXY_DOMAIN=apps.local \
+#        scripts/smoke_installed.sh
+#
+#   Only PROXY_ADDR + PROXY_DOMAIN matter to THIS smoke (it's a client that drives
+#   the already-running daemon); the FIRECRACKER_BIN/JAILER_BIN/KERNEL/ROOTFS vars
+#   are what the *daemon* needs and are inert here — harmless to leave in so the
+#   same line works whether you're launching a daemon or not. Match whatever port
+#   the daemon's --proxy-listen actually binds (a production ingress on :80 →
+#   PROXY_ADDR=127.0.0.1:80). Note: with the proxy on :80, step 14 (-P publishes
+#   to host :80) can't also bind :80, so it self-skips — that's expected.
+#
 # Overrides: CRUCIBLE_BIN (default: crucible on PATH), CRUCIBLE_ADDR
 #   (default 127.0.0.1:7878), HOST_PORT_A..E. The ingress-proxy step is opt-in:
-#   set PROXY_ADDR (e.g. 127.0.0.1:80, wherever the daemon's --proxy-listen
+#   set PROXY_ADDR (e.g. 127.0.0.1:8080, wherever the daemon's --proxy-listen
 #   binds) and PROXY_DOMAIN (its --proxy-domain) to exercise reach-by-name;
 #   without them it's skipped, since the proxy is off by default.
 
@@ -459,8 +476,12 @@ fi
 
 # ---- 14 v0.4.1: -P publishes the image's EXPOSEd port -----------------------
 echo "== 14 -P publishes the image's EXPOSEd port (guest 80 → host 80)"
-if curl -sf http://localhost:80/ >/dev/null 2>&1; then
-  skip "-P check: something is already answering :80 on this host"
+# -P maps the image's EXPOSEd :80 to host :80, so anything ALREADY bound to :80
+# would clash. Detect a listener by connectivity, not a 2xx — the ingress proxy
+# (now on :80 by default) answers an unmatched Host with 404, which `curl -sf`
+# would miss, letting -P run into a guaranteed bind clash.
+if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:80/ 2>/dev/null)" != "000" ]]; then
+  skip "-P check: something already listens on :80 (e.g. the ingress proxy) — -P to host :80 would clash"
 elif ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
   skip "daemon has no /apps endpoint"
 else
