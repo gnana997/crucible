@@ -1,3 +1,8 @@
+---
+title: Vision
+description: "What crucible is for and why it is shaped this way: the stable motivation and principles behind the runtime."
+---
+
 # Vision
 
 This doc is the "what crucible is for, and why it's shaped the way it is." The motivation and principles are stable; details move. For what's functional today, see the top-level [README](../README.md).

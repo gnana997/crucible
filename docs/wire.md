@@ -1,8 +1,13 @@
+---
+title: Wire protocol
+description: "The parts of crucible's API OpenAPI cannot express, specified language-neutrally for SDK authors: the exec frame stream and its conformance fixtures."
+---
+
 # Wire protocol
 
 The parts of crucible's API that OpenAPI cannot express, specified for SDK
 authors in any language. Everything JSON-shaped (request/response bodies,
-error envelopes) lives in [`openapi.json`](openapi.json) and is generated
+error envelopes) lives in [`docs/openapi.json`](https://github.com/gnana997/crucible/blob/main/docs/openapi.json) and is generated
 from the Go wire types. This document covers only the **binary frame
 protocol** and the **streaming transports** that carry it.
 

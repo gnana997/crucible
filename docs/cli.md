@@ -1,3 +1,8 @@
+---
+title: CLI overview
+description: "How the crucible client finds the daemon, how output composes in shell, and where every command lives."
+---
+
 # CLI
 
 `crucible` is both the daemon and a thin client over its REST API. `crucible daemon` runs the server (see the [README](../README.md) and [SECURITY.md](../SECURITY.md)); every other command talks to a running daemon.
@@ -14,7 +19,7 @@ CRUCIBLE_ADDR=10.0.0.5:7878 crucible sandbox ls
 If the daemon has API keys configured, pass one with `--token` (or the `CRUCIBLE_TOKEN` env var). A remote daemon is served over TLS; use `--tls-skip-verify` only against a self-signed cert you trust:
 
 ```bash
-CRUCIBLE_TOKEN=crucible_… crucible --addr https://vps.example:7878 sandbox ls
+CRUCIBLE_TOKEN=crucible_... crucible --addr https://vps.example:7878 sandbox ls
 ```
 
 ## Output
@@ -32,198 +37,22 @@ Commands that create a resource print its id on success, so they compose in shel
 SBX=$(crucible sandbox create --profile python-3.12)
 ```
 
-## Commands
+## The commands
 
-### `crucible run`
-
-Two shapes, chosen by the `--` separator:
-
-**Image mode — `crucible run <image> [flags]`** (the docker-parity headline). Boots an OCI image as a sandbox: its entrypoint runs as the service. Prints the sandbox id (stdout). **Long-lived by default — it is *not* auto-killed;** stop it with `crucible stop <id>` or remove it with `crucible rm <id>`. The image is acquired the same way as `sandbox create --image` (a locally-built Docker tag is imported client-side; otherwise the daemon resolves it from its store or a registry under `--pull`).
-
-| Flag | Meaning |
+| Page | Commands |
 |---|---|
-| `-p, --publish` (repeatable) | publish a port `[HOST_IP:]HOST:GUEST[/tcp]` |
-| `-P, --publish-all` | publish every port the image `EXPOSE`s (guest N → host N) |
-| `--net-allow` (repeatable) | allowlisted hostname; enables egress |
-| `--net-allow-cidr` (repeatable) | allow direct egress to a public IPv4 CIDR (e.g. `203.0.113.0/24`) |
-| `--net-full-egress` | reach any public host (metadata/link-local/RFC1918 still blocked) |
-| `--pull` | `missing` (default) / `always` / `never` |
-| `--disk` | grow the writable rootfs to this size, e.g. `2G` / `512M` (default: template headroom) |
-| `--rm` | tail logs in the foreground; remove the sandbox on detach (Ctrl-C) |
-| `--vcpus`, `--memory`, `--timeout` | sizing / deadline (`--timeout 0` = long-lived) |
-
-```bash
-crucible run nginx:alpine -p 8080:80          # boot, publish, leave running
-crucible build -t myapp . && crucible run myapp -p 3000:3000
-crucible run alpine:latest --rm               # foreground; removed on Ctrl-C
-```
-
-**Command mode — `crucible run [flags] -- <command>...`**. One-shot: create a throwaway sandbox (a `--profile`, or the daemon default), run one command (streaming stdout/stderr), then delete it. **The command's exit code becomes crucible's exit code.**
-
-| Flag | Meaning |
-|---|---|
-| `--profile` | rootfs profile (e.g. `python-3.12`) |
-| `--vcpus`, `--memory`, `--timeout` | sizing / deadline |
-| `--net-allow` (repeatable) | allowlisted hostname; enables networking |
-| `--keep` | keep the sandbox instead of deleting it |
-
-```bash
-crucible run --profile python-3.12 -- python -c 'print(2**10)'
-crucible run --net-allow pypi.org --net-allow '*.pythonhosted.org' -- pip download requests
-```
-
-### `crucible build [-t <tag>] [-f <Dockerfile>] <context>`
-
-Build a Dockerfile locally (`docker build`) and load the result into crucible's image store in one verb; prints the converted image digest for `crucible run` / `sandbox create --image`. Docker is a **client-side** convenience — the daemon never needs it.
-
-```bash
-crucible build -t myapp .                 # prints sha256:… (in the store)
-crucible run "$(crucible build .)" -p 8080:80
-```
-
-### `crucible stop <id>...` and `crucible rm <id>...`
-
-`stop` gracefully stops a sandbox's entrypoint (image StopSignal → grace → SIGKILL) while **keeping** the sandbox — the ops "pull the plug on the workload" action. `rm` (alias `delete`) **removes** the sandbox (hard kill), the same as `sandbox rm`. Both are top-level for docker-parity muscle memory.
-
-```bash
-crucible stop sbx_abc      # halt the workload, keep the box
-crucible rm sbx_abc        # tear the box down
-```
-
-### `crucible shell <id>`
-
-Open a live interactive shell into a running sandbox — `cd`, environment, and shell state persist across commands within the session. Line-oriented (no PTY). The fast way to poke at untrusted code you just booted.
-
-```bash
-SBX=$(crucible sandbox create --profile python-3.12)
-crucible shell $SBX        # a real /bin/sh inside it; `exit` to leave
-```
-
-Override the shell with `--shell /bin/bash`.
-
-### `crucible cp <src> <dst>`
-
-Copy a local file or directory **into** a running sandbox (host → guest) — drop code in and run it, no image build, no Dockerfile. Directories are recursive; the destination is treated as a directory and the source's basename is preserved under it (`cp ./app sbx:/work` → `/work/app`). Parents are created and existing files overwritten.
-
-```bash
-SBX=$(crucible run --profile python-3.12)
-crucible cp ./script.py $SBX:/work                 # → /work/script.py
-crucible sandbox exec $SBX -- python /work/script.py
-```
-
-A `sbx_…:<path>` operand is the sandbox side; the other is the local path. Copying *out* of a sandbox is exposed to agents through the MCP `read_file` tool ([docs/mcp.md](mcp.md)); a CLI pull lands in a later release.
-
-### `crucible app`
-
-Durable apps: a named workload the daemon keeps a healthy instance of and
-**re-creates from spec after a restart** ([apps.md](apps.md)). `run` is for
-throwaway work; `app` is for a server you want to stay up.
-
-| Command | Description |
-|---|---|
-| `create <name> --image <ref> [flags]` | create a durable app; prints its name |
-| `update <name> [flags]` | replace the app's spec (same flags as create) and redeploy; name immutable |
-| `ls` | list apps (table: name, desired, phase, health, restarts, instance) |
-| `get <name>` | full app JSON (desired state + observed status) |
-| `rm <name>` | delete the app and tear down its instance |
-| `logs <name> [-f] [--source]` | the current instance's durable logs |
-| `exec <name> [-i] -- <cmd>...` | run a command in the current instance |
-| `shell <name>` | interactive shell in the current instance |
-
-`create` flags: `--image` (required), `--pull`, `--restart always|on-failure|never`,
-`--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec
-check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all`
-(publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable,
-delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr`
-(public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`,
-`--disk`, `--stopped`.
-
-```bash
-crucible app create web --image nginx:alpine -P -e LOG_LEVEL=info --restart always --health http:80:/
-crucible app ls
-crucible app logs web -f
-crucible app rm web
-```
-
-`logs`/`exec`/`shell` resolve the app's current instance automatically.
-
-### `crucible sandbox`
-
-| Command | Description |
-|---|---|
-| `create [--vcpus --memory --timeout --profile --image --pull --disk --net-allow -p]` | create a sandbox; prints its id (`--disk 2G` grows the writable rootfs) |
-| `ls` | list live sandboxes (table: id, profile, vcpus, mem, net, age) |
-| `inspect <id>` | full sandbox JSON |
-| `rm <id>...` | destroy one or more sandboxes |
-| `exec <id> -- <command>...` | run a command, streaming output; propagates exit code. `--cwd`, `--timeout`, `--env KEY=VALUE` |
-
-```bash
-SBX=$(crucible sandbox create --memory 1024 --profile node-22)
-crucible sandbox exec $SBX --env NODE_ENV=production -- node -e 'console.log(process.version)'
-crucible sandbox rm $SBX
-```
-
-Use `--` to separate the guest command from crucible's own flags.
-
-### `crucible snapshot`
-
-| Command | Description |
-|---|---|
-| `create <sandbox-id>` | snapshot a sandbox; prints the snapshot id |
-| `ls` | list snapshots (table: id, source, vcpus, mem, age) |
-| `inspect <id>` | full snapshot JSON |
-| `rm <id>...` | delete snapshots |
-
-### `crucible fork <snapshot-id> [--count N] [-p HOST:GUEST]`
-
-Create `N` sandboxes (default 1) from a snapshot; prints the new sandbox ids. Each child is fully independent (its own network and, via clone-safety, its own RNG/machine identity).
-
-`-p/--publish` maps a host port onto the fork (`[HOST_IP:]HOST:GUEST[/tcp]`, same as `run -p`) — fork a running server and expose the copy. Publishing requires `--count 1`: host ports are exclusive, so a fan-out cannot share them.
-
-```bash
-SNP=$(crucible snapshot create $SBX)
-crucible fork $SNP --count 5
-crucible fork $SNP -p 8081:80   # one fork, reachable on host port 8081
-```
-
-### `crucible profile ls`
-
-List the rootfs profiles the daemon was started with (`--rootfs-dir`). See [profiles.md](profiles.md).
-
-### `crucible daemon` / `crucible version`
-
-`daemon` runs the HTTP server (its own flags — `crucible daemon --help`). `version` prints the build version.
-
-**API keys.** `crucible daemon token` manages the daemon's bearer keys (stored hashed in `--token-file`, default `/var/lib/crucible/tokens.json`):
-
-```bash
-crucible daemon token add --name laptop                       # unscoped (full access), prints the key once
-crucible daemon token add --name agent --policy p.json --ttl 24h  # scoped + expiring
-crucible daemon token list                  # id, name, scope, expiry — never the key
-crucible daemon token revoke <id>           # rotate = add a new key, then revoke the old
-```
-
-With no keys, a loopback daemon serves unauthenticated. Once any key exists, auth is required. Binding a non-loopback `--listen` is refused unless keys and `--tls-cert`/`--tls-key` are both set. `--policy` binds a key to a [scoped policy](policy.md) the daemon enforces; `--ttl` sets an expiry. See [SECURITY.md](../SECURITY.md) and [api.md](api.md#authentication).
-
-### `crucible policy`
-
-Author and inspect [scoped-token policies](policy.md):
-
-```bash
-crucible policy validate p.json    # static check — the same validation token add runs (fail-closed)
-crucible policy show               # what the current --token may actually do (asks the daemon /whoami)
-```
-
-`policy validate` reads a file or `-` (stdin). `policy show -o json` emits the effective policy for scripting.
-
-### `crucible mcp serve`
-
-Runs a stdio MCP server so any MCP agent (Claude Code, Cursor, …) can drive crucible as native tools. It bridges to the daemon at `--addr` (with `--token`), so it works against a local or a remote daemon. Operator guardrails (`--default-profile`, `--allow-profiles`, `--net-allow-max`, `--max-sandboxes`, `--max-fork`, `--max-timeout`, `--tools`/`--deny-tools`) bound what the agent can do. Full reference and the agent config example are in [docs/mcp.md](mcp.md).
+| [Run and build](cli/run.md) | `run`, `build` |
+| [Sandbox lifecycle](cli/lifecycle.md) | `stop`, `rm`, `shell`, `cp` |
+| [Sandboxes and profiles](cli/sandboxes.md) | `sandbox create/ls/inspect/exec/rm`, `profile ls` |
+| [Snapshots and fork](cli/snapshots.md) | `snapshot create/ls/inspect/rm`, `fork` |
+| [Apps](cli/apps.md) | `app create/update/ls/get/rm/logs/exec/shell` |
+| [Daemon, tokens, and agents](cli/daemon.md) | `daemon`, `daemon token`, `policy`, `mcp serve`, `version` |
 
 ## Exit codes
 
-- `0` — success
-- `1` — a crucible-level error (bad flags, daemon unreachable, API error)
-- **the guest command's exit code** — for `exec` and `run` when the command itself exits non-zero
+- `0`: success
+- `1`: a crucible-level error (bad flags, daemon unreachable, API error)
+- **the guest command's exit code** for `exec` and `run` when the command itself exits non-zero
 
-This makes `crucible run`/`exec` drop-in for scripts and CI: `crucible run -- pytest` fails the pipeline exactly when the tests do.
+> [!TIP]
+> The exit-code passthrough makes `crucible run` and `exec` drop-in for scripts and CI: `crucible run -- pytest` fails the pipeline exactly when the tests do.

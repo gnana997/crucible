@@ -1,3 +1,8 @@
+---
+title: Ingress proxy
+description: "One daemon-owned listener that routes requests to many apps by name: the front door when one host runs more than one app."
+---
+
 # Ingress proxy: reach an app by name
 
 A published port (`-p`) gives one app one host port. The **ingress proxy** is the
@@ -51,8 +56,10 @@ Inbound reaches a guest **only** from the proxy (and any published ports), which
 dial the instance from the daemon's host network namespace. Guests still cannot
 reach each other or the host's private ranges — the introduction of inbound
 traffic does not weaken the per-sandbox isolation described in
-[network.md](network.md). A `--net-full-egress` guest can reach another app's
-*published* (intentionally public) port, but never an unpublished one.
+[network.md](network.md). A guest cannot reach the proxy itself either: the host
+input chain drops every guest-initiated packet to a host-local address, so even
+a `--net-full-egress` guest can't pivot through the proxy to another app —
+published or not.
 
 ## Coexists with `-p`
 

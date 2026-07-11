@@ -1,3 +1,8 @@
+---
+title: Architecture
+description: "How crucible is put together, for people reading or contributing to the code: the daemon, jailer, agent, and the boundaries between them."
+---
+
 # Architecture
 
 How crucible is put together, for people reading or contributing to the code. For *why* it's shaped this way, see [VISION.md](VISION.md); for the isolation model and its limits, see [SECURITY.md](../SECURITY.md).

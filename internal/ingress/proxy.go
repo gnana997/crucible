@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -17,8 +16,11 @@ import (
 )
 
 const (
-	dialTimeout    = 5 * time.Second
-	sniPeekTimeout = 10 * time.Second
+	dialTimeout       = 5 * time.Second
+	sniPeekTimeout    = 10 * time.Second
+	httpHeaderTimeout = 10 * time.Second // Slowloris guard on the HTTP listener
+	proxyIdleTimeout  = 5 * time.Minute  // close a spliced/keep-alive conn idle this long
+	maxTLSConns       = 1024             // cap concurrent SNI-passthrough conns
 )
 
 type targetKey struct{}
@@ -44,6 +46,7 @@ type Proxy struct {
 	rp      *httputil.ReverseProxy
 	httpSrv *http.Server
 	tlsLn   net.Listener
+	tlsSem  chan struct{} // bounds concurrent SNI-passthrough handlers
 	wg      sync.WaitGroup
 }
 
@@ -58,10 +61,13 @@ func New(cfg Config) *Proxy {
 		log:        log,
 		httpListen: cfg.HTTPListen,
 		tlsListen:  cfg.TLSListen,
+		tlsSem:     make(chan struct{}, maxTLSConns),
 	}
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			tg := pr.In.Context().Value(targetKey{}).(Target)
+			// Always set by ServeHTTP before this runs; comma-ok so a missing
+			// value degrades to a dial failure (→ 502) instead of a panic.
+			tg, _ := pr.In.Context().Value(targetKey{}).(Target)
 			pr.SetURL(&url.URL{Scheme: "http", Host: net.JoinHostPort(tg.GuestIP, strconv.Itoa(tg.Port))})
 			pr.Out.Host = pr.In.Host // preserve the app's Host header
 			pr.SetXForwarded()
@@ -97,7 +103,14 @@ func (p *Proxy) Start() error {
 		if err != nil {
 			return err
 		}
-		p.httpSrv = &http.Server{Handler: p}
+		// ReadHeaderTimeout guards against Slowloris; IdleTimeout reaps idle
+		// keep-alive conns. No Read/WriteTimeout — long proxied bodies
+		// (uploads, streaming) are legitimate.
+		p.httpSrv = &http.Server{
+			Handler:           p,
+			ReadHeaderTimeout: httpHeaderTimeout,
+			IdleTimeout:       proxyIdleTimeout,
+		}
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
@@ -142,7 +155,18 @@ func (p *Proxy) acceptTLS(ln net.Listener) {
 		if err != nil {
 			return // listener closed
 		}
-		go p.handleSNI(conn)
+		// Bound concurrent handlers: shed (close) connections over the cap so a
+		// flood of half-open TLS conns can't exhaust goroutines/FDs.
+		select {
+		case p.tlsSem <- struct{}{}:
+			go func() {
+				defer func() { <-p.tlsSem }()
+				p.handleSNI(conn)
+			}()
+		default:
+			p.log.Warn("ingress: TLS connection cap reached, shedding", "cap", maxTLSConns)
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -213,12 +237,14 @@ func peekSNI(conn net.Conn, timeout time.Duration) (sni string, hello []byte, er
 	return sni, pc.buf.Bytes(), nil
 }
 
-// pipe copies bidirectionally between two conns, half-closing each write side on
-// EOF so a one-way-idle connection still drains and terminates.
+// pipe copies bidirectionally between two conns with an idle timeout, so a
+// spliced connection that goes silent in both directions can't pin goroutines +
+// FDs forever. Each write side is half-closed on EOF so a one-way-idle
+// connection still drains and terminates.
 func pipe(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
+		copyIdle(dst, src, proxyIdleTimeout)
 		if c, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = c.CloseWrite()
 		}
@@ -228,4 +254,23 @@ func pipe(a, b net.Conn) {
 	go cp(b, a)
 	<-done
 	<-done
+}
+
+// copyIdle streams src→dst, resetting src's read deadline before each read so a
+// connection idle longer than idle is torn down (the read errors, both copy
+// directions unwind, and handleSNI's defers close both conns).
+func copyIdle(dst, src net.Conn, idle time.Duration) {
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(idle))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }

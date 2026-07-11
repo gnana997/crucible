@@ -1,3 +1,8 @@
+---
+title: Python SDK
+description: "Help wanted: no Python client exists yet, and it is a deliberately well-prepared contribution with the hard parts already specified and fixtured."
+---
+
 # Python SDK: help wanted
 
 There is no Python client yet, and it is a deliberately well-prepared

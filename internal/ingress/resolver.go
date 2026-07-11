@@ -58,8 +58,9 @@ type Resolver struct {
 }
 
 type cacheEntry struct {
-	target  Target
-	expires time.Time
+	instanceID string
+	target     Target
+	expires    time.Time
 }
 
 // NewResolver builds a resolver. domain is the --proxy-domain suffix (a leading
@@ -103,12 +104,23 @@ func (r *Resolver) Resolve(host string) (Target, error) {
 		return Target{}, ErrNoRoute
 	}
 
+	// Cache hit: trust it only if the cached instance is STILL alive with the
+	// same IP. Instance ids (sbx_…) are unique and never reused, so re-checking
+	// the sandbox manager on the cached id can never return a *different* app's
+	// guest — a freed /30 re-leased to another app resolves under that app's own
+	// (different) instance id. This closes the /30-reuse tenant-crossover window
+	// while still saving the app-store lookup on the hot path.
 	if r.ttl > 0 {
 		r.mu.Lock()
 		e, ok := r.cache[name]
 		r.mu.Unlock()
 		if ok && r.now().Before(e.expires) {
-			return e.target, nil
+			if ip, live := r.instances.GuestIP(e.instanceID); live && ip == e.target.GuestIP {
+				return e.target, nil
+			}
+			r.mu.Lock()
+			delete(r.cache, name) // instance gone / IP changed → re-resolve
+			r.mu.Unlock()
 		}
 	}
 
@@ -134,7 +146,7 @@ func (r *Resolver) Resolve(host string) (Target, error) {
 	t := Target{GuestIP: ip, Port: port}
 	if r.ttl > 0 {
 		r.mu.Lock()
-		r.cache[name] = cacheEntry{target: t, expires: r.now().Add(r.ttl)}
+		r.cache[name] = cacheEntry{instanceID: resp.Status.InstanceID, target: t, expires: r.now().Add(r.ttl)}
 		r.mu.Unlock()
 	}
 	return t, nil

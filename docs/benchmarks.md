@@ -1,3 +1,8 @@
+---
+title: Benchmarks
+description: "Reproducible latency measurements from crucible-bench, driving a real daemon through the same typed Go client the CLI and TUI use."
+---
+
 # Benchmarks
 
 Reproducible measurements from `crucible-bench`, a harness that drives a real daemon through the `sdk` Go package (the same typed client the CLI, TUI, and MCP server use). It reports latency distributions, fork fan-out scaling, the lazy-memory efficiency of fork, and sandbox density.

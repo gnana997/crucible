@@ -13,6 +13,7 @@
 #   07  --env is delivered to the app entrypoint (v0.4.1)
 #   08  -P auto-publishes the image's EXPOSEd port (v0.4.1)
 #   09  --health-cmd (exec) drives health from an in-guest command (v0.4.1)
+#   10  app update replaces the spec and redeploys the instance (v0.4.2)
 #
 # The daemon-restart step is the whole point: v0.3 dropped every running
 # sandbox on restart; a v0.4 app comes back because its desired state lives
@@ -272,6 +273,32 @@ else
   fail "exec-health app never served on :8083"
 fi
 cli app rm healthexec >/dev/null 2>&1
+
+# ---- 10 app update redeploys (v0.4.2 W6) ------------------------------------
+# `app update` replaces the spec and bumps the generation; the reconciler
+# destroys the old instance and boots a fresh one from the new spec.
+echo "== 10 app update replaces the spec and redeploys the instance"
+cli app create upd --image "$IMAGE" -p 8084:80 --restart always --memory 256 >/dev/null 2>&1
+if wait_serving 8084; then
+  INST1="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+  # Change the spec (memory + a new env) — a generation bump forces a redeploy.
+  cli app update upd --image "$IMAGE" -p 8084:80 --restart always --memory 320 -e UPDATED=yes >/dev/null 2>&1
+  REDEPLOYED=0; INST2=""
+  for _ in $(seq 1 60); do
+    INST2="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+    if [[ "$INST2" == sbx_* && "$INST2" != "$INST1" ]] && curl -sf http://localhost:8084/ >/dev/null 2>&1; then
+      REDEPLOYED=1; break
+    fi
+    sleep 1
+  done
+  [[ "$REDEPLOYED" -eq 1 ]] && pass "app update redeployed to a new instance ($INST1 → $INST2) and serves" \
+    || fail "app update did not redeploy ($INST1 → ${INST2:-none})"
+  GEN="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"generation":[0-9]*' | grep -o '[0-9]*' | head -1)"
+  [[ "$GEN" == "2" ]] && pass "generation bumped to 2 after update" || fail "generation = ${GEN:-?}, want 2"
+else
+  fail "update app never served on :8084"
+fi
+cli app rm upd >/dev/null 2>&1
 
 # ---- summary ----------------------------------------------------------------
 

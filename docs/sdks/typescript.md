@@ -1,3 +1,8 @@
+---
+title: TypeScript SDK
+description: "A typed, zero-runtime-dependency fetch client with streaming exec and a frame codec verified against the shared conformance fixtures."
+---
+
 # TypeScript SDK
 
 A typed, zero-runtime-dependency `fetch` client. **Scaffold status**: the

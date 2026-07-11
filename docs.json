@@ -55,7 +55,18 @@
       "tab": "Guides",
       "pages": [
         "README",
-        "cli",
+        {
+          "group": "CLI",
+          "pages": [
+            "cli",
+            "cli/run",
+            "cli/lifecycle",
+            "cli/sandboxes",
+            "cli/snapshots",
+            "cli/apps",
+            "cli/daemon"
+          ]
+        },
         "apps",
         "tui",
         "profiles",
@@ -65,8 +76,13 @@
           "group": "Reference",
           "pages": [
             "api",
+            "api/create-sandbox",
+            "api/exec",
+            "api/files",
+            "api/fork",
             "mcp",
             "architecture",
+            "concepts/network-model",
             "benchmarks"
           ]
         },

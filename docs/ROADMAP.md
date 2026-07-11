@@ -1,3 +1,8 @@
+---
+title: Roadmap
+description: "What has shipped and what is planned, in rough order, grouped into coherent milestones."
+---
+
 # Roadmap
 
 What's shipped and what's planned, roughly in order. Each section is a coherent milestone — items inside a section are the ones that landed (or are expected to land) together. A `[x]` is actually working on `main`; a `•` is planned. Nothing is called "done" until it ships.

@@ -1,3 +1,8 @@
+---
+title: Rootfs profiles
+description: "Pre-baked guest rootfs images a sandbox can boot from (base, python-3.12, node-22), how they are built, and how the daemon discovers them."
+---
+
 # Rootfs profiles
 
 A **profile** is a pre-baked guest rootfs a sandbox can boot from — `base`, or a language environment like `python-3.12` / `node-22` / `go-1.24`. Profiles are built from the **official language base images** (`python:3.12-slim`, `node:22-bookworm-slim`, …), so the toolchain lives exactly where the language expects it: `pip`, `npm`, `go`, `venv` all behave the way agent code assumes, with no bolted-on tarballs or PATH surprises.

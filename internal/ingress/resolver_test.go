@@ -142,3 +142,27 @@ func TestResolveCacheWindow(t *testing.T) {
 		t.Errorf("after TTL = %+v, want fresh 10.20.0.9", tg)
 	}
 }
+
+func TestResolveCacheInstanceGuard(t *testing.T) {
+	// Cache app "web" → sbx_1. Then sbx_1 dies and web is re-pointed to sbx_2 at
+	// a different IP — WITHIN the TTL. Resolve must return the fresh instance's
+	// IP, never the dead one (whose /30 could have been re-leased to another app).
+	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", 80, "sbx_1")}}
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
+	r := NewResolver(apps, inst, "apps.local", time.Second)
+	clk := time.Unix(0, 0).UTC()
+	r.now = func() time.Time { return clk }
+
+	if tg, _ := r.Resolve("web.apps.local"); tg.GuestIP != "10.20.0.2" {
+		t.Fatalf("first resolve = %+v", tg)
+	}
+	// sbx_1 is gone; web now runs as sbx_2 — still inside the 1s TTL window.
+	delete(inst.ips, "sbx_1")
+	inst.ips["sbx_2"] = "10.20.0.9"
+	apps.apps["web"] = runningApp("web", 80, "sbx_2")
+
+	tg, err := r.Resolve("web.apps.local")
+	if err != nil || tg.GuestIP != "10.20.0.9" {
+		t.Errorf("within TTL after instance change = %+v, %v; want fresh 10.20.0.9 (no stale/crossover)", tg, err)
+	}
+}

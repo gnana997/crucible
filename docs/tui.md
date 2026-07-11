@@ -1,3 +1,8 @@
+---
+title: TUI
+description: "A live terminal dashboard for driving and observing a daemon: running sandboxes, the fork tree, and streaming exec, with no daemon-side state of its own."
+---
+
 # TUI
 
 `crucible tui` is a live terminal dashboard for driving and observing a daemon at a glance — running sandboxes, the fork tree, and streaming `exec`. Like the CLI and the MCP server it owns no sandbox logic: every view and action is a call through the same typed client (the `sdk` Go package), so the dashboard and the CLI can't drift.

@@ -1,3 +1,8 @@
+---
+title: MCP
+description: "Expose crucible to any MCP-compatible agent as native tools (create, exec, snapshot, fork, apps), with operator guardrails bounding what the agent may do."
+---
+
 # MCP
 
 `crucible mcp serve` exposes crucible to any MCP-compatible agent (Claude Code, Cursor, …) as **native tools** — create a sandbox, run code, snapshot, fork, or stand up a durable app — with no shell wrapping and no SDK.

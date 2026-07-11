@@ -1,3 +1,8 @@
+---
+title: Apps
+description: "Durable, self-healing workloads: a named spec the daemon keeps a healthy instance of, health checks, restart policies, and recovery after a daemon restart."
+---
+
 # Apps: durable, self-healing workloads
 
 A **sandbox** is ephemeral — you spin it up, run something, tear it down, and a

@@ -1,3 +1,8 @@
+---
+title: Scoped tokens and policies
+description: "Bind an API key to a policy the daemon enforces on every request: a small, bounded, revocable capability for agents and CI."
+---
+
 # Scoped tokens & policies
 
 A crucible API key can be **scoped** to a policy the **daemon** enforces on every

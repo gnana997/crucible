@@ -1,3 +1,8 @@
+---
+title: Go SDK
+description: "The official Go client: a zero-dependency module, versioned independently of the daemon, covering the full API including the exec stream."
+---
+
 # Go SDK
 
 The official Go client: a zero-dependency module (stdlib only), versioned
