@@ -40,14 +40,22 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 - [x] **TUI** (`crucible tui`) — a live terminal dashboard: running sandboxes, the fork tree, and interactive streaming `exec`, with create/snapshot/fork/delete gated on the token's scope. A thin consumer of the `sdk` Go package ([tui.md](tui.md)).
 - [x] **Fork lineage on the API** — `source_snapshot_id` records which snapshot a sandbox was forked from, so the fork genealogy is reconstructable by any client (this is what the tree view draws).
 
-### v0.3.0 — The safe `docker run` for untrusted/AI code *(current)*
+### v0.3.x — The safe `docker run` for untrusted/AI code
 
 - [x] **OCI image boot** — `crucible run <image>` boots an unmodified image's entrypoint in a microVM; `crucible build` builds a Dockerfile and loads it into the store (daemon stays Docker-free). Publish host ports with `-p`.
 - [x] **Interactive shell** — `crucible shell <id>` / `sandbox exec -i`: a real long-lived `/bin/sh` over a hijacked full-duplex vsock stream (state persists; line-buffered, **no PTY**). The TUI gains a **scrollback + `tab`-to-shell** session view.
 - [x] **`--disk`** per-sandbox writable sizing (`resize2fs` the clone, never the shared image); top-level **`stop`/`rm`** ops verbs; durable **`logs`**.
 - [x] **MCP for the wedge** — `image`/`pull`/`publish`/`disk_mib` on `create_sandbox`/`run`, plus `logs` and `stop_sandbox` tools ([mcp.md](mcp.md)).
 - [x] **Complete orphan reaping** — startup sweeps live orphan processes and empty orphan cgroups; a killed daemon leaves no lingering firecracker.
-- **Ephemeral contract:** running sandboxes do **not** survive a daemon restart — durability is v0.4.
+### v0.4.0 — Durable, self-healing apps *(current)*
+
+- [x] **Durable app model** — `crucible app create <name> --image …` promotes a workload to a named **app** the daemon keeps a healthy instance of. Desired state lives in a bbolt control-plane store; the ephemeral `sandbox` primitive is unchanged ([apps.md](apps.md)).
+- [x] **Survives restart** — the app reconciler re-creates each app's instance from spec after a daemon restart or host reboot (desired-state reconcile, the Fly/k8s model — *re-created*, not live-re-attached; in-VM memory is lost, cost is one cold boot).
+- [x] **Self-heal** — daemon-side restart-on-failure with **exponential backoff + a crash-loop guard**, plus **http/tcp health checks** (declarative `always`/`on-failure`/`never` policy).
+- [x] **Full surface** — `crucible app ls|get|rm|logs|exec|shell`, REST `/apps`, the Go SDK (`CreateApp`/`ListApps`/`GetApp`/`DeleteApp` + an `App` handle), and four MCP tools (`create_app`/`list_apps`/`get_app`/`delete_app`, → 19 tools).
+- [x] **`crucible fork -p HOST:GUEST`** — publish a host port on a fork (a running server, forked and exposed on its own port).
+
+- **Durability contract:** an **app** survives a daemon restart (re-created from desired state); a bare **sandbox** does not (it stays the throwaway primitive). Live-VM re-attach (avoiding the cold boot) is later trajectory work.
 
 ## Planned
 
@@ -59,17 +67,19 @@ The most-requested gap in the agentic iteration loop: get *your* files in and ru
 - • **`crucible cp <sbx>:<path> <local>`** — copy artifacts back out. The security-sensitive direction: the tar comes from untrusted guest code, so host-side extraction is tar-slip-safe and size-bounded (adversarial-input handling).
 - • **MCP `write_files` / `read_file`** — the "drop code in and run it" primitive for agents, alongside `exec`.
 
-### v0.4 — Durable, long-lived workloads
+### v0.4.1 — Reach an app by name
 
-v0.3.0 sandboxes are consciously ephemeral — a daemon restart drops running VMs. v0.4 is about making a workload something you *manage over time* rather than only spin up and tear down.
+The durable app object exists (v0.4.0); v0.4.1 makes it addressable by a stable name rather than an ephemeral instance id.
 
-- • **An app model that survives restart.** Promote a sandbox to a named, durable app whose desired state is reconciled — so the *running workload* (not just a registry record) comes back after a daemon restart or host reboot.
-- • **Health checks + restart policy.** The supervisor already restarts a crashed entrypoint on command; v0.4 adds daemon-side health probing and a declarative restart policy (always / on-failure / never) so an app self-heals.
-- • **Reach an app by name.** Routing that keys on app identity rather than an ephemeral sandbox id, so a stable name is how you address a workload.
-- • **Private / authenticated registry pull.** v0.3.0 pulls anonymous public images; v0.4 adds credentialed pulls from private registries (ghcr.io, ECR, …).
-- • **PTY / full terminal.** The interactive shell (`crucible shell`) is line-buffered today; v0.4 adds a real PTY for full-screen programs, colors, and Ctrl-C job control.
+- • **Name → instance routing + ingress proxy.** A host-header/SNI proxy that keys on app identity, so a stable name (later a hostname) is how you address a workload.
+- • **Inbound isolation policy** on the app's published surface.
+- • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
+
+### v0.4.2 — Production polish
+
+- • **Private / authenticated registry pull** — credentialed pulls from private registries (ghcr.io, ECR, …).
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.
-- • **Growable disk + accounting.** `--disk` sizes the writable rootfs at create today; v0.4 adds growing a live sandbox's disk and per-sandbox disk accounting.
+- • **Growable live disk + accounting.** `--disk` sizes the writable rootfs at create today; this adds growing a live sandbox's disk and per-sandbox disk accounting.
 
 ### v0.4.x — Hardening & ecosystem
 
@@ -100,7 +110,7 @@ Make parallel agent exploration a first-class workflow, not just a primitive. Fo
 
 Directions that matter once the core is solid. Not committed to a version or order yet.
 
-- • **Persistent workspaces & richer interactive sessions.** Bidirectional stdin ships (`crucible shell` / `exec -i`) and a full PTY is v0.4; what's left is longer-lived named workspaces an agent reattaches to, and first-class REPL / language-server ergonomics on top of the shell.
+- • **Persistent workspaces & richer interactive sessions.** Bidirectional stdin ships (`crucible shell` / `exec -i`) and a full PTY is v0.4.1; what's left is longer-lived named workspaces an agent reattaches to, and first-class REPL / language-server ergonomics on top of the shell.
 - • **First-party agent integrations.** Native hooks and ready-made examples for Claude Code, Cursor, and common agent frameworks, building on the MCP server, plus a typed SDK (Python/TS) so the fork/snapshot workflow isn't hand-rolled over HTTP.
 - • **Snapshot sharing.** A registry for warm setup-snapshots — boot a "Django project, dependencies installed" snapshot and run against it instantly.
 - • **Published regression benchmarks.** The harness ships (`make bench`, [benchmarks.md](benchmarks.md)); tracking cold-start / fork-latency / throughput numbers over releases in CI is the remainder.

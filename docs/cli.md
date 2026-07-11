@@ -110,6 +110,35 @@ crucible sandbox exec $SBX -- python /work/script.py
 
 A `sbx_…:<path>` operand is the sandbox side; the other is the local path. Copying *out* of a sandbox is exposed to agents through the MCP `read_file` tool ([docs/mcp.md](mcp.md)); a CLI pull lands in a later release.
 
+### `crucible app`
+
+Durable apps: a named workload the daemon keeps a healthy instance of and
+**re-creates from spec after a restart** ([apps.md](apps.md)). `run` is for
+throwaway work; `app` is for a server you want to stay up.
+
+| Command | Description |
+|---|---|
+| `create <name> --image <ref> [flags]` | create a durable app; prints its name |
+| `ls` | list apps (table: name, desired, phase, health, restarts, instance) |
+| `get <name>` | full app JSON (desired state + observed status) |
+| `rm <name>` | delete the app and tear down its instance |
+| `logs <name> [-f] [--source]` | the current instance's durable logs |
+| `exec <name> [-i] -- <cmd>...` | run a command in the current instance |
+| `shell <name>` | interactive shell in the current instance |
+
+`create` flags: `--image` (required), `--pull`, `--restart always|on-failure|never`,
+`--health http:PORT[:PATH]|tcp:PORT`, `-p/--publish` (repeatable), `--net-allow`
+(repeatable), `--vcpus`, `--memory`, `--disk`, `--stopped`.
+
+```bash
+crucible app create web --image nginx:alpine -p 8080:80 --restart always --health http:80:/
+crucible app ls
+crucible app logs web -f
+crucible app rm web
+```
+
+`logs`/`exec`/`shell` resolve the app's current instance automatically.
+
 ### `crucible sandbox`
 
 | Command | Description |

@@ -21,9 +21,10 @@ cgroup quotas, install/systemd), plus OCI image boot (`crucible run <image>` /
 `build`), an interactive shell (`crucible shell`, no PTY) + TUI session view,
 `--disk` sizing, top-level `stop`/`rm`, durable logs, an MCP server (image/
 publish/disk params + `logs`/`stop_sandbox` tools), daemon API-key auth with
-scoped/policy tokens, and a TUI (`crucible tui`). Sandboxes are **ephemeral** —
-a daemon restart drops running VMs (durability is v0.4). See the ROADMAP for
-what's next.
+scoped/policy tokens, and a TUI (`crucible tui`). Two durability tiers:
+**sandboxes** are ephemeral (a daemon restart drops the VM), while **apps**
+(v0.4, `crucible app`) are durable — the daemon re-creates a healthy instance
+from persisted desired state after a restart. See the ROADMAP for what's next.
 
 ## Working style
 

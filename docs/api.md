@@ -46,8 +46,12 @@ The daemon supports bearer-token API keys, on the same model as the Docker or Ku
 | `POST` | `/images` | Pull + convert an OCI image into the store (`{"ref": "nginx:alpine"}`). |
 | `POST` | `/images/import` | Import a `docker save` archive stream into the store. |
 | `GET` | `/images` · `GET`/`DELETE` `/images/{ref}` | List / inspect / remove converted images. |
+| `POST` | `/apps` | Create a **durable app** the daemon keeps a healthy instance of and re-creates after a restart ([apps.md](apps.md)). Body: `CreateAppRequest`. |
+| `GET` | `/apps` | List apps with observed status. |
+| `GET` | `/apps/{name}` | An app's desired state + observed status (instance, phase, health, restarts). |
+| `DELETE` | `/apps/{name}` | Delete an app and tear down its instance. |
 
-The image, service, and logs endpoints answer `501` when the daemon is started without the corresponding subsystem (`--image-dir`, a service-capable rootfs, `--log-dir`). Calling a known path with an unsupported method returns `405`.
+The image, service, logs, and app endpoints answer `501` when the daemon is started without the corresponding subsystem (`--image-dir`, a service-capable rootfs, `--log-dir`, `--app-db`). Calling a known path with an unsupported method returns `405`.
 
 ---
 
@@ -253,6 +257,8 @@ List (`{"snapshots": [...]}`), inspect (`200` / `404`), and delete (`204` / `404
 
 Create sandboxes from a snapshot. Fan-out is set by the `?count=N` query parameter (default `1`); `N` must be a positive integer and is capped by the daemon's max fork count (`400` if exceeded).
 
+An optional JSON body (`{"count", "publish"}`) can set the count and **publish host ports on the fork** (`docker run -p` semantics — fork a running server onto its own port). The body's `count` wins over the query param; `publish` requires `count == 1` (host ports are exclusive). A body-less request keeps the query-only form working on any daemon.
+
 Fork is **all-or-nothing**: if any child fails to come up, every child started so far is rolled back and the call returns an error. On success, returns `201`:
 
 ```json
@@ -260,6 +266,22 @@ Fork is **all-or-nothing**: if any child fails to come up, every child started s
 ```
 
 Each child is a fully independent sandbox (its own ID, network, and — thanks to clone-safety — its own fresh RNG state and machine identifiers). Errors: `400` (bad `count` or invalid config), `404` (unknown snapshot), `500`.
+
+---
+
+### `POST /apps` · `GET /apps` · `GET /apps/{name}` · `DELETE /apps/{name}`
+
+A **durable app** is a named workload the daemon keeps a healthy instance of and re-creates from spec after a restart ([apps.md](apps.md)). `POST /apps` takes a `CreateAppRequest` (an `AppSpec` — `name`, `image`, `publish`, `restart`, `health`, sizing — plus optional `desired_state`), validates it, persists the desired state, and returns `201` with the app's initial state; the instance boots asynchronously (poll `GET /apps/{name}` for `status.phase`/`status.health`). Apps are addressed by **name** (a DNS label). `409` on a duplicate name, `400` on a bad spec, `404` for an unknown app, `501` when the daemon has no `--app-db`. See the [API reference](/api-reference) for the full schema.
+
+```bash
+curl -s -XPOST localhost:7878/apps -d '{
+  "name":"web","image":{"oci":"nginx:alpine"},
+  "publish":[{"host_port":8080,"guest_port":80}],
+  "restart":{"policy":"always"},
+  "health":{"type":"http","path":"/","port":80}
+}'
+curl -s localhost:7878/apps/web | jq '.status'   # {phase, health, restarts, instance_id}
+```
 
 ---
 

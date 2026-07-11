@@ -148,6 +148,31 @@ Every fork wakes with fresh entropy and identity
 ([clone-safety](../architecture.md#snapshot-and-fork)): divergent RNG,
 unique hostname, its own network address.
 
+## Durable apps
+
+An **app** is a named workload the daemon keeps alive and re-creates from spec
+after a restart ([apps.md](../apps.md)). The SDK has flat methods plus an `App`
+handle whose `Exec`/`Logs` resolve the app's current instance for you:
+
+```go
+_, err := cr.CreateApp(ctx, api.CreateAppRequest{AppSpec: api.AppSpec{
+    Name:    "web",
+    Image:   &api.ImageRef{OCI: "nginx:alpine"},
+    Publish: []api.PortMapping{{HostPort: 8080, GuestPort: 80}},
+    Restart: wire.RestartPolicy{Policy: wire.RestartAlways},
+    Health:  &api.HealthCheck{Type: "http", Path: "/", Port: 80},
+}})
+
+apps, _ := cr.ListApps(ctx)            // Page[api.AppResponse]
+app := cr.App("web")
+status, _ := app.Get(ctx)              // desired + observed (phase, health, restarts)
+res, _ := app.Exec(ctx, wire.ExecRequest{Cmd: []string{"nginx", "-t"}}, os.Stdout, os.Stderr)
+_ = app.Delete(ctx)
+```
+
+`app.Exec`/`app.Logs` error when the app has no running instance (pending,
+stopped, or crash-looping).
+
 ## Services
 
 Run a long-lived entrypoint under the guest supervisor (Docker-style

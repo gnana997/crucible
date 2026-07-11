@@ -1,6 +1,6 @@
 # MCP
 
-`crucible mcp serve` exposes crucible to any MCP-compatible agent (Claude Code, Cursor, …) as **native tools** — create a sandbox, run code, snapshot, fork — with no shell wrapping and no SDK.
+`crucible mcp serve` exposes crucible to any MCP-compatible agent (Claude Code, Cursor, …) as **native tools** — create a sandbox, run code, snapshot, fork, or stand up a durable app — with no shell wrapping and no SDK.
 
 It is a thin client: every tool call becomes one typed call against the daemon's REST API, so an MCP tool and the equivalent CLI command hit the identical code path and can't drift. The server owns no sandbox state — everything lives in the daemon.
 
@@ -66,6 +66,10 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 | `list_sandboxes` | List live sandboxes. | — |
 | `inspect_sandbox` | Full detail for one sandbox. | `sandbox_id` |
 | `stop_sandbox` | Gracefully stop a sandbox's entrypoint (StopSignal + grace); the sandbox remains. | `sandbox_id`, `grace_s?` |
+| `create_app` | Create a **durable app** the daemon keeps alive and re-creates after a restart ([apps.md](apps.md)). | `name`, `image`, `pull?`, `publish?[]`, `restart?`, `vcpus?`, `memory_mib?`, `health_type?`+`health_port?`+`health_path?`, `stopped?` |
+| `list_apps` | List durable apps with phase, health, and restart count. | — |
+| `get_app` | One app's desired state + observed status. | `name` |
+| `delete_app` | Delete a durable app and tear down its instance. | `name` |
 | `delete_sandbox` | Destroy a sandbox. | `sandbox_id` |
 | `list_snapshots` | List snapshots. | — |
 | `delete_snapshot` | Delete a snapshot. | `snapshot_id` |

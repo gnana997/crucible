@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.3.4](https://img.shields.io/badge/status-v0.3.4-orange)
+![Status: v0.4.0](https://img.shields.io/badge/status-v0.4.0-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -22,12 +22,13 @@ crucible shell <id>                        # a real /bin/sh inside it (cd/env pe
 
 Full motivation and design: [docs/VISION.md](docs/VISION.md).
 
-> **Ephemeral by design.** A daemon restart does **not** resurrect running sandboxes (their registry records and durable logs persist; the live VMs do not). That is exactly the right contract for "run a sketchy repo, test it, tear it down." Durable, self-healing long-lived workloads are v0.4.
+> **Two durability tiers.** A **sandbox** is ephemeral: a daemon restart tears it down (registry records and durable logs persist; the live VM does not) — the right contract for "run a sketchy repo, test it, tear it down." An **app** ([docs/apps.md](docs/apps.md)) is durable: the daemon keeps a healthy instance of it, restarts it on failure with backoff, health-checks it, and **re-creates it from spec after a restart or reboot**. `crucible run` for throwaway work; `crucible app create` for a workload you manage over time.
 
 ## Highlights
 
 - **Real isolation, not containers.** Every sandbox is a Firecracker microVM under [jailer](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md): its own chroot, mount/PID namespaces, a dropped uid, and cgroup v2 quotas. Not a shared kernel.
 - **Snapshot & fork as primitives.** Run setup once, snapshot the warm state, fork *N* parallel children from it. Forks restore with **lazy `userfaultfd` memory**: guest RAM is served from the snapshot on demand, never byte-copied per fork (the AWS Lambda SnapStart technique).
+- **Durable, self-healing apps.** Promote a workload to a named **app** the daemon keeps alive: restart-on-failure with exponential backoff + a crash-loop guard, http/tcp health checks, and re-creation from persisted desired state after a daemon restart or host reboot ([docs/apps.md](docs/apps.md)).
 - **Clone-safety.** Each fork wakes with a fresh kernel RNG seed, a rotated `machine-id`, and its own hostname, ordered *before* the fork is reachable, so no two forks silently share UUIDs, secrets, or entropy.
 - **Default-deny networking.** No egress unless you allowlist hostnames, and only those; resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. Enforced in host nftables + a DNS proxy the guest is forced through.
 - **Three ways to drive it.** A [CLI](docs/cli.md), a live [TUI dashboard](docs/tui.md), and an [MCP server](docs/mcp.md): all thin clients over one REST API, so they can't drift.
@@ -97,12 +98,13 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
 
-> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 15 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
+> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 19 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 
 ## Roadmap
 
-- **v0.3.2** (current): **the safe `docker run` for untrusted/AI code**: OCI image boot + `crucible build`, **`crucible cp`** + MCP `write_files`/`read_file` (drop code in and run it, no Dockerfile), an interactive `crucible shell`, a **TUI logs view**, `--disk` sizing, top-level `stop`/`rm`, and durable logs. Sandboxes are ephemeral (durability is v0.4).
-- **v0.4** (planned): durable, self-healing long-lived workloads that survive a daemon restart, plus a PTY for full-terminal interactive sessions.
+- **v0.4** (current): **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart-on-failure + backoff + crash-loop guard, http/tcp health checks) and **re-creates from spec after a daemon restart or reboot** ([docs/apps.md](docs/apps.md)); plus fork with `-p` port publish. Sandboxes stay the ephemeral primitive.
+- **v0.3.x**: the safe `docker run` for untrusted/AI code — OCI image boot + `crucible build`, `crucible cp` + MCP `write_files`/`read_file`, an interactive `crucible shell`, a TUI logs view, `--disk` sizing, top-level `stop`/`rm`, durable logs, and the public Go SDK.
+- **v0.4.1 (planned):** reach an app by name through a routing proxy; a PTY for full-terminal sessions.
 
 Full shipped-vs-planned capability matrix: [docs/ROADMAP.md](docs/ROADMAP.md).
 

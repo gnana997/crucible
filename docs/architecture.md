@@ -54,7 +54,7 @@ flowchart TD
 
 | Package | Responsibility |
 |---|---|
-| `cmd/crucible` | Entry point: the `daemon` subcommand and the client subcommands (`sandbox`, `snapshot`, `fork`, `run`, `profile`, `policy`, `mcp`, `tui`, `version`) |
+| `cmd/crucible` | Entry point: the `daemon` subcommand and the client subcommands (`sandbox`, `app`, `snapshot`, `fork`, `run`, `profile`, `policy`, `mcp`, `tui`, `version`) |
 | `cmd/crucible-agent` | Guest agent: `/exec`, usage collection, `/identity/refresh`, `/network/refresh` |
 | `sdk` | The public Go SDK (package `crucible`, its own Go module): typed client for the daemon's REST API — the CLI, MCP server, TUI, and external programs all sit on it |
 | `sdk/api` | Shared REST wire types (used by both the daemon and the SDK) |
@@ -67,6 +67,7 @@ flowchart TD
 |---|---|
 | `internal/daemon` | HTTP server, routing, middleware, auth, request/response validation |
 | `internal/sandbox` | `Manager` — the core lifecycle: create, exec, snapshot, fork, delete, and the durable registry |
+| `internal/app` | Durable-app control plane (v0.4): a bbolt store of app **desired state** + a reconcile loop that boots/heals/re-creates an instance (a sandbox) per app — the layer that makes a workload survive a daemon restart. Sits *above* `internal/sandbox`; the daemon supplies the instantiator |
 | `internal/runner` | Firecracker driver: boot, snapshot, load, resume, rootfs patch — the load→vsock→rootfs→resume ordering lives here |
 | `internal/fcapi` | Thin typed client for the Firecracker REST API over its control socket |
 | `internal/jailer` | Builds the jailer argv (chroot, namespaces, uid drop) when running jailed |
@@ -112,6 +113,10 @@ Because the body is committed before the command finishes, post-`200` failures (
 1. The rootfs is cloned copy-on-write.
 2. The VM is restored from the snapshot. Guest memory is **not** copied up front — `internal/memfault` registers a `userfaultfd` region and serves pages lazily from the snapshot's memory file as the guest touches them, so N forks share the backing file instead of each paying a full RAM copy.
 3. Before the fork is reachable, **clone-safety** runs: the daemon pushes fresh host entropy and a new sandbox ID over vsock (`/identity/refresh`), so the guest reseeds its kernel RNG and rotates its machine identifiers. No two forks wake sharing RNG state, UUIDs, or machine-id.
+
+### Reconcile a durable app
+
+`internal/app` holds each app's **desired state** in a bbolt store and runs a level-triggered reconcile loop that converges the actual instance toward it (see [apps.md](apps.md)). On daemon start — *after* the sandbox reap above has torn down the previous run's VMs — the loop boots a fresh instance for every desired-running app from its stored spec, which is how an app survives a restart (re-created, not re-attached). While running it restarts a dead or unhealthy instance with exponential backoff + a crash-loop guard, and probes http/tcp health checks. The app's instance is an ordinary sandbox created through the same path a `POST /sandboxes` uses (the daemon supplies `internal/app` an *instantiator* over `sandbox.Manager`), so exec/logs/snapshot work on it unchanged.
 
 Fork is all-or-nothing: a failure partway through rolls back every child already started, so the response is either all N sandboxes or an error.
 
