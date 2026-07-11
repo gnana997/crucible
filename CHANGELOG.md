@@ -10,6 +10,12 @@ settles.
 
 ### Added
 
+- **Exec health checks — `crucible app create --health-cmd '<command>'`.** The
+  daemon runs the command in the guest over vsock (exit 0 = healthy), joining the
+  existing `http`/`tcp` probes; works even for an app with no network. Also on the
+  MCP `create_app` tool (`health_type: "exec"` + `health_cmd`). (Auto-seeding a
+  check from an image's own Docker `HEALTHCHECK` remains a follow-up.)
+
 - **App env config — `crucible app create -e/--env KEY=VALUE` (repeatable).**
   Environment variables are delivered to the app's entrypoint (image `ENV` <
   your `--env`, so yours win). Surfaced on the CLI and the MCP `create_app` tool

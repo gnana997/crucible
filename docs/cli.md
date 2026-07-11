@@ -128,10 +128,11 @@ throwaway work; `app` is for a server you want to stay up.
 | `shell <name>` | interactive shell in the current instance |
 
 `create` flags: `--image` (required), `--pull`, `--restart always|on-failure|never`,
-`--health http:PORT[:PATH]|tcp:PORT`, `-p/--publish` (repeatable),
-`-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE`
-(repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--vcpus`,
-`--memory`, `--disk`, `--stopped`.
+`--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec
+check, exit 0 = healthy), `-p/--publish` (repeatable), `-P/--publish-all`
+(publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable,
+delivered to the entrypoint), `--net-allow` (repeatable), `--vcpus`, `--memory`,
+`--disk`, `--stopped`.
 
 ```bash
 crucible app create web --image nginx:alpine -P -e LOG_LEVEL=info --restart always --health http:80:/

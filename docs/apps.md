@@ -75,15 +75,18 @@ one-off crash hours later restarts normally rather than counting as a loop.
 **Health checks** are the liveness signal the daemon probes:
 
 ```bash
---health http:80:/       # GET / on guest port 80, expect 2xx
---health tcp:5432        # TCP connect to guest port 5432 succeeds
+--health http:80:/                    # GET / on guest port 80, expect 2xx
+--health tcp:5432                      # TCP connect to guest port 5432 succeeds
+--health-cmd 'pg_isready -U postgres'  # run a command in the guest, exit 0 = healthy
 ```
 
 An instance that fails its health check past the threshold is destroyed and
 restarted (subject to the backoff above). A start-period grace window means slow
 starters aren't killed while warming up. Without a health check, "process alive"
-is the liveness signal. (An `exec` health check — running a command in the guest
-— and seeding checks from an image's `HEALTHCHECK` are a follow-up.)
+is the liveness signal. The `exec` check (`--health-cmd`) runs its command in the
+guest over vsock, so it works even for an app with no network. (Auto-seeding a
+check from an image's own `HEALTHCHECK` is a follow-up — set one explicitly for
+now.)
 
 ## The `crucible app` commands
 
@@ -97,11 +100,11 @@ is the liveness signal. (An `exec` health check — running a command in the gue
 | `app exec <name> [-i] -- <cmd>` | run a command in the current instance |
 | `app shell <name>` | interactive shell in the current instance |
 
-`create` flags: `--image` (required), `--pull`, `--restart`, `--health`,
-`-p/--publish` (repeatable), `-P/--publish-all` (publish every port the image
-`EXPOSE`s, guest N → host N), `-e/--env KEY=VALUE` (repeatable), `--net-allow`
-(repeatable), `--vcpus`, `--memory`, `--disk`, `--stopped` (create without
-starting an instance).
+`create` flags: `--image` (required), `--pull`, `--restart`, `--health`
+(http/tcp), `--health-cmd` (exec), `-p/--publish` (repeatable),
+`-P/--publish-all` (publish every port the image `EXPOSE`s, guest N → host N),
+`-e/--env KEY=VALUE` (repeatable), `--net-allow` (repeatable), `--vcpus`,
+`--memory`, `--disk`, `--stopped` (create without starting an instance).
 
 Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
 yours win); `-P` reads the ports the image declares, so `crucible app create web

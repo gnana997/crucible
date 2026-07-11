@@ -38,9 +38,8 @@ type Instantiator interface {
 	// Manager (gone = the VM/registration disappeared).
 	Exists(instanceID string) bool
 
-	// Probe runs the app's health check against the instance. Only http
-	// and tcp are probed today; exec returns HealthUnknown (a follow-up,
-	// together with image-HEALTHCHECK seeding).
+	// Probe runs the app's health check against the instance: http, tcp, or
+	// exec (a command in the guest, exit 0 = healthy).
 	Probe(ctx context.Context, instanceID string, hc api.HealthCheck) Health
 
 	// Destroy tears the instance down. Absent/already-gone is not an error.

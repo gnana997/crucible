@@ -25,9 +25,10 @@ type createAppInput struct {
 	Restart    string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
 	VCPUs      int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
 	MemoryMiB  int      `json:"memory_mib,omitempty" jsonschema:"memory in MiB; omit for the daemon default"`
-	HealthType string   `json:"health_type,omitempty" jsonschema:"health check type: http or tcp (omit for none)"`
-	HealthPort int      `json:"health_port,omitempty" jsonschema:"guest port the health check probes"`
+	HealthType string   `json:"health_type,omitempty" jsonschema:"health check type: http, tcp, or exec (omit for none)"`
+	HealthPort int      `json:"health_port,omitempty" jsonschema:"guest port an http/tcp health check probes"`
 	HealthPath string   `json:"health_path,omitempty" jsonschema:"http health check path (default /)"`
+	HealthCmd  []string `json:"health_cmd,omitempty" jsonschema:"exec health check: command argv run in the guest, exit 0 = healthy (used when health_type is exec)"`
 	Stopped    bool     `json:"stopped,omitempty" jsonschema:"create the app without starting an instance"`
 }
 
@@ -89,7 +90,7 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 		spec.Publish = append(spec.Publish, pm)
 	}
 	if in.HealthType != "" {
-		spec.Health = &api.HealthCheck{Type: in.HealthType, Port: in.HealthPort, Path: in.HealthPath}
+		spec.Health = &api.HealthCheck{Type: in.HealthType, Port: in.HealthPort, Path: in.HealthPath, Cmd: in.HealthCmd}
 	}
 	desired := "running"
 	if in.Stopped {

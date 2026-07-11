@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -83,22 +84,41 @@ func (a appInstantiator) Exists(instanceID string) bool {
 	return err == nil
 }
 
-// Probe runs the app's health check against the instance's guest. http and
-// tcp dial the guest IP directly (reachable from the daemon's root netns
-// via the per-sandbox veth, the same path the port-publish forwarder
-// uses). exec probes — and image-HEALTHCHECK seeding, since Docker's
-// HEALTHCHECK is always a command — are a follow-up: they need in-guest
-// command exec as a probe, so exec returns HealthUnknown for now.
+// Probe runs the app's health check against the instance's guest. exec runs
+// the command in the guest over vsock (exit 0 = healthy) — no network needed.
+// http and tcp dial the guest IP directly (reachable from the daemon's root
+// netns via the per-sandbox veth, the same path the port-publish forwarder
+// uses).
 func (a appInstantiator) Probe(ctx context.Context, instanceID string, hc api.HealthCheck) app.Health {
+	timeout := time.Duration(hc.TimeoutSec) * time.Second
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+
+	// exec: run the probe command in the guest; exit 0 = passing, non-zero =
+	// failing, a transport error (agent unreachable) = unknown (not a health
+	// signal). Runs over vsock, so it works even for a no-network app.
+	if hc.Type == "exec" {
+		if len(hc.Cmd) == 0 {
+			return app.HealthUnknown
+		}
+		pctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		res, err := a.s.cfg.Manager.Exec(pctx, instanceID, wire.ExecRequest{Cmd: hc.Cmd}, io.Discard, io.Discard)
+		if err != nil {
+			return app.HealthUnknown
+		}
+		if res.ExitCode == 0 {
+			return app.HealthPassing
+		}
+		return app.HealthFailing
+	}
+
 	sb, err := a.s.cfg.Manager.Get(instanceID)
 	if err != nil || sb.Network == nil || sb.Network.GuestIP == "" {
 		return app.HealthUnknown
 	}
 	addr := net.JoinHostPort(sb.Network.GuestIP, strconv.Itoa(hc.Port))
-	timeout := time.Duration(hc.TimeoutSec) * time.Second
-	if timeout <= 0 {
-		timeout = 2 * time.Second
-	}
 
 	switch hc.Type {
 	case "tcp":

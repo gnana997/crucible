@@ -12,6 +12,7 @@
 #   06  delete an app → its instance is torn down
 #   07  --env is delivered to the app entrypoint (v0.4.1)
 #   08  -P auto-publishes the image's EXPOSEd port (v0.4.1)
+#   09  --health-cmd (exec) drives health from an in-guest command (v0.4.1)
 #
 # The daemon-restart step is the whole point: v0.3 dropped every running
 # sandbox on restart; a v0.4 app comes back because its desired state lives
@@ -252,6 +253,25 @@ else
   fi
   cli app rm exposeapp >/dev/null 2>&1
 fi
+
+# ---- 09 exec health check (v0.4.1 V3) ---------------------------------------
+# --health-cmd runs a command in the guest; exit 0 = healthy. nginx:alpine has
+# /etc/nginx/nginx.conf, so this probe passes and the app reports healthy.
+echo "== 09 --health-cmd (exec) drives health from an in-guest command"
+cli app create healthexec --image "$IMAGE" -p 8083:80 \
+  --health-cmd 'test -f /etc/nginx/nginx.conf' --restart always >/dev/null 2>&1
+if wait_serving 8083; then
+  H=0
+  for _ in $(seq 1 25); do
+    [[ "$(api "$BASE_URL/apps/healthexec" 2>/dev/null)" == *'"health":"healthy"'* ]] && { H=1; break; }
+    sleep 1
+  done
+  [[ "$H" -eq 1 ]] && pass "exec health check passing (health=healthy)" \
+    || fail "exec health never healthy: $(api "$BASE_URL/apps/healthexec" 2>&1)"
+else
+  fail "exec-health app never served on :8083"
+fi
+cli app rm healthexec >/dev/null 2>&1
 
 # ---- summary ----------------------------------------------------------------
 

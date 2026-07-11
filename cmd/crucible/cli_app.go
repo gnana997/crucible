@@ -34,6 +34,7 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 func newAppCreateCmd(o *globalOpts) *cobra.Command {
 	var (
 		image, pull, restart, health string
+		healthCmd                    string
 		vcpus, memory                int
 		disk                         string
 		netAllow, publish, env       []string
@@ -88,6 +89,13 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 				}
 				spec.Health = hc
 			}
+			if healthCmd != "" {
+				if spec.Health != nil {
+					return fmt.Errorf("--health and --health-cmd are mutually exclusive")
+				}
+				// Shell form (docker HEALTHCHECK CMD-SHELL): exit 0 = healthy.
+				spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", healthCmd}}
+			}
 			resp, err := o.client().CreateApp(cmd.Context(), api.CreateAppRequest{
 				AppSpec:      spec,
 				DesiredState: desiredState(stopped),
@@ -107,6 +115,7 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 	f.StringVar(&pull, "pull", "", "image pull policy: missing|always|never")
 	f.StringVar(&restart, "restart", wire.RestartAlways, "instance restart policy: always|on-failure|never")
 	f.StringVar(&health, "health", "", "health check: http:PORT[:PATH] or tcp:PORT (e.g. http:80:/ )")
+	f.StringVar(&healthCmd, "health-cmd", "", "exec health check: a shell command run in the guest, exit 0 = healthy (e.g. 'pg_isready -U postgres')")
 	f.IntVar(&vcpus, "vcpus", 0, "vCPUs (0 = daemon default)")
 	f.IntVar(&memory, "memory", 0, "memory in MiB (0 = daemon default)")
 	f.StringVar(&disk, "disk", "", "writable rootfs size (e.g. 2G)")
