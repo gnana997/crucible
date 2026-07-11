@@ -37,11 +37,12 @@
 # The daemon path runs as root but never calls sudo itself. Env overrides:
 #   PREFIX (/usr/local), CLIENT_BINDIR (client install dir), FC_VERSION,
 #   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel),
-#   PROXY_LISTEN (:8080), PROXY_TLS_LISTEN (:8443), PROXY_DOMAIN (apps.local) —
-#   ingress-proxy defaults (high ports, so :80/:443 stay free for -p/-P publish
-#   and a busy :80 can't abort startup); any free TCP ports work, and host:port
-#   pins an interface. Set PROXY_TLS_LISTEN= or use --no-proxy to opt out.
-#   For a production ingress on the standard ports (put env before sudo / sudo -E):
+#   PROXY_LISTEN (:7879), PROXY_TLS_LISTEN (off), PROXY_DOMAIN (apps.local) —
+#   ingress-proxy defaults. :7879 sits next to the API and out of the common
+#   publish range (:80/:8080/:3000/…) so it never fights the app you're running;
+#   any free TCP port works, and host:port pins an interface. TLS is opt-in
+#   (needs a TLS-serving guest): PROXY_TLS_LISTEN=:7880. --no-proxy turns it off.
+#   For a production ingress on the standard port (put env before sudo / sudo -E):
 #     PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 sudo -E bash install.sh --enable
 
 set -euo pipefail
@@ -92,13 +93,15 @@ TOKEN_NAME="remote-client"
 NO_EGRESS_AUTO=0
 NO_PROXY_AUTO=0
 # Ingress-proxy defaults (v0.4.2): reach an app by name (<app>.<domain>) instead
-# of publishing a host port. Defaults to the high ports :8080/:8443 so it does
-# NOT contend for :80/:443 — those stay free for direct port-publishing
-# (`run -p 80:80`, `-P`) and won't collide with an existing web server (a busy
-# :80 would abort daemon start). Set PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 for
-# a production ingress; PROXY_TLS_LISTEN= skips HTTPS; --no-proxy turns it off.
-PROXY_LISTEN="${PROXY_LISTEN:-:8080}"
-PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-:8443}"
+# of publishing a host port. Defaults to :7879 — right next to the 7878 API, and
+# deliberately OUT of the ports people publish apps to (:80, :443, :8080, :3000,
+# :8000): squatting on :8080 would collide with the app you're trying to run, and
+# :80 both needs to stay free for `-p 80:80`/`-P` and can abort startup if busy.
+# TLS SNI passthrough is off by default (it needs a TLS-serving guest; enable it
+# with PROXY_TLS_LISTEN=:7880 or :443). Set PROXY_LISTEN=:80 for a production
+# ingress on the standard port; --no-proxy turns the proxy off entirely.
+PROXY_LISTEN="${PROXY_LISTEN:-:7879}"
+PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-}"
 PROXY_DOMAIN="${PROXY_DOMAIN-apps.local}"
 PROXY_ENABLED=""   # set to the HTTP listen addr once we actually enable it
 CLIENT_EXPLICIT=0

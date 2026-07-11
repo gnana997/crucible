@@ -15,27 +15,30 @@ In the daemon it's **off by default**. Enable it with a listen address and a bas
 domain:
 
 ```bash
-crucible daemon … --proxy-listen :8080 --proxy-tls-listen :8443 --proxy-domain apps.local
+crucible daemon … --proxy-listen :7879 --proxy-domain apps.local
 ```
 
 ```bash
 crucible app create web --image nginx:alpine --port 80
-curl -H 'Host: web.apps.local' http://<daemon-host>:8080/
+curl -H 'Host: web.apps.local' http://<daemon-host>:7879/
 ```
 
 **The installer turns it on for you.** `install.sh` seeds these flags into the
-daemon config by default, on the high ports **`:8080`/`:8443`** — deliberately
-*not* `:80`/`:443`, so those stay free for direct port-publishing (`run -p 80:80`,
-`-P`) and so a pre-existing web server on `:80` can't block daemon start (a busy
-proxy port aborts the daemon). Override at install with
-`PROXY_LISTEN=`/`PROXY_TLS_LISTEN=`/`PROXY_DOMAIN=`, or `--no-proxy` to skip it.
-Any free TCP ports work; `host:port` pins an interface (`127.0.0.1:8080` =
-loopback only).
+daemon config by default, on **`:7879`** — right next to the `:7878` API and
+deliberately *out of the ports you publish apps to* (`:80`, `:443`, `:8080`,
+`:3000`, `:8000`). That matters: `:80` needs to stay free for direct
+port-publishing (`run -p 80:80`, `-P`) and can abort daemon start if a web server
+already holds it, while `:8080` is the port your *app* most often wants — squat
+on it and the proxy fights the very workload it's fronting. `:7879` avoids both.
+TLS SNI passthrough is **off by default** (it needs a TLS-serving guest — see
+below). Override at install with `PROXY_LISTEN=`/`PROXY_TLS_LISTEN=`/
+`PROXY_DOMAIN=`, or `--no-proxy` to skip it. Any free TCP port works; `host:port`
+pins an interface (`127.0.0.1:7879` = loopback only).
 
-For a **production ingress** on the standard ports, use `--proxy-listen :80
---proxy-tls-listen :443` (`PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443` at install) —
-the daemon runs as root under systemd, so it binds them without extra caps, and
-then apps are reachable at plain `http://web.apps.local/`.
+For a **production ingress** on the standard ports, set `PROXY_LISTEN=:80
+PROXY_TLS_LISTEN=:443` at install (or `--proxy-listen :80 --proxy-tls-listen
+:443` on the daemon) — it runs as root under systemd, so it binds them without
+extra caps, and apps are then reachable at plain `http://web.apps.local/`.
 
 ## How it routes
 
@@ -53,11 +56,13 @@ then apps are reachable at plain `http://web.apps.local/`.
 
 | Listener | Layer | What it does |
 |---|---|---|
-| `--proxy-listen` (e.g. `:8080`) | L7 (HTTP) | Routes by the `Host` header, reverse-proxies to the instance (keep-alive, chunked, `X-Forwarded-*`). |
-| `--proxy-tls-listen` (e.g. `:8443`) | L4 (TLS SNI) | Reads the TLS ClientHello's SNI and **passes the raw stream through** to the instance — **the guest terminates its own TLS**. The proxy holds no certificates. |
+| `--proxy-listen` (default `:7879`) | L7 (HTTP) | Routes by the `Host` header, reverse-proxies to the instance (keep-alive, chunked, `X-Forwarded-*`). |
+| `--proxy-tls-listen` (off by default) | L4 (TLS SNI) | Reads the TLS ClientHello's SNI and **passes the raw stream through** to the instance — **the guest terminates its own TLS**. The proxy holds no certificates. |
 
-TLS *termination* at the proxy (with ACME / custom domains) is later work; today
-the guest owns its cert and the proxy just routes by SNI.
+The TLS listener is opt-in because it only works with a guest that serves its own
+TLS — enable it with `--proxy-tls-listen :7880` (or `:443`). TLS *termination* at
+the proxy (with ACME / custom domains) is later work; today the guest owns its
+cert and the proxy just routes by SNI.
 
 ## When there's no instance
 
@@ -82,16 +87,15 @@ Publishing a host port with `-p`/`--publish` still works and is the raw-TCP
 bypass path — an app can be reached both by a published port and by name through
 the proxy. The one caveat is the obvious one: a host port has exactly one owner,
 so the proxy and a published port can't share the same number. This is why the
-installer defaults the proxy to `:8080`/`:8443` — it leaves `:80`/`:443` free to
-`-p 80:80` or `-P`. Put the proxy on `:80` and publishing *to* host `:80` is no
-longer available (the daemon can't bind it twice); that's expected — on a
-proxy-fronted host you reach apps by name instead of publishing them to `:80`.
+installer defaults the proxy to `:7879`, clear of the ports you publish to. Put
+the proxy on `:80` and publishing *to* host `:80` is no longer available (the
+daemon can't bind it twice); that's expected — on a proxy-fronted host you reach
+apps by name instead of publishing them to `:80`.
 
 ## Model
 
 The proxy runs **in-process** in the daemon (mirroring the DNS proxy), needs
-durable apps (`--app-db`), and binds whatever ports you give it — the high
-defaults (`:8080`/`:8443`) need no privileges, and `:80`/`:443` are bindable
-because the daemon runs as root under the systemd unit. See
-[architecture.md](architecture.md) for where it sits and [apps.md](apps.md) for
-the app model it routes to.
+durable apps (`--app-db`), and binds whatever ports you give it — the default
+`:7879` needs no privileges, and `:80`/`:443` are bindable because the daemon
+runs as root under the systemd unit. See [architecture.md](architecture.md) for
+where it sits and [apps.md](apps.md) for the app model it routes to.
