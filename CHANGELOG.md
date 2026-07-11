@@ -6,6 +6,55 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.3.3] — 2026-07-11
+
+**The SDK foundation release.** The typed client and wire types are now a
+public, dependency-free Go module (`github.com/gnana997/crucible/sdk`,
+versioned independently as `sdk/vX.Y.Z`), the whole REST contract fans out
+from one drift-guarded OpenAPI spec into generated TypeScript and Python
+types, interactive exec gained a WebSocket transport any language can speak,
+and the binary frame protocol is now specified and fixture-tested so SDKs in
+new languages can be built — and verified — without a daemon or KVM.
+
+### Added
+
+- **Interactive exec over WebSocket** — `GET /sandboxes/{id}/exec` + upgrade:
+  the cross-language transport for full-duplex exec (fetch-style HTTP stacks
+  can't speak the hijacked `?stdin=1` stream; WebSocket also traverses L7
+  proxies). First message is the JSON `ExecRequest`; after that the binary
+  message payloads carry the exact same frame stream as the hijacked path.
+  Gated as `exec` (not `read`) under scoped tokens. See [docs/wire.md](docs/wire.md).
+- **Public Go SDK** — `internal/client` + `internal/api` + the shared wire
+  types promoted to a nested, **zero-dependency** Go module: package
+  `crucible` (client + `Sandbox`/`Snapshot` handles), `sdk/api` (REST DTOs),
+  `sdk/wire` (frame codec + exec/service/files shapes). Typed errors
+  (`ErrNotFound`/`ErrUnauthorized`/`ErrPolicyDenied` over structured
+  `*Error`), pagination-ready `Page[T]` lists, SDK-owned `Identity`. The CLI,
+  TUI, and MCP server now run on the same public package.
+- **`docs/wire.md`** — the language-neutral wire spec: frame layout, chunking
+  and termination rules, both interactive transports, files/tar semantics,
+  and a four-step conformance recipe for SDK authors.
+- **Conformance fixtures** (`sdks/fixtures/`) — recorded frame streams +
+  manifest, generated from the real codec, so an SDK codec in any language is
+  testable with no daemon and no KVM. Guarded by CI drift checks.
+- **Generated TS + Python types** — `make gen` fans the OpenAPI spec out to
+  `sdks/ts/src/schema.gen.ts` (openapi-typescript) and
+  `sdks/python/crucible/models.py` (Pydantic v2 via datamodel-code-generator),
+  pinned versions, CI `codegen-drift` job.
+- **TypeScript SDK scaffold** (`sdks/ts`) — zero-runtime-dependency fetch
+  client with streaming exec, typed errors, and a hand-written frame codec
+  passing the full conformance suite; not yet published to npm.
+- **`smoke_ws_exec.sh`** + `scripts/wsexec` — real-KVM smoke for the
+  WebSocket transport, driving it exactly as a non-Go SDK would.
+
+### Changed
+
+- OpenAPI schema components renamed `Agentwire*` → `Wire*` (internal package
+  name no longer leaks into the public spec).
+- `internal/agentwire` now holds only the private daemon↔guest protocol
+  (identity refresh, static network config, vsock port); the client-visible
+  wire contract lives in the public `sdk/wire`.
+
 ## [0.3.2] — 2026-07-09
 
 **The "drop your code in and run it" release.** Push local files straight into a
