@@ -6,7 +6,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [Unreleased]
+## [0.4.0] — 2026-07-11
 
 ### Added
 
@@ -23,6 +23,11 @@ settles.
   (`create_app`/`list_apps`/`get_app`/`delete_app`), bringing the MCP surface to
   **19 tools**. Durability is desired-state reconcile (re-create), not live-VM
   re-attach — see the updated threat-model INV-6.
+
+## [0.3.4] — 2026-07-11
+
+### Added
+
 - **`crucible fork -p HOST:GUEST`** — publish a host port on a fork (`docker
   run -p` semantics for copies). The fork API accepts an optional JSON body
   (`{"count", "publish"}`); publishing requires count 1 since host ports are

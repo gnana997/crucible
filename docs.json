@@ -88,6 +88,12 @@
         "sdks/python",
         "wire"
       ]
+    },
+    {
+      "tab": "Changelog",
+      "pages": [
+        "changelog"
+      ]
     }
   ],
   "ai": {

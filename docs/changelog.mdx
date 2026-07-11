@@ -1,0 +1,67 @@
+---
+title: Changelog
+description: What shipped in each crucible release.
+date: "2026-07-11"
+---
+
+# Changelog
+
+Releases land here, newest first. The full, detailed changelog lives in
+[CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
+page highlights each release.
+
+<Update label="v0.4.0" title="Durable, self-healing apps">
+
+Promote a workload to a named **app** the daemon manages over time — the answer
+to "my sandbox died on a daemon restart." See [apps.md](apps).
+
+- **Durable apps** — `crucible app create <name> --image … -p H:G --restart always --health http:PORT[:PATH]`. The daemon keeps a healthy instance of the app, restarts it on failure with **exponential backoff + a crash-loop guard**, health-checks it (http/tcp), and — the headline — **re-creates it from persisted desired state after a daemon restart or host reboot** (desired-state reconcile, not live-VM re-attach; a bbolt control-plane store + a reconcile loop).
+- **Full surface** — `app ls|get|rm|logs|exec|shell`, REST `/apps`, the Go SDK (`CreateApp`/`ListApps`/`GetApp`/`DeleteApp` + an `App` handle), and four MCP tools (`create_app`/`list_apps`/`get_app`/`delete_app`), bringing the MCP surface to **19 tools**.
+- The ephemeral `sandbox` primitive is unchanged; forks stay ephemeral by design.
+
+</Update>
+
+<Update label="v0.3.4" title="Fork with port publish">
+
+- **`crucible fork -p HOST:GUEST`** — publish a host port on a fork (`docker run -p` semantics for copies): fork a running server onto its own port. The fork API takes an optional JSON body (`{count, publish}`); publishing requires `count 1` since host ports are exclusive. Go SDK `Fork` gained variadic publish mappings (source-compatible).
+
+</Update>
+
+<Update label="v0.3.3" title="The SDK foundation">
+
+The typed client became a public, dependency-free Go module, and the whole REST
+contract now fans out from one drift-guarded OpenAPI spec.
+
+- **Public Go SDK** — `github.com/gnana997/crucible/sdk`, versioned independently as `sdk/vX.Y.Z`: package `crucible` (client + handles), `sdk/api` (DTOs), `sdk/wire` (frame codec). Typed errors, `Page[T]` lists, SDK-owned `Identity`. The CLI/TUI/MCP now run on it.
+- **Interactive exec over WebSocket** — `GET /sandboxes/{id}/exec` + upgrade: the cross-language transport (fetch-style stacks can't speak the hijacked stream). Same frame protocol either way.
+- **The wire protocol, specified** — [wire.md](wire) plus recorded conformance fixtures, so an SDK codec in any language is buildable and testable with **no daemon and no KVM**. Generated TypeScript + Python types from the spec, with a CI drift guard.
+
+</Update>
+
+<Update label="v0.3.2" title="Drop your code in and run it">
+
+- **`crucible cp`** — push a local file or directory into a running sandbox as a tar stream (no image build, no Dockerfile), path-escape safe. Plus MCP `write_files` / `read_file`.
+- **TUI live logs view**, one-command Linux install that provisions the guest kernel, and a mirrored `vmlinux` release asset.
+
+</Update>
+
+<Update label="v0.3.0 – v0.3.1" title="The safe docker run + cross-platform client">
+
+- **OCI image boot** — `crucible run <image>` boots an unmodified image's entrypoint in a microVM; `crucible build` converts a Dockerfile (daemon stays Docker-free); publish host ports with `-p`.
+- **Interactive shell** (`crucible shell`, no PTY), `--disk` sizing, top-level `stop`/`rm`, durable logs, an MCP server, and scoped/policy API-key auth.
+- The CLI, TUI, and `mcp serve` **cross-compile to macOS and Windows** and drive a remote Linux daemon; a reworked one-line installer for the daemon and client-only installs.
+
+</Update>
+
+<Update label="v0.1 – v0.2" title="The core runtime">
+
+Firecracker microVMs under jailer, **snapshot & fork** with lazy `userfaultfd`
+memory, **clone-safety** (per-fork RNG reseed + machine-identifier rotation),
+per-sandbox networking (netns / veth / nftables / DHCP / DNS proxy) with
+default-deny egress, cgroup v2 quotas, a durable reconciled registry, a
+Prometheus `/metrics` endpoint, and native rootfs profiles.
+
+See [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md)
+for the full per-release detail.
+
+</Update>
