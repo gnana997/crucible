@@ -46,31 +46,37 @@ func TestAppCRUD(t *testing.T) {
 	}
 }
 
-func TestAppHandleExecResolvesInstance(t *testing.T) {
+// App.Exec hits the app-scoped route directly; the daemon resolves the current
+// instance server-side (redeploy-safe), so the client no longer GETs the app
+// first.
+func TestAppHandleExecTargetsAppRoute(t *testing.T) {
+	var got string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/apps/web":
-			_ = json.NewEncoder(w).Encode(api.AppResponse{ID: "app_1",
-				Status: &api.AppStatus{InstanceID: "sbx_9", Phase: "running"}})
-		case r.URL.Path == "/sandboxes/sbx_9/exec":
+		got = r.Method + " " + r.URL.Path
+		if r.Method == http.MethodPost && r.URL.Path == "/apps/web/exec" {
 			w.WriteHeader(http.StatusOK)
 			fw := wire.NewFrameWriter(w)
 			payload, _ := json.Marshal(wire.ExecResult{ExitCode: 0})
 			_ = fw.WriteFrame(wire.FrameExit, payload)
-		default:
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			return
 		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 	})
 	res, err := c.App("web").Exec(context.Background(), wire.ExecRequest{Cmd: []string{"true"}}, nil, nil)
 	if err != nil || res.ExitCode != 0 {
 		t.Fatalf("App.Exec: %+v err=%v", res, err)
 	}
+	if got != "POST /apps/web/exec" {
+		t.Errorf("App.Exec hit %q, want POST /apps/web/exec", got)
+	}
 }
 
+// The daemon answers 409 when the app has no running instance; App.Exec
+// surfaces it as an error.
 func TestAppHandleExecNoInstance(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(api.AppResponse{ID: "app_1",
-			Status: &api.AppStatus{Phase: "pending"}})
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: "app web has no running instance"})
 	})
 	_, err := c.App("web").Exec(context.Background(), wire.ExecRequest{Cmd: []string{"true"}}, nil, nil)
 	if err == nil {

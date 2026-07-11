@@ -207,6 +207,17 @@ done
 [[ "$REAPED" -eq 1 ]] && pass "superseded instance $INST1 reaped after the drain window" \
   || fail "superseded instance $INST1 still present after the drain window"
 
+# ---- 04 operate the app BY NAME (W2/W3): exec + logs resolve server-side -----
+echo "== 04 operate 'web' by name: app exec + app logs → current instance"
+EXECOUT="$(cli app exec web -- /bin/sh -c 'echo ZDT-EXEC-OK' 2>/dev/null)"
+[[ "$EXECOUT" == *ZDT-EXEC-OK* ]] && pass "app exec web resolved to the current instance and ran" \
+  || fail "app exec web failed (got: ${EXECOUT:-empty})"
+if cli app logs web 2>/dev/null | grep -q 'ZDT-EXEC-OK'; then
+  pass "app logs web tailed the current instance's activity"
+else
+  fail "app logs web did not show the exec activity"
+fi
+
 cli app rm web >/dev/null 2>&1 || true
 
 echo "==============================================================="

@@ -259,8 +259,21 @@ func (c *Client) Whoami(ctx context.Context) (Identity, error) {
 // streaming comes back as an error; a failure mid-stream is delivered by
 // the daemon as an exit frame with ExitCode -1 (see handleExecSandbox).
 func (c *Client) Exec(ctx context.Context, sandboxID string, req wire.ExecRequest, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	return c.execStream(ctx, "/sandboxes/"+url.PathEscape(sandboxID)+"/exec", req, stdout, stderr)
+}
+
+// AppExec runs a command in an app's CURRENT instance (POST /apps/{name}/exec).
+// The daemon resolves the app to its instance server-side per request, so it
+// targets whatever instance is current across a self-heal or rolling update —
+// never a stale id captured beforehand. Errors 409 when the app has no
+// running instance.
+func (c *Client) AppExec(ctx context.Context, appName string, req wire.ExecRequest, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	return c.execStream(ctx, "/apps/"+url.PathEscape(appName)+"/exec", req, stdout, stderr)
+}
+
+func (c *Client) execStream(ctx context.Context, path string, req wire.ExecRequest, stdout, stderr io.Writer) (wire.ExecResult, error) {
 	var result wire.ExecResult
-	resp, err := c.do(ctx, http.MethodPost, "/sandboxes/"+sandboxID+"/exec", req)
+	resp, err := c.do(ctx, http.MethodPost, path, req)
 	if err != nil {
 		return result, err
 	}
@@ -314,6 +327,16 @@ func (c *Client) Exec(ctx context.Context, sandboxID string, req wire.ExecReques
 // There is no PTY — this is a functional shell (line-buffered, no raw mode
 // or terminal control), suitable for exploring a running sandbox.
 func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req wire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	return c.execInteractive(ctx, "/sandboxes/"+url.PathEscape(sandboxID)+"/exec?stdin=1", req, stdin, stdout, stderr)
+}
+
+// AppExecInteractive is ExecInteractive against an app's CURRENT instance
+// (POST /apps/{name}/exec?stdin=1), resolved server-side per request.
+func (c *Client) AppExecInteractive(ctx context.Context, appName string, req wire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (wire.ExecResult, error) {
+	return c.execInteractive(ctx, "/apps/"+url.PathEscape(appName)+"/exec?stdin=1", req, stdin, stdout, stderr)
+}
+
+func (c *Client) execInteractive(ctx context.Context, reqPath string, req wire.ExecRequest, stdin io.Reader, stdout, stderr io.Writer) (wire.ExecResult, error) {
 	var result wire.ExecResult
 
 	conn, host, err := c.dialRaw(ctx)
@@ -341,7 +364,7 @@ func (c *Client) ExecInteractive(ctx context.Context, sandboxID string, req wire
 		return result, err
 	}
 	var hdr bytes.Buffer
-	fmt.Fprintf(&hdr, "POST /sandboxes/%s/exec?stdin=1 HTTP/1.1\r\n", sandboxID)
+	fmt.Fprintf(&hdr, "POST %s HTTP/1.1\r\n", reqPath)
 	fmt.Fprintf(&hdr, "Host: %s\r\n", host)
 	hdr.WriteString("Content-Type: application/json\r\n")
 	fmt.Fprintf(&hdr, "Content-Length: %d\r\n", len(body))

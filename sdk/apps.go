@@ -2,7 +2,6 @@ package crucible
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -81,38 +80,16 @@ func (a App) Delete(ctx context.Context) error {
 	return a.c.DeleteApp(ctx, a.Name)
 }
 
-// Exec runs a command in the app's current instance; see Client.Exec.
-// Errors if the app has no running instance.
+// Exec runs a command in the app's current instance (POST /apps/{name}/exec);
+// see Client.AppExec. The daemon resolves the instance per request, so this
+// stays correct across a self-heal or rolling update. Errors 409 when the app
+// has no running instance.
 func (a App) Exec(ctx context.Context, req wire.ExecRequest, stdout, stderr io.Writer) (wire.ExecResult, error) {
-	inst, err := a.instanceID(ctx)
-	if err != nil {
-		return wire.ExecResult{}, err
-	}
-	return a.c.Exec(ctx, inst, req, stdout, stderr)
+	return a.c.AppExec(ctx, a.Name, req, stdout, stderr)
 }
 
-// Logs reads the current instance's durable logs; see Client.Logs.
+// Logs reads the current instance's durable logs (GET /apps/{name}/logs); see
+// Client.AppLogs.
 func (a App) Logs(ctx context.Context, since int64, source string) (api.LogsResponse, error) {
-	inst, err := a.instanceID(ctx)
-	if err != nil {
-		return api.LogsResponse{}, err
-	}
-	return a.c.Logs(ctx, inst, since, source)
-}
-
-// instanceID resolves the app's current backing sandbox, or an error when
-// the app has none (pending/stopped/crashlooping).
-func (a App) instanceID(ctx context.Context) (string, error) {
-	resp, err := a.c.GetApp(ctx, a.Name)
-	if err != nil {
-		return "", err
-	}
-	if resp.Status == nil || resp.Status.InstanceID == "" {
-		phase := "pending"
-		if resp.Status != nil {
-			phase = resp.Status.Phase
-		}
-		return "", fmt.Errorf("app %q has no running instance (phase %q)", a.Name, phase)
-	}
-	return resp.Status.InstanceID, nil
+	return a.c.AppLogs(ctx, a.Name, since, source)
 }

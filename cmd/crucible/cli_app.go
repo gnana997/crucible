@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -239,62 +242,154 @@ func newAppLogsCmd(o *globalOpts) *cobra.Command {
 		Short: "Tail the app instance's durable logs",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := o.appInstanceID(cmd, args[0])
-			if err != nil {
-				return err
-			}
-			return runLogs(cmd, o, id, source, follow)
+			return runAppLogs(cmd, o, args[0], source, follow)
 		},
 	}
-	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log lines")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new log lines (reattaches across a redeploy)")
 	cmd.Flags().StringVar(&source, "source", "all", "log source: service|exec|all")
 	return cmd
 }
 
 func newAppExecCmd(o *globalOpts) *cobra.Command {
-	var interactive bool
+	var (
+		cwd         string
+		timeout     int
+		env         []string
+		interactive bool
+	)
 	cmd := &cobra.Command{
 		Use:   "exec <name> -- <cmd> [args...]",
 		Short: "Run a command in the app's current instance",
-		Args:  cobra.MinimumNArgs(2),
+		Long: "Run a command in the app's current instance and stream its output. The " +
+			"app name is resolved to its current instance by the daemon on each call, " +
+			"so this keeps working across a self-heal or rolling update. Use -- to " +
+			"separate the command from crucible's own flags.",
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := o.appInstanceID(cmd, args[0])
-			if err != nil {
-				return err
+			req := wire.ExecRequest{Cmd: args[1:], Cwd: cwd, TimeoutSec: timeout}
+			if len(env) > 0 {
+				req.Env = make(map[string]string, len(env))
+				for _, kv := range env {
+					k, v, ok := strings.Cut(kv, "=")
+					if !ok {
+						return fmt.Errorf("--env %q must be KEY=VALUE", kv)
+					}
+					req.Env[k] = v
+				}
 			}
-			res, eerr := runExec(cmd, o, id, wire.ExecRequest{Cmd: args[1:]}, interactive)
+			res, eerr := runAppExec(cmd, o, args[0], req, interactive)
 			if eerr != nil {
 				return eerr
 			}
 			return exitFromResult(res)
 		},
 	}
+	cmd.Flags().StringVar(&cwd, "cwd", "", "working directory inside the guest")
+	cmd.Flags().IntVar(&timeout, "timeout", 0, "command deadline in seconds (0 = none)")
+	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "environment KEY=VALUE (repeatable)")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "attach stdin (full-duplex)")
 	return cmd
 }
 
 func newAppShellCmd(o *globalOpts) *cobra.Command {
-	return &cobra.Command{
+	var shellPath string
+	cmd := &cobra.Command{
 		Use:   "shell <name>",
 		Short: "Open an interactive shell in the app's current instance",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			id, err := o.appInstanceID(cmd, args[0])
-			if err != nil {
-				return err
-			}
-			res, err := runExec(cmd, o, id, wire.ExecRequest{Cmd: []string{"/bin/sh"}}, true)
+			res, err := runAppExec(cmd, o, args[0], wire.ExecRequest{Cmd: []string{shellPath}}, true)
 			if err != nil {
 				return err
 			}
 			return exitFromResult(res)
 		},
 	}
+	cmd.Flags().StringVar(&shellPath, "shell", "/bin/sh", "shell to launch inside the app instance")
+	return cmd
+}
+
+// runAppExec runs an exec against an app BY NAME via the app-scoped routes, so
+// the daemon resolves the current instance server-side per request — correct
+// across a self-heal or rolling update without the client capturing an id.
+func runAppExec(cmd *cobra.Command, o *globalOpts, name string, req wire.ExecRequest, interactive bool) (wire.ExecResult, error) {
+	if interactive {
+		return o.client().AppExecInteractive(cmd.Context(), name, req, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+	}
+	return o.client().AppExec(cmd.Context(), name, req, cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// runAppLogs prints an app's current-instance logs and, with --follow, tails
+// them — re-resolving the instance each poll so a self-heal or rolling update
+// reattaches the follow to the new instance instead of dying on a stale id.
+func runAppLogs(cmd *cobra.Command, o *globalOpts, name, source string, follow bool) error {
+	switch source {
+	case "", "all", "service", "exec":
+	default:
+		return fmt.Errorf("--source must be service, exec, or all")
+	}
+	out := cmd.OutOrStdout()
+	inst, err := o.appInstanceID(cmd.Context(), name)
+	if err != nil {
+		return err
+	}
+	resp, err := o.client().Logs(cmd.Context(), inst, -1, source)
+	if err != nil {
+		return err
+	}
+	if o.isJSON() {
+		return printJSON(out, resp)
+	}
+	for _, rec := range resp.Records {
+		renderLogRecord(out, rec)
+	}
+	if !follow {
+		return nil
+	}
+	return followAppLogs(cmd.Context(), o, name, inst, source, resp.NextOffset, out)
+}
+
+// followAppLogs tails an app's logs, re-resolving its current instance every
+// tick. When the instance changes (self-heal / rolling update) it prints a
+// reattach marker and resumes tailing the new instance from its recent log.
+func followAppLogs(ctx context.Context, o *globalOpts, name, inst, source string, since int64, out io.Writer) error {
+	cl := o.client()
+	ticker := time.NewTicker(logsPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		cur, err := o.appInstanceID(ctx, name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			continue // no ready instance right now (e.g. mid-redeploy) — keep waiting
+		}
+		if cur != inst {
+			_, _ = fmt.Fprintf(out, "== reattached to %s ==\n", cur)
+			inst, since = cur, -1
+		}
+		resp, err := cl.Logs(ctx, inst, since, source)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			continue // the instance may have just been replaced; re-resolve next tick
+		}
+		for _, rec := range resp.Records {
+			renderLogRecord(out, rec)
+		}
+		since = resp.NextOffset
+	}
 }
 
 // appInstanceID resolves an app name to its current instance (sandbox) id.
-func (o *globalOpts) appInstanceID(cmd *cobra.Command, name string) (string, error) {
-	resp, err := o.client().GetApp(cmd.Context(), name)
+func (o *globalOpts) appInstanceID(ctx context.Context, name string) (string, error) {
+	resp, err := o.client().GetApp(ctx, name)
 	if err != nil {
 		return "", err
 	}
