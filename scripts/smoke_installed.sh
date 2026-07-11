@@ -6,9 +6,11 @@
 # `crucible` you'd get from a real install — the binary on your PATH talking to
 # the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey:
 # run/shell/exec, egress deny, logs, snapshot+fork, --disk, stop/rm, build,
-# durable apps (v0.4), the MCP server, and the full v0.4.1 surface (app --env,
-# exec health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P). It
-# answers one question: "will someone who installs the release hit a wall?"
+# durable apps (v0.4), the MCP server, the full v0.4.1 surface (app --env, exec
+# health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P), and the
+# v0.4.2 surface (app update, image-HEALTHCHECK seeding, and — opt-in — the
+# ingress proxy). It answers one question: "will someone who installs the
+# release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -26,7 +28,10 @@
 #   scripts/smoke_installed.sh           # no sudo needed
 #
 # Overrides: CRUCIBLE_BIN (default: crucible on PATH), CRUCIBLE_ADDR
-#   (default 127.0.0.1:7878), HOST_PORT_A/B (default 8080/8081).
+#   (default 127.0.0.1:7878), HOST_PORT_A..E. The ingress-proxy step is opt-in:
+#   set PROXY_ADDR (e.g. 127.0.0.1:80, wherever the daemon's --proxy-listen
+#   binds) and PROXY_DOMAIN (its --proxy-domain) to exercise reach-by-name;
+#   without them it's skipped, since the proxy is off by default.
 
 set -u
 set -o pipefail
@@ -41,6 +46,7 @@ HOST_PORT_A="${HOST_PORT_A:-8080}"
 HOST_PORT_B="${HOST_PORT_B:-8081}"
 HOST_PORT_C="${HOST_PORT_C:-8082}"   # durable-app instance
 HOST_PORT_D="${HOST_PORT_D:-8083}"   # v0.4.1 app (env + exec health)
+HOST_PORT_E="${HOST_PORT_E:-8084}"   # v0.4.2 app update
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -204,6 +210,25 @@ if command -v docker >/dev/null 2>&1; then
         pass "built image booted + served distinctive content on :$HOST_PORT_B"
       else fail "built image unreachable on :$HOST_PORT_B"; fi
     else fail "run of built image failed: $SBXB"; fi
+    # v0.4.2: an app from the built image (which declares a HEALTHCHECK) and no
+    # --health of its own inherits the image's HEALTHCHECK as a seeded exec check.
+    if curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+      SEEDAPP="crucible-smoke-seed"
+      cli app rm "$SEEDAPP" >/dev/null 2>&1 || true
+      if [[ "$(cli app create "$SEEDAPP" --image "$DIG" --memory 256 2>/dev/null)" == "$SEEDAPP" ]]; then
+        track_app "$SEEDAPP"
+        SH=0
+        for _ in {1..30}; do
+          [[ "$(curl -s "$BASE_URL/apps/$SEEDAPP" 2>/dev/null)" == *'"health":"healthy"'* ]] && { SH=1; break; }
+          sleep 1
+        done
+        [[ "$SH" -eq 1 ]] && pass "app seeded health from the image's HEALTHCHECK (healthy, no --health set)" \
+          || fail "image HEALTHCHECK not seeded to healthy: $(curl -s "$BASE_URL/apps/$SEEDAPP" 2>&1)"
+        cli app rm "$SEEDAPP" >/dev/null 2>&1
+      else
+        skip "seeding: app create from the built image failed (pre-v0.4.2 daemon?)"
+      fi
+    fi
   else fail "build produced no digest: $DIG"; fi
 else
   skip "docker not installed — crucible build needs it (client-side)"
@@ -452,6 +477,74 @@ else
     cli app rm "$PAPP" >/dev/null 2>&1
   else
     skip "-P/--publish-all unsupported (pre-v0.4.1 daemon)"
+  fi
+fi
+
+# ---- 15 v0.4.2: app update replaces the spec and redeploys ------------------
+echo "== 15 app update: replace the spec and redeploy the instance (v0.4.2)"
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  UAPP="crucible-smoke-upd"
+  cli app rm "$UAPP" >/dev/null 2>&1 || true
+  UERR="$(mktemp)"
+  OUT="$(cli app create "$UAPP" --image "$IMAGE" -p "$HOST_PORT_E:80" --restart always --memory 256 2>"$UERR")"
+  if [[ "$OUT" == "$UAPP" ]]; then
+    track_app "$UAPP"; rm -f "$UERR"
+    if hit "http://localhost:$HOST_PORT_E/" "html" || hit "http://localhost:$HOST_PORT_E/" "nginx"; then
+      INST1="$(curl -s "$BASE_URL/apps/$UAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+      # Change the spec (memory + a new env) — a generation bump forces a redeploy.
+      UPD="$(cli app update "$UAPP" --image "$IMAGE" -p "$HOST_PORT_E:80" --restart always --memory 320 -e UPDATED=yes 2>/dev/null)"
+      if [[ "$UPD" == "$UAPP" ]]; then
+        REDEPLOYED=0; INST2=""
+        for _ in $(seq 1 60); do
+          INST2="$(curl -s "$BASE_URL/apps/$UAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+          if [[ "$INST2" == sbx_* && "$INST2" != "$INST1" ]] && curl -sf "http://localhost:$HOST_PORT_E/" >/dev/null 2>&1; then
+            REDEPLOYED=1; break
+          fi
+          sleep 1
+        done
+        [[ "$REDEPLOYED" -eq 1 ]] && pass "app update redeployed to a new instance ($INST1 → $INST2) and serves" \
+          || fail "app update did not redeploy ($INST1 → ${INST2:-none})"
+        GEN="$(curl -s "$BASE_URL/apps/$UAPP" 2>/dev/null | grep -o '"generation":[0-9]*' | grep -o '[0-9]*' | head -1)"
+        [[ "$GEN" == "2" ]] && pass "generation bumped to 2 after update" || fail "generation = ${GEN:-?}, want 2"
+      else
+        skip "app update unsupported (pre-v0.4.2 daemon)"
+      fi
+    else
+      fail "update app never served on :$HOST_PORT_E"
+    fi
+    cli app rm "$UAPP" >/dev/null 2>&1
+  else
+    skip "app create for the update test failed: $(head -1 "$UERR" 2>/dev/null)"; rm -f "$UERR"
+  fi
+fi
+
+# ---- 16 v0.4.2: reach an app by name through the ingress proxy (opt-in) ------
+echo "== 16 ingress proxy: reach an app by name (set PROXY_ADDR + PROXY_DOMAIN)"
+if [[ -z "${PROXY_ADDR:-}" ]]; then
+  skip "proxy test off — set PROXY_ADDR=host:port (where --proxy-listen binds) and PROXY_DOMAIN (--proxy-domain); the proxy is off by default"
+elif ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  PDOM="${PROXY_DOMAIN:-apps.local}"
+  PXAPP="crucible-smoke-proxy"
+  cli app rm "$PXAPP" >/dev/null 2>&1 || true
+  if [[ "$(cli app create "$PXAPP" --image "$IMAGE" --port 80 --restart always --memory 256 2>/dev/null)" == "$PXAPP" ]]; then
+    track_app "$PXAPP"
+    ROUTED=0
+    for _ in $(seq 1 40); do
+      body="$(curl -s --max-time 3 -H "Host: $PXAPP.$PDOM" "http://$PROXY_ADDR/" 2>/dev/null || true)"
+      [[ "$body" == *"html"* || "$body" == *"nginx"* ]] && { ROUTED=1; break; }
+      sleep 0.5
+    done
+    [[ "$ROUTED" -eq 1 ]] && pass "proxy routed $PXAPP.$PDOM → the app's current instance" \
+      || fail "proxy did not route $PXAPP.$PDOM via $PROXY_ADDR (is --proxy-listen/--proxy-domain set?)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -H "Host: nope.$PDOM" "http://$PROXY_ADDR/" 2>/dev/null)"
+    [[ "$code" == "404" ]] && pass "proxy: unknown host → 404" || fail "proxy unknown host → $code, want 404"
+    cli app rm "$PXAPP" >/dev/null 2>&1
+  else
+    skip "proxy: app create with --port failed (pre-v0.4.2 daemon?)"
   fi
 fi
 

@@ -6,3 +6,6 @@
 # a ~400MB base exhausts a tmpfs /tmp. Same nginx, same :80, ~10x smaller.
 FROM nginx:alpine
 RUN printf 'CRUCIBLE-TESTAPP-OK\n' > /usr/share/nginx/html/index.html
+# A declared HEALTHCHECK so the installed smoke can prove an app inherits it
+# (v0.4.2 image-HEALTHCHECK seeding) when it sets no --health of its own.
+HEALTHCHECK --interval=3s --timeout=2s CMD test -f /usr/share/nginx/html/index.html

@@ -27,7 +27,8 @@
 #   --enable            (daemon) enable + start the service now
 #   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, and a guest kernel — opt-in, checksum-verified
 #   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
-#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --network-egress-iface to an existing config
+#   --no-proxy          (daemon) don't enable the ingress proxy (reach apps by name) by default
+#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --network-egress-iface / proxy flags to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
 #   --token-name NAME   (daemon) name for --connect-token's key (default: remote-client)
 #   --version TAG       release tag (default: latest; download mode)
@@ -35,7 +36,9 @@
 #
 # The daemon path runs as root but never calls sudo itself. Env overrides:
 #   PREFIX (/usr/local), CLIENT_BINDIR (client install dir), FC_VERSION,
-#   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel).
+#   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel),
+#   PROXY_LISTEN (:80), PROXY_TLS_LISTEN (:443), PROXY_DOMAIN (apps.local) —
+#   ingress-proxy defaults; set PROXY_TLS_LISTEN= or use --no-proxy to opt out.
 
 set -euo pipefail
 
@@ -83,6 +86,15 @@ UPGRADE_CONFIG=0
 CONNECT_TOKEN=0
 TOKEN_NAME="remote-client"
 NO_EGRESS_AUTO=0
+NO_PROXY_AUTO=0
+# Ingress-proxy defaults (v0.4.2): reach an app by name (<app>.<domain>) instead
+# of publishing a host port. The daemon runs as root, so it binds :80/:443
+# without extra caps. Override the ports/domain via env; set PROXY_TLS_LISTEN=
+# to skip HTTPS, or pass --no-proxy to leave the proxy off entirely.
+PROXY_LISTEN="${PROXY_LISTEN:-:80}"
+PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-:443}"
+PROXY_DOMAIN="${PROXY_DOMAIN-apps.local}"
+PROXY_ENABLED=""   # set to the HTTP listen addr once we actually enable it
 CLIENT_EXPLICIT=0
 
 die()  { echo "install: $*" >&2; exit 1; }
@@ -103,6 +115,7 @@ while [[ $# -gt 0 ]]; do
         --enable) ENABLE=1; shift ;;
         --with-deps) WITH_DEPS=1; shift ;;
         --no-egress-auto) NO_EGRESS_AUTO=1; shift ;;
+        --no-proxy) NO_PROXY_AUTO=1; shift ;;
         --upgrade-config) UPGRADE_CONFIG=1; shift ;;
         --connect-token) CONNECT_TOKEN=1; shift ;;
         --token-name) TOKEN_NAME="${2:?--token-name needs a name}"; shift 2 ;;
@@ -514,21 +527,71 @@ if [[ ! -f /etc/sysctl.d/99-crucible.conf ]]; then
     fi
 fi
 
+# port_free ADDR — is the ":PORT" (or "host:port") in ADDR bindable right now?
+# The daemon *aborts* if a proxy listen port is taken, so we probe before
+# enabling the proxy and skip a busy port rather than break daemon startup.
+# Best-effort: prefer ss, fall back to a bash /dev/tcp loopback connect probe.
+port_free() {
+    local addr="$1" port="${1##*:}"
+    [[ "$port" == "$addr" ]] && port="$addr"   # no colon → whole thing is the port
+    [[ -z "$port" ]] && return 1
+    if command -v ss >/dev/null 2>&1; then
+        ! ss -Hlnt "sport = :$port" 2>/dev/null | grep -q .
+        return
+    fi
+    ! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null   # connect succeeds ⇒ in use
+}
+
+# add_cfg_flag CFG FLAG [VALUE] — append a flag to CRUCIBLE_FLAGS if it is not
+# already present. Prints a kv line and returns 0 only when it changed the file.
+add_cfg_flag() {
+    local cfg="$1" flag="$2" val="${3:-}"
+    flags_have "$flag" "$cfg" && return 1
+    sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 $flag${val:+ $val}\"#" "$cfg"
+    kv config "added $flag${val:+ $val}"
+    return 0
+}
+
+# seed_proxy_flags CFG — enable the ingress proxy (v0.4.2) by default so apps are
+# reachable by name (<app>.<domain>) out of the box. Only adds a listener whose
+# port is free at install time (the daemon aborts on a busy proxy port), and only
+# when the config carries none already. --no-proxy or an empty PROXY_LISTEN opts
+# out. Sets PROXY_ENABLED for the summary; returns 0 iff it changed the file.
+seed_proxy_flags() {
+    local cfg="$1" did=1
+    [[ "$NO_PROXY_AUTO" -eq 1 ]] && return 1
+    if flags_have "--proxy-listen" "$cfg" || flags_have "--proxy-tls-listen" "$cfg"; then
+        PROXY_ENABLED="(already configured)"; return 1
+    fi
+    [[ -z "$PROXY_LISTEN" ]] && return 1
+    if ! port_free "$PROXY_LISTEN"; then
+        warn "ingress proxy port $PROXY_LISTEN is busy — leaving the proxy off."
+        warn "Set PROXY_LISTEN=:PORT and re-run with --upgrade-config, or pass --no-proxy to silence."
+        return 1
+    fi
+    add_cfg_flag "$cfg" "--proxy-listen" "$PROXY_LISTEN" && { PROXY_ENABLED="$PROXY_LISTEN"; did=0; }
+    if [[ -n "$PROXY_TLS_LISTEN" ]]; then
+        if port_free "$PROXY_TLS_LISTEN"; then
+            add_cfg_flag "$cfg" "--proxy-tls-listen" "$PROXY_TLS_LISTEN" && did=0
+        else
+            warn "ingress proxy TLS port $PROXY_TLS_LISTEN busy — skipping --proxy-tls-listen (HTTP proxy still enabled)."
+        fi
+    fi
+    [[ -n "$PROXY_DOMAIN" ]] && { add_cfg_flag "$cfg" "--proxy-domain" "$PROXY_DOMAIN" && did=0; }
+    return $did
+}
+
 # apply_config_flags adds any missing daemon flags to CRUCIBLE_FLAGS in place,
-# so an upgraded config doesn't silently disable features.
+# so an upgraded config doesn't silently disable features. Returns 0 (nothing
+# changed) or 1 (updated — restart needed).
 apply_config_flags() {
     local cfg="$1" changed=0
     local egress; egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
-    add_flag() { # flag value
-        flags_have "$1" "$cfg" && return 0
-        sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 $1 $2\"#" "$cfg"
-        kv config "added $1 $2"
-        changed=1
-    }
-    add_flag "--image-dir" "$STATEDIR/images"
-    add_flag "--log-dir"   "$STATEDIR/logs"
-    add_flag "--app-db"    "$STATEDIR/apps.db"
-    [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && add_flag "--network-egress-iface" "$egress"
+    add_cfg_flag "$cfg" "--image-dir" "$STATEDIR/images" && changed=1
+    add_cfg_flag "$cfg" "--log-dir"   "$STATEDIR/logs"   && changed=1
+    add_cfg_flag "$cfg" "--app-db"    "$STATEDIR/apps.db" && changed=1
+    [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && { add_cfg_flag "$cfg" "--network-egress-iface" "$egress" && changed=1; }
+    seed_proxy_flags "$cfg" && changed=1
     return $changed
 }
 
@@ -556,18 +619,21 @@ if [[ -e "$CONFDIR/crucible.env" ]]; then
     fi
 else
     install -Dm644 "$ROOT/packaging/crucible.env.example" "$CONFDIR/crucible.env"
+    kv config "$CONFDIR/crucible.env (from template)"
     # A fresh config is complete out of the box: fold in the host's own
     # default-route NIC so *sandbox* egress (behind the allowlist) and
     # `run -p HOST:GUEST` port publish work without a manual edit. This is the
     # host's existing NIC, not a surprising choice; suppress with --no-egress-auto.
     egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
-    if [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && ! flags_have "--network-egress-iface" "$CONFDIR/crucible.env"; then
-        sed -i "s#^\\(CRUCIBLE_FLAGS=\"[^\"]*\\)\"#\\1 --network-egress-iface $egress\"#" "$CONFDIR/crucible.env"
-        kv config "$CONFDIR/crucible.env (from template; sandbox egress NIC = $egress)"
-    else
-        kv config "$CONFDIR/crucible.env (from template)"
-        [[ "$NO_EGRESS_AUTO" -eq 1 ]] && kv config "egress NIC not set (--no-egress-auto) — add --network-egress-iface for sandbox net + run -p"
+    if [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]]; then
+        add_cfg_flag "$CONFDIR/crucible.env" "--network-egress-iface" "$egress"
+    elif [[ "$NO_EGRESS_AUTO" -eq 1 ]]; then
+        kv config "egress NIC not set (--no-egress-auto) — add --network-egress-iface for sandbox net + run -p"
     fi
+    # Enable the ingress proxy by default (v0.4.2) so apps are reachable by name.
+    # (returns nonzero when it adds nothing — --no-proxy / busy port — which must
+    # not trip set -e here, unlike the apply_config_flags call which is a condition.)
+    seed_proxy_flags "$CONFDIR/crucible.env" || true
 fi
 
 # Drop the inert example scoped policy so the guidance can point at a real file.
@@ -609,6 +675,17 @@ Then start it:
   sudo systemctl enable --now crucible
   journalctl -u crucible -f
 EOF
+fi
+
+# Ingress proxy (v0.4.2): if we enabled it, show how to reach apps by name and
+# how to point the installed smoke's opt-in proxy check at it.
+if [[ -n "$PROXY_ENABLED" && "$PROXY_ENABLED" != "(already configured)" ]]; then
+    echo
+    echo "==> ingress proxy enabled on $PROXY_ENABLED — reach apps by name (no host port)"
+    kv create "crucible app create web --image nginx:alpine --port 80"
+    kv reach  "curl -H 'Host: web.${PROXY_DOMAIN:-<app>}' http://<this-host>${PROXY_ENABLED}/"
+    [[ -n "$PROXY_DOMAIN" ]] && kv dns "point *.$PROXY_DOMAIN at this host (DNS or /etc/hosts) for real clients"
+    kv smoke  "PROXY_ADDR=127.0.0.1${PROXY_ENABLED} PROXY_DOMAIN=${PROXY_DOMAIN} bash scripts/smoke_installed.sh"
 fi
 
 # A plain install mints nothing: just show how to use it locally and how to open
