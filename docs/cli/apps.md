@@ -10,24 +10,29 @@ Durable apps are named workloads the daemon keeps a healthy instance of and re-c
 | Command | Description |
 |---|---|
 | `create <name> --image <ref> [flags]` | create a durable app; prints its name |
-| `update <name> [flags]` | replace the app's spec (same flags as create) and redeploy; name immutable |
+| `update <name> [flags]` | replace the app's spec (same flags as create) and redeploy; **zero-downtime** for a proxy-fronted app (roll the new instance in, flip the route, drain the old); name immutable |
 | `ls` | list apps (table: name, desired, phase, health, restarts, instance) |
-| `get <name>` | full app JSON (desired state + observed status) |
+| `get <name>` | full app JSON (desired state + observed status, incl. `instance_generation`) |
 | `rm <name>` | delete the app and tear down its instance |
-| `logs <name> [-f] [--source]` | the current instance's durable logs |
-| `exec <name> [-i] -- <cmd>...` | run a command in the current instance |
-| `shell <name>` | interactive shell in the current instance |
+| `logs <name> [-f] [--source]` | the current instance's durable logs (`-f` reattaches across a redeploy) |
+| `exec <name> [-i] [--cwd] [--timeout] [-e] -- <cmd>...` | run a command in the current instance |
+| `shell <name> [--shell]` | interactive shell in the current instance |
 
 ## Create flags
 
 `--image` (required), `--pull`, `--restart always|on-failure|never`, `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr` (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`, `--disk`, `--stopped`.
 
+## Operate flags
+
+`exec` takes `--cwd`, `--timeout <s>`, `-e/--env KEY=VALUE` (repeatable), and `-i/--interactive`; `shell` takes `--shell <path>` (default `/bin/sh`); `logs` takes `-f/--follow` and `--source service|exec|all`.
+
 ```bash
-crucible app create web --image nginx:alpine -P -e LOG_LEVEL=info --restart always --health http:80:/
-crucible app ls
-crucible app logs web -f
+crucible app create web --image nginx:alpine --port 80 -e LOG_LEVEL=info --restart always --health http:80:/
+crucible app update web --image nginx:alpine --port 80 --memory 512   # rolls out zero-downtime
+crucible app exec web -- /bin/sh -c 'nginx -t'
+crucible app logs web -f                                              # reattaches if the app rolls
 crucible app rm web
 ```
 
 > [!TIP]
-> `logs`, `exec`, and `shell` resolve the app's current instance automatically; you never need to look up its sandbox id.
+> `logs`, `exec`, and `shell` address the app by name; the daemon resolves the current instance **on every call**, so you never look up a sandbox id and they keep working across a self-heal or redeploy. `app logs -f` prints a `== reattached to <id> ==` marker when it follows the app to a new instance.

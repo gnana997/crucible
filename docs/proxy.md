@@ -50,7 +50,11 @@ extra caps, and apps are then reachable at plain `http://web.apps.local/`.
   published/`EXPOSE`d port; set it explicitly when the image exposes several.
 - **Resolution is live** (with a ~1s cache), so it never routes to a stale IP: an
   instance's guest IP changes on every re-create/fork, and the app object is the
-  source of truth for which instance is current.
+  source of truth for which instance is current. This is also what makes
+  [zero-downtime `app update`](apps.md#zero-downtime-update) work with no proxy
+  changes: the reconciler boots the new instance, then flips which instance is
+  current once it's ready, and the proxy follows within one resolution TTL while
+  the old instance drains — so the cutover drops nothing.
 
 ## Two listeners
 

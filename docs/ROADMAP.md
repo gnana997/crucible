@@ -73,26 +73,31 @@ Turn a durable app from *survivable* into *deployable*: real config and real egr
 - [x] **Exec health checks** — `--health-cmd '<command>'` runs a command in the guest (exit 0 = healthy), joining http/tcp.
 - [x] **Publish declared ports** — `-P/--publish-all` publishes every port the image `EXPOSE`s (guest N → host N).
 
-### v0.4.2 — Reach it by name *(current)*
+### v0.4.2 — Reach it by name
 
 Closes P1b: the durable app is now reachable by name and updatable in place.
 
 - [x] **Ingress proxy** — reach an app by name instead of a published port. `--proxy-listen` (Host-header routing, L7), `--proxy-tls-listen` (SNI passthrough, L4 — the guest terminates its own TLS), `--proxy-domain <domain>` (`web.<domain>` → app `web`). Off in the daemon by default; the installer enables it on `:7879` (next to the API, clear of the `:80`/`:8080`/… ports you publish to), overridable to `:80`/`:443` for a production ingress. Resolution is live, so the route follows the app across self-heal and redeploy and never points at a stale IP ([proxy.md](proxy.md)).
-- [x] **`crucible app update`** — replace an app's spec (name immutable) and redeploy: the reconciler bumps the generation, destroys the old instance, and boots a fresh one. Also on the Go SDK (`UpdateApp`) and the MCP `update_app` tool (→ 20 tools).
+- [x] **`crucible app update`** — replace an app's spec (name immutable) and redeploy: the reconciler bumps the generation, destroys the old instance, and boots a fresh one. Also on the Go SDK (`UpdateApp`) and the MCP `update_app` tool. *(v0.4.3 makes this zero-downtime — see below.)*
 - [x] **Health seeded from the image** — an app that declares no health inherits the image's Docker `HEALTHCHECK` (as an `exec` check) when present.
 - [x] **Inbound isolation** — inbound reaches a guest only from the daemon over its veth; peers can't reach each other and a guest can't reach the proxy listeners at all, so the proxy is not a lateral path.
+
+### v0.4.3 — Operate & safe-update *(current)*
+
+Update a deployed app without dropping traffic, and drive a running app by name.
+
+- [x] **Zero-downtime rolling `app update`** — for a proxy-fronted app the reconciler boots the new instance, waits for a **readiness gate** (its health check, or a TCP connect to the app's port), **flips the ingress route** to it, then drains the old instance before destroying it. The proxy follows the flip, so the cutover drops nothing. A **failed** update aborts and keeps the old instance serving (never takes the app down); `status.instance_generation` shows which spec is live.
+- [x] **Operate an app by name** — `crucible app exec`/`logs`/`shell` (and MCP `app_exec`/`app_logs`, → 22 tools) resolve the app's **current** instance server-side per call, so they survive a self-heal or redeploy. `app logs -f` reattaches to the new instance across a roll. Flag parity added (`app exec --cwd/--timeout/-e`, `app shell --shell`).
 
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model and its front door exist (v0.4.0–v0.4.2); next is making deploys production-grade.
+The app model, its front door, zero-downtime updates, and operate-by-name exist (v0.4.0–v0.4.3); next is the rest of production-grade deploys.
 
 - • **Private / authenticated registry pull** — credentialed pulls from private registries (ghcr.io, ECR, …).
-- • **Zero-downtime deploys.** `app update` is destroy-then-boot today; add connection draining + rolling redeploy behind the proxy so an update doesn't drop in-flight requests.
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Volumes.** Persistent block storage decoupled from an instance, so stateful apps (postgres, sqlite) survive a redeploy — the real ceiling of today's stateless re-create model.
-- • **Image `HEALTHCHECK` polish & exec-into apps** — richer defaults and the remaining app ergonomics.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.
 - • **Growable live disk + accounting.** `--disk` sizes the writable rootfs at create today; this adds growing a live sandbox's disk and per-sandbox disk accounting.

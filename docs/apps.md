@@ -99,7 +99,7 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 | Command | What |
 |---|---|
 | `app create <name> --image <ref> [flags]` | create a durable app; prints its name |
-| `app update <name> [flags]` | replace the app's spec and redeploy (destroy the old instance, boot a fresh one); name immutable |
+| `app update <name> [flags]` | replace the app's spec and redeploy; **zero-downtime** for a proxy-fronted app (see below); name immutable |
 | `app ls` | list apps with desired state, phase, health, restarts, instance |
 | `app get <name>` | full desired state + observed status (JSON) |
 | `app rm <name>` | delete the app and tear down its instance |
@@ -119,8 +119,31 @@ Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
 yours win); `-P` reads the ports the image declares, so `crucible app create web
 --image nginx:alpine -P` publishes :80 without a manual `-p`.
 
-`logs`/`exec`/`shell` resolve the app's current instance for you, so you never
-juggle the instance id.
+`logs`/`exec`/`shell` resolve the app's current instance **on every call** (the
+daemon does it server-side), so you never juggle the instance id and they keep
+working across a self-heal or redeploy. `app logs -f` reattaches to the new
+instance when the app rolls (a `== reattached to <id> ==` marker). `app exec`
+takes `--cwd`/`--timeout`/`-e,--env`; `app shell` takes `--shell`.
+
+## Zero-downtime update
+
+For a **proxy-fronted app** (an app with a `--port` and no fixed host publish),
+`app update` rolls the new spec out without dropping traffic:
+
+1. Boot the new instance **without** flipping to it — the old instance keeps
+   serving.
+2. Wait for the new instance to pass its **readiness gate**: its health check if
+   it has one, otherwise a TCP connect to the app's `--port`.
+3. **Flip the ingress route** to the new instance (the proxy follows it within
+   its ~1s resolution TTL), then keep the old instance alive for a short **drain
+   window** so in-flight requests finish, and finally destroy it.
+
+If the new instance never becomes ready within the rollout deadline (or
+crash-loops), the update **aborts and the old instance keeps serving** —
+`app get` shows the failure in `last_error` and `instance_generation` stays on
+the old spec. A bad update never takes the app down. Apps that publish a fixed
+host port (or have no `--port`) can't run two instances at once, so they keep the
+simpler destroy-then-boot redeploy.
 
 ## Status fields
 
@@ -130,6 +153,9 @@ juggle the instance id.
 - **health** — `healthy`, `unhealthy`, `unknown` (no check, or in the start period)
 - **restarts** — how many times the daemon has restarted the instance
 - **instance_id** — the sandbox currently backing the app (empty when none)
+- **instance_generation** — the spec generation the live instance was booted
+  from; it lags `generation` while a rolling update is in progress or after a
+  failed update (the old instance is still serving the previous spec)
 
 ## From the API / SDKs
 

@@ -6,6 +6,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.4.3] — 2026-07-12
+
+Operate & safe-update. Updating a deployed app no longer drops traffic, and you
+can drive a running app **by name** — exec, logs, shell — from the CLI, SDK, and
+MCP, with resolution that survives a self-heal or redeploy.
+
+### Added
+
+- **Zero-downtime rolling `app update`.** For a proxy-fronted app (a `--port`, no
+  fixed host publish) an update no longer destroys-then-boots. The reconciler
+  boots the new instance, waits for it to pass a **readiness gate** (its health
+  check, or — with none — a TCP connect to the app's port), **flips the ingress
+  route** to it, then drains the old instance for a few seconds before destroying
+  it. The proxy follows the flip automatically, so the cutover drops nothing. A
+  failed update (the new instance never becomes ready within the rollout
+  deadline, or crash-loops) **aborts and keeps the old instance serving**,
+  recording the failure — it never takes the app down. Other apps keep the
+  destroy-then-boot path. New `status.instance_generation` shows which spec the
+  live instance is serving (it lags `generation` during a roll or a failed
+  update). See [docs/apps.md](docs/apps.md).
+- **Operate an app by name — daemon routes.** `POST /apps/{name}/exec` (one-shot
+  or `?stdin=1` interactive), `GET /apps/{name}/exec` (WebSocket interactive), and
+  `GET /apps/{name}/logs` resolve the app to its **current** instance server-side
+  **per request**, then delegate to the sandbox exec/logs handlers — so a call
+  issued across a self-heal or rolling update always targets the live instance.
+- **Redeploy-safe CLI/SDK.** `crucible app exec` / `app shell` / `app logs` (and
+  the SDK `App.Exec`/`App.Logs`, `Client.AppExec`/`AppExecInteractive`/`AppLogs`)
+  now use the name-based routes instead of resolving the instance once on the
+  client. `app logs -f` **reattaches** to the new instance across a redeploy
+  (with a `== reattached to <id> ==` marker). `app exec` gained
+  `--cwd`/`--timeout`/`-e,--env` and `app shell` gained `--shell`, matching the
+  sandbox commands.
+- **MCP `app_exec` / `app_logs`.** Operate a deployed app by name from an agent —
+  resolved to the current instance per call (→ 22 tools). `app_exec` is
+  exec-gated, `app_logs` read-gated.
+
 ## [0.4.2] — 2026-07-12
 
 Reach it by name. The durable app from v0.4.0/v0.4.1 is now reachable through a

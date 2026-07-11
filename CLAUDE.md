@@ -15,16 +15,21 @@ fits together), [api](docs/api.md), [wire](docs/wire.md), [cli](docs/cli.md), [m
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.3.0 — "the safe `docker run` for untrusted/AI code." The core
-runtime is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`,
-cgroup quotas, install/systemd), plus OCI image boot (`crucible run <image>` /
-`build`), an interactive shell (`crucible shell`, no PTY) + TUI session view,
-`--disk` sizing, top-level `stop`/`rm`, durable logs, an MCP server (image/
-publish/disk params + `logs`/`stop_sandbox` tools), daemon API-key auth with
-scoped/policy tokens, and a TUI (`crucible tui`). Two durability tiers:
-**sandboxes** are ephemeral (a daemon restart drops the VM), while **apps**
-(v0.4, `crucible app`) are durable — the daemon re-creates a healthy instance
-from persisted desired state after a restart. See the ROADMAP for what's next.
+**Status:** v0.4.3 — durable apps you deploy, reach, and update. The core runtime
+is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
+quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
+an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
+an MCP server (22 tools), daemon API-key auth with scoped/policy tokens, and a
+TUI. Two durability tiers: **sandboxes** are ephemeral (a daemon restart drops
+the VM), while **apps** (`crucible app`) are durable — the daemon re-creates a
+healthy instance from persisted desired state. The v0.4 line built apps out:
+v0.4.0 self-healing + reconcile-from-spec; v0.4.1 config (`--env`) + exec health
++ `-P` + real egress; v0.4.2 the **ingress proxy** (reach an app by name,
+`web.<domain>`) + `app update` + image-`HEALTHCHECK` seeding; **v0.4.3
+zero-downtime rolling `app update`** (boot → readiness gate → flip the route →
+drain the old; a failed update keeps the old instance serving) + operate an app
+**by name** (`app exec`/`logs`/`shell` + MCP `app_exec`/`app_logs`, resolved to
+the current instance per call). See the ROADMAP for what's next.
 
 ## Working style
 
