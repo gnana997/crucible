@@ -16,7 +16,7 @@ metadata:
 # Crucible
 
 ## Product summary
-Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or agent-generated code in Firecracker microVMs under jailer, exposing one REST API (documented at https://docs.cruciblehq.dev/api) that the CLI, TUI, and MCP server all consume as thin clients. It is pre-1.0 (current v0.3.2/API 0.3.3), Apache 2.0, Go-implemented, daemon Linux-only (requires KVM); clients are cross-platform. The three load-bearing technical facts: (1) forks restore via lazy userfaultfd paging (no per-fork RAM copy) plus a copy-on-write rootfs clone, with clone-safety reseeding RNG and rotating machine-id/hostname before a fork is reachable; (2) networking is default-deny, hostname-only allowlisting enforced by host nftables + an in-daemon DNS proxy, with automatic range-filtering of RFC1918/link-local/CGNAT to block SSRF to metadata endpoints; (3) auth is off on loopback by default but required everywhere once any bearer API key exists, and keys can be bound to daemon-enforced scoped policies (operations, egress ceiling, resource caps, expiry).
+Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or agent-generated code in Firecracker microVMs under jailer, exposing one REST API (documented at https://cruciblehq.dev/docs/api) that the CLI, TUI, and MCP server all consume as thin clients. It is pre-1.0 (current v0.3.2/API 0.3.3), Apache 2.0, Go-implemented, daemon Linux-only (requires KVM); clients are cross-platform. The three load-bearing technical facts: (1) forks restore via lazy userfaultfd paging (no per-fork RAM copy) plus a copy-on-write rootfs clone, with clone-safety reseeding RNG and rotating machine-id/hostname before a fork is reachable; (2) networking is default-deny, hostname-only allowlisting enforced by host nftables + an in-daemon DNS proxy, with automatic range-filtering of RFC1918/link-local/CGNAT to block SSRF to metadata endpoints; (3) auth is off on loopback by default but required everywhere once any bearer API key exists, and keys can be bound to daemon-enforced scoped policies (operations, egress ceiling, resource caps, expiry).
 
 ## When to use
 - User mentions "crucible", Firecracker microVMs, or wants isolated/sandboxed code execution for AI agents.
@@ -31,7 +31,7 @@ Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or a
 
 | Fact | Value |
 |---|---|
-| Docs home | https://docs.cruciblehq.dev |
+| Docs home | https://cruciblehq.dev/docs |
 | API base URL | whatever `--listen` sets; default `http://127.0.0.1:7878` |
 | Auth header | `Authorization: Bearer <key>` |
 | Auth default | unauthenticated on loopback with no keys; required once any key exists |
@@ -139,19 +139,19 @@ Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or a
 - [ ] Ephemeral-sandbox assumption respected: no reliance on sandboxes surviving a daemon restart pre-v0.4.
 
 ## Resources
-- Product overview: https://docs.cruciblehq.dev
-- REST API guide: https://docs.cruciblehq.dev/api
-- API reference index: https://docs.cruciblehq.dev/api-reference
-- Architecture: https://docs.cruciblehq.dev/architecture
-- Benchmarks: https://docs.cruciblehq.dev/benchmarks
-- CLI: https://docs.cruciblehq.dev/cli
-- MCP server: https://docs.cruciblehq.dev/mcp
-- Networking: https://docs.cruciblehq.dev/network
-- Policy/scoped tokens: https://docs.cruciblehq.dev/policy
-- Profiles: https://docs.cruciblehq.dev/profiles
-- Roadmap: https://docs.cruciblehq.dev/roadmap
-- TUI: https://docs.cruciblehq.dev/tui
-- Vision: https://docs.cruciblehq.dev/vision
-- Wire protocol: https://docs.cruciblehq.dev/wire
-- SDKs: https://docs.cruciblehq.dev/sdks/overview, https://docs.cruciblehq.dev/sdks/go, https://docs.cruciblehq.dev/sdks/python, https://docs.cruciblehq.dev/sdks/typescript
-- Key API reference pages: https://docs.cruciblehq.dev/api-reference/health, https://docs.cruciblehq.dev/api-reference/createsandbox, https://docs.cruciblehq.dev/api-reference/execsandbox, https://docs.cruciblehq.dev/api-reference/execsandboxws, https://docs.cruciblehq.dev/api-reference/createsnapshot, https://docs.cruciblehq.dev/api-reference/forksnapshot, https://docs.cruciblehq.dev/api-reference/whoami
+- Product overview: https://cruciblehq.dev/docs
+- REST API guide: https://cruciblehq.dev/docs/api
+- API reference index: https://cruciblehq.dev/docs/api-reference
+- Architecture: https://cruciblehq.dev/docs/architecture
+- Benchmarks: https://cruciblehq.dev/docs/benchmarks
+- CLI: https://cruciblehq.dev/docs/cli
+- MCP server: https://cruciblehq.dev/docs/mcp
+- Networking: https://cruciblehq.dev/docs/network
+- Policy/scoped tokens: https://cruciblehq.dev/docs/policy
+- Profiles: https://cruciblehq.dev/docs/profiles
+- Roadmap: https://cruciblehq.dev/docs/roadmap
+- TUI: https://cruciblehq.dev/docs/tui
+- Vision: https://cruciblehq.dev/docs/vision
+- Wire protocol: https://cruciblehq.dev/docs/wire
+- SDKs: https://cruciblehq.dev/docs/sdks/overview, https://cruciblehq.dev/docs/sdks/go, https://cruciblehq.dev/docs/sdks/python, https://cruciblehq.dev/docs/sdks/typescript
+- Key API reference pages: https://cruciblehq.dev/docs/api-reference/health, https://cruciblehq.dev/docs/api-reference/createsandbox, https://cruciblehq.dev/docs/api-reference/execsandbox, https://cruciblehq.dev/docs/api-reference/execsandboxws, https://cruciblehq.dev/docs/api-reference/createsnapshot, https://cruciblehq.dev/docs/api-reference/forksnapshot, https://cruciblehq.dev/docs/api-reference/whoami

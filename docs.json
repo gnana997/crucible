@@ -2,7 +2,7 @@
   "site": {
     "name": "crucible",
     "description": "Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.",
-    "url": "https://docs.cruciblehq.dev",
+    "url": "https://cruciblehq.dev/docs",
     "theme": {
       "accent": {
         "light": "#C0400A",
