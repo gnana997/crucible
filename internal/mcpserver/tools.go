@@ -260,6 +260,10 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.getApp) })
 	add("delete_app", "Delete a durable app and tear down its instance.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteApp) })
+	add("app_exec", "Run a command in a durable app's CURRENT instance and return its captured output. The app is addressed by name and resolved to its live instance per call, so this stays correct across a self-heal or rolling update.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appExec) })
+	add("app_logs", "Read a durable app's current-instance logs (entrypoint output and/or exec activity), addressed by name.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appLogs) })
 	add("list_sandboxes", "List the live sandboxes.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listSandboxes) })
 	add("inspect_sandbox", "Return full detail for one sandbox.",

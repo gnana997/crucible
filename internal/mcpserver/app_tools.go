@@ -1,7 +1,9 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -65,6 +67,71 @@ func toAppOutput(a api.AppResponse) appOutput {
 		out.InstanceGeneration = a.Status.InstanceGeneration
 	}
 	return out
+}
+
+// app_exec / app_logs operate a deployed app BY NAME: the daemon resolves the
+// name to the app's current instance per request, so they stay correct across a
+// self-heal or rolling update (an agent never has to track the instance id).
+
+type appExecInput struct {
+	AppName  string   `json:"app_name" jsonschema:"name of the app to run in (resolved to its current instance)"`
+	Command  []string `json:"command" jsonschema:"command argv to run"`
+	Cwd      string   `json:"cwd,omitempty" jsonschema:"working directory inside the guest"`
+	Env      []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings"`
+	TimeoutS int      `json:"timeout_s,omitempty" jsonschema:"wall-clock timeout in seconds"`
+}
+
+type appLogsInput struct {
+	AppName string `json:"app_name" jsonschema:"name of the app whose current-instance logs to read"`
+	Source  string `json:"source,omitempty" jsonschema:"filter: service (entrypoint output), exec (command activity), or all (default)"`
+	Since   int64  `json:"since,omitempty" jsonschema:"byte cursor from a previous call's next_offset to continue from; omit to read the recent tail"`
+}
+
+func (h *handlers) appExec(ctx context.Context, _ *mcp.CallToolRequest, in appExecInput) (*mcp.CallToolResult, execOutput, error) {
+	if in.AppName == "" {
+		return nil, execOutput{}, errors.New("app_name is required")
+	}
+	if len(in.Command) == 0 {
+		return nil, execOutput{}, errors.New("command must not be empty")
+	}
+	env, err := envMap(in.Env)
+	if err != nil {
+		return nil, execOutput{}, err
+	}
+	var stdout, stderr bytes.Buffer
+	res, err := h.cfg.Client.AppExec(ctx, in.AppName, wire.ExecRequest{
+		Cmd: in.Command, Cwd: in.Cwd, Env: env, TimeoutSec: h.cfg.clampTimeout(in.TimeoutS),
+	}, &stdout, &stderr)
+	if err != nil {
+		return nil, execOutput{}, err
+	}
+	return nil, toExecOutput(res, stdout.String(), stderr.String()), nil
+}
+
+func (h *handlers) appLogs(ctx context.Context, _ *mcp.CallToolRequest, in appLogsInput) (*mcp.CallToolResult, logsOutput, error) {
+	if in.AppName == "" {
+		return nil, logsOutput{}, errors.New("app_name is required")
+	}
+	switch in.Source {
+	case "", "all", "service", "exec":
+	default:
+		return nil, logsOutput{}, errors.New("source must be service, exec, or all")
+	}
+	since := in.Since
+	if since == 0 {
+		since = -1
+	}
+	resp, err := h.cfg.Client.AppLogs(ctx, in.AppName, since, in.Source)
+	if err != nil {
+		return nil, logsOutput{}, err
+	}
+	out := logsOutput{NextOffset: resp.NextOffset}
+	for _, r := range resp.Records {
+		out.Records = append(out.Records, logRecordOutput{
+			TimeMs: r.TimeMs, Source: r.Source, Stream: r.Stream, Text: r.Text,
+		})
+	}
+	return nil, out, nil
 }
 
 // appSpecFrom builds a validated AppSpec from the tool input, applying the

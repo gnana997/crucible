@@ -76,6 +76,8 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 | `list_apps` | List durable apps with phase, health, and restart count. | — |
 | `get_app` | One app's desired state + observed status. | `name` |
 | `delete_app` | Delete a durable app and tear down its instance. | `name` |
+| `app_exec` | Run a command in an app's **current instance**, addressed by name — resolved per call, so it stays correct across a self-heal or redeploy. | `app_name`, `command[]`, `cwd?`, `env?[]`, `timeout_s?` |
+| `app_logs` | Read an app's current-instance logs, addressed by name. | `app_name`, `source?` (service\|exec\|all), `since?` |
 | `delete_sandbox` | Destroy a sandbox. | `sandbox_id` |
 | `list_snapshots` | List snapshots. | — |
 | `delete_snapshot` | Delete a snapshot. | `snapshot_id` |
@@ -85,6 +87,7 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 - **Booting an image** — set `image` (e.g. `nginx:alpine` or a converted digest) instead of `profile` on `run`/`create_sandbox`; the daemon pulls + converts on a store miss (`pull`: missing/always/never). `image` and `profile` are mutually exclusive. `create_sandbox` boots the image's entrypoint and can `publish` host ports (`["8080:80"]`), echoing the applied mappings back.
 - **The primitives (`create`/`exec`/`snapshot`/`fork`)** are what make crucible special: an agent can set up once, branch N ways, and keep the best. `logs` lets it inspect what ran (even after the sandbox is gone); `stop_sandbox` halts a workload without removing it.
 - **`exec` is capture-and-return** — the full result (`exit_code`, `stdout`, `stderr`, `timed_out`, `oom_killed`, `duration_ms`). Live streaming and interactive REPLs are not in this release (the interactive shell is a CLI/TUI feature).
+- **Operating a deployed app (`app_exec` / `app_logs`)** — address a durable app by **name**, not by sandbox id. The daemon resolves the name to the app's current instance on every call, so an agent that deployed a workload can exec into it or read its logs without tracking the instance id, and it keeps working after the app self-heals or is redeployed. The app CRUD tools (`create_app` … `delete_app`) manage the workload; these two operate the live instance.
 - **The file loop (`write_files` / `read_file`)** completes the agentic cycle: write code in, run it, read the result out. `write_files` takes absolute guest paths (parents created, overwrites); it's gated like `exec`. `read_file` returns **content only** (bounded by `max_bytes`; binary is base64-encoded with a `truncated` flag) — nothing is written host-side, so it carries no filesystem-escape risk. Pulling a whole directory *tree* onto the host is intentionally not exposed.
 - **Errors** surface as MCP tool errors carrying the daemon's message (e.g. unknown profile, sandbox not found), so the agent gets something actionable.
 

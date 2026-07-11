@@ -139,7 +139,7 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpDelete}
 	case "list_apps", "get_app":
 		return []policy.Operation{policy.OpRead}
-	case "exec":
+	case "exec", "app_exec":
 		return []policy.Operation{policy.OpExec}
 	case "write_files":
 		// Writing files into a sandbox is exec-grade power over the guest.
@@ -149,7 +149,7 @@ func toolOps(name string) []policy.Operation {
 	case "stop_sandbox":
 		// The daemon gates service/stop as an exec-class mutation.
 		return []policy.Operation{policy.OpExec}
-	case "logs":
+	case "logs", "app_logs":
 		return []policy.Operation{policy.OpRead}
 	case "snapshot":
 		return []policy.Operation{policy.OpSnapshot}

@@ -98,7 +98,7 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
 
-> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 19 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
+> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 22 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 
 ## Roadmap
 
