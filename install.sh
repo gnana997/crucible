@@ -38,7 +38,10 @@
 #   PREFIX (/usr/local), CLIENT_BINDIR (client install dir), FC_VERSION,
 #   ROOTFS_PROFILE (default: base), KERNEL_URL / KERNEL_SHA256 (override kernel),
 #   PROXY_LISTEN (:80), PROXY_TLS_LISTEN (:443), PROXY_DOMAIN (apps.local) —
-#   ingress-proxy defaults; set PROXY_TLS_LISTEN= or use --no-proxy to opt out.
+#   ingress-proxy defaults; any free TCP ports work (pin an interface with
+#   host:port). Set PROXY_TLS_LISTEN= or use --no-proxy to opt out. Example
+#   (non-privileged high ports; put env before sudo, or use sudo -E):
+#     PROXY_LISTEN=:8080 PROXY_TLS_LISTEN=:8443 sudo -E bash install.sh --enable
 
 set -euo pipefail
 
