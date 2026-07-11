@@ -149,7 +149,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Interactive exec (WebSocket)
+         * @description WebSocket upgrade for a full-duplex interactive exec. The client's first message is the JSON ExecRequest; after that, the concatenated binary message payloads in each direction form exactly the same length-prefixed frame stream as POST ?stdin=1 (stdin/stdin_close up, stdout/stderr/exit down). Frames may split across messages — decode the concatenated stream. Non-WebSocket GETs answer 426.
+         */
+        get: operations["execSandboxWS"];
         put?: never;
         /**
          * Run a command (streams frames)
@@ -1005,6 +1009,45 @@ export interface operations {
         responses: {
             /** @description No Content */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    execSandboxWS: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Sandbox ID, e.g. sbx_ab12cd34. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
                 headers: {
                     [name: string]: unknown;
                 };

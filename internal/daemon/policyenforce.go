@@ -57,6 +57,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 	}
 	switch method {
 	case http.MethodGet:
+		// GET /sandboxes/{id}/exec is the WebSocket interactive exec —
+		// running commands in the guest, not a read.
+		if strings.HasSuffix(path, "/exec") {
+			return policy.OpExec, true
+		}
 		return policy.OpRead, true
 	case http.MethodDelete:
 		return policy.OpDelete, true

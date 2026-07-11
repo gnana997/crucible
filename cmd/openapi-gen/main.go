@@ -201,6 +201,17 @@ func buildReflector() *openapi3.Reflector {
 			"([type:1][reserved:3][size:4 BE][payload]) where type is stdout, stderr, or exit; the "+
 			"exit payload is a JSON ExecResult. Set ?stdin=1 for a hijacked, full-duplex interactive exec.",
 		execReq{}, http.StatusBadRequest, http.StatusNotFound)
+	// The WebSocket variant of interactive exec — the transport for
+	// non-Go SDKs (fetch() cannot speak the hijacked ?stdin=1 stream).
+	// OpenAPI cannot model a WebSocket session, so the contract is prose.
+	jsonOp(http.MethodGet, "/sandboxes/{id}/exec", "execSandboxWS", "sandboxes",
+		"Interactive exec (WebSocket)",
+		"WebSocket upgrade for a full-duplex interactive exec. The client's first message is "+
+			"the JSON ExecRequest; after that, the concatenated binary message payloads in each "+
+			"direction form exactly the same length-prefixed frame stream as POST ?stdin=1 "+
+			"(stdin/stdin_close up, stdout/stderr/exit down). Frames may split across messages — "+
+			"decode the concatenated stream. Non-WebSocket GETs answer 426.",
+		idParam{}, nil, http.StatusSwitchingProtocols, http.StatusBadRequest, http.StatusNotFound)
 	jsonOp(http.MethodPost, "/sandboxes/{id}/files", "putFiles", "sandboxes", "Push files into a sandbox",
 		"Extracts a tar stream (the request body, application/octet-stream) beneath ?path in the "+
 			"guest filesystem; the `crucible cp` push path. Rejects entries that escape the destination.",

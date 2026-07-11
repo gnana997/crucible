@@ -42,6 +42,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sandboxes/{id}", s.handleGetSandbox)
 	mux.HandleFunc("DELETE /sandboxes/{id}", s.handleDeleteSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/exec", s.handleExecSandbox)
+	// WebSocket variant of interactive exec — the cross-language
+	// transport (see exec_ws.go). Gated as `exec`, not `read`.
+	mux.HandleFunc("GET /sandboxes/{id}/exec", s.handleExecWS)
 	mux.HandleFunc("POST /sandboxes/{id}/files", s.handlePutFiles)
 	mux.HandleFunc("GET /sandboxes/{id}/files", s.handleGetFile)
 	// Supervised-service API (experimental): proxies to the guest

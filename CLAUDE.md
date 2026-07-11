@@ -8,7 +8,7 @@ DNS-proxy) + clone-safety + a durable, reconciled registry. Go 1.25, Apache-2.0.
 
 Start with `README.md`. Deeper docs live in `docs/`: [VISION](docs/VISION.md)
 (why it's shaped this way), [architecture](docs/architecture.md) (how the code
-fits together), [api](docs/api.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
+fits together), [api](docs/api.md), [wire](docs/wire.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
 [tui](docs/tui.md), [policy](docs/policy.md),
 [profiles](docs/profiles.md), [network](docs/network.md),
 [benchmarks](docs/benchmarks.md), and

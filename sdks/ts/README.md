@@ -12,6 +12,7 @@ CI regenerates it and fails on any diff, mirroring the spec's route-coverage
 test.
 
 The hand-written TypeScript SDK (fetch-based client + the binary exec-frame
-codec, which OpenAPI cannot model — see [`docs/api.md`](../../docs/api.md)
-for the frame format) will live alongside these types. Contributions
+codec, which OpenAPI cannot model — specified in
+[`docs/wire.md`](../../docs/wire.md), with conformance fixtures under
+[`sdks/fixtures`](../fixtures)) will live alongside these types. Contributions
 welcome once the scaffold lands.

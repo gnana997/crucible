@@ -488,6 +488,51 @@
       }
     },
     "/sandboxes/{id}/exec": {
+      "get": {
+        "tags": [
+          "sandboxes"
+        ],
+        "summary": "Interactive exec (WebSocket)",
+        "description": "WebSocket upgrade for a full-duplex interactive exec. The client's first message is the JSON ExecRequest; after that, the concatenated binary message payloads in each direction form exactly the same length-prefixed frame stream as POST ?stdin=1 (stdin/stdin_close up, stdout/stderr/exit down). Frames may split across messages — decode the concatenated stream. Non-WebSocket GETs answer 426.",
+        "operationId": "execSandboxWS",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sandbox ID, e.g. sbx_ab12cd34.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Sandbox ID, e.g. sbx_ab12cd34."
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "sandboxes"

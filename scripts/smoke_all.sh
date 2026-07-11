@@ -45,6 +45,7 @@ SMOKES=(
   "kvm        smoke_run_image.sh"    # one-command create --image
   "kvm        smoke_testapp.sh"      # host port publish + curl from host
   "kvm        smoke_shell.sh"        # interactive shell (M-series feature)
+  "kvm        smoke_ws_exec.sh"      # WebSocket interactive exec (cross-language transport)
   "kvm        smoke_cp.sh"           # crucible cp push (files into a sandbox)
   "kvm        smoke_build_run.sh"    # crucible build + run + stop/rm + --rm
   "kvm        smoke_reap.sh"         # orphan VMM + cgroup reaping

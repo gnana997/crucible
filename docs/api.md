@@ -30,6 +30,7 @@ The daemon supports bearer-token API keys, on the same model as the Docker or Ku
 | `GET` | `/sandboxes/{id}` | Inspect a sandbox |
 | `DELETE` | `/sandboxes/{id}` | Destroy a sandbox |
 | `POST` | `/sandboxes/{id}/exec` | Run a command (streamed frames). Add `?stdin=1` for an **interactive**, full-duplex session — the connection is hijacked and the client sends `FrameStdin`/`FrameStdinClose` (what `crucible shell` / `exec -i` use). |
+| `GET` | `/sandboxes/{id}/exec` | **WebSocket** upgrade for the same interactive session — the transport for non-Go clients (browser-style HTTP APIs can't speak the hijacked stream). Gated as `exec`, like the POST. |
 | `POST` | `/sandboxes/{id}/files` | Push a **tar** stream into the guest, extracted beneath `?path=<dest>` (the `crucible cp` push / MCP `write_files`). Streamed, not buffered; entries that escape the dest are rejected. Returns `{files, bytes}`. |
 | `GET` | `/sandboxes/{id}/files` | Read one guest file's bytes: `?path=<file>&max_bytes=<n>` (the MCP `read_file`). Content only — nothing is written host-side, so there is no traversal surface. |
 | `GET` | `/sandboxes/{id}/logs` | Durable per-sandbox logs (entrypoint output + exec activity). Query: `source=service\|exec\|all`, `since=<byte-cursor>`, tail bounds. `501` when the daemon has no log store configured. |
@@ -181,6 +182,8 @@ Because the `200` is committed before the command finishes, a failure *after* st
 
 **Interactive exec** (`POST /sandboxes/{id}/exec?stdin=1`). The one-shot path above is buffered. For a live shell, the daemon **hijacks** the connection into a full-duplex framed stream after the `200`: the client sends inbound frames `4` = stdin and `5` = stdin-close (EOF), and reads the same stdout/stderr/exit frames back. State (`cd`, env) persists for the life of the long-lived process. This is what `crucible shell <id>` and `sandbox exec -i` use; it is line-buffered with **no PTY**. The one-shot path is unchanged.
 
+**Interactive exec over WebSocket** (`GET /sandboxes/{id}/exec` + upgrade handshake). The same session for clients that can't hijack a raw connection (fetch-based runtimes, anything behind an L7 proxy). The client's first message is the JSON `ExecRequest`; after that, the concatenated **binary** message payloads in each direction form exactly the same frame stream as the hijacked path — same byte layout, same frame types, so one frame codec serves both transports. Frames may split across WebSocket messages: decode the concatenated stream, not individual messages. Pre-upgrade failures (unknown sandbox) are plain HTTP errors on the handshake; post-upgrade validation failures close the socket with status 1008 and a reason. A plain GET without the upgrade handshake answers 426.
+
 **`ExecResult`** (the exit-frame payload):
 
 ```json
@@ -277,4 +280,4 @@ SNP=$(curl -s -XPOST localhost:7878/sandboxes/$SBX/snapshot | jq -r .id)
 curl -s -XPOST "localhost:7878/snapshots/$SNP/fork?count=4" | jq '.sandboxes[].id'
 ```
 
-The exec response is a binary frame stream; a real client parses the frames (see `sdk/wire` for the reference reader/writer). The Python SDK on the roadmap wraps all of this.
+The exec response is a binary frame stream — specified language-neutrally in [wire.md](wire.md), with conformance fixtures under `sdks/fixtures` (see `sdk/wire` for the reference reader/writer). The Python SDK on the roadmap wraps all of this.

@@ -20,7 +20,7 @@ CLIENT_GOARCH ?= $(shell go env GOARCH)
 CLIENT_EXT    := $(if $(filter windows,$(CLIENT_GOOS)),.exe,)
 CLIENT_PLATFORMS ?= darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64
 
-.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help openapi gen-ts gen-py gen
+.PHONY: all build bench client client-all agent rootfs profile test race vet fmt lint tidy clean hooks help openapi gen-ts gen-py gen-fixtures gen
 
 all: fmt vet test build
 
@@ -42,6 +42,7 @@ help:
 	@echo "  gen      - openapi + gen-ts + gen-py (all generated artifacts)"
 	@echo "  gen-ts   - regenerate TS types from docs/openapi.json (needs npx)"
 	@echo "  gen-py   - regenerate Python models from docs/openapi.json (needs uvx)"
+	@echo "  gen-fixtures - regenerate wire-protocol conformance fixtures (sdks/fixtures)"
 	@echo "  tidy     - go mod tidy"
 	@echo "  clean    - remove built binaries"
 
@@ -124,7 +125,10 @@ gen-py:
 	  --formatters black isort \
 	  --output sdks/python/crucible/models.py
 
-gen: openapi gen-ts gen-py
+gen-fixtures:
+	go run ./sdks/fixtures/gen -out sdks/fixtures
+
+gen: openapi gen-ts gen-py gen-fixtures
 
 race:
 	go test -race $(PKG)

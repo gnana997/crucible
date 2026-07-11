@@ -130,6 +130,7 @@ func serveStubServiceAgent(t *testing.T, sock string, agent *stubServiceAgent) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	agent.register(mux)
+	registerEchoExec(t, mux)
 	srv := &http.Server{Handler: mux, ReadTimeout: 10 * time.Second}
 	done := make(chan struct{})
 	go func() { _ = srv.Serve(hybridVsockListener{raw: raw}); close(done) }()
