@@ -17,7 +17,8 @@
     "logo": {
       "light": "/brand/logo-light.svg",
       "dark": "/brand/logo-dark.svg"
-    }
+    },
+    "homeUrl": "https://cruciblehq.dev"
   },
   "content": {
     "root": "docs",
@@ -63,7 +64,6 @@
           "group": "Reference",
           "pages": [
             "api",
-            "wire",
             "mcp",
             "architecture",
             "benchmarks"
@@ -84,7 +84,8 @@
         "sdks/overview",
         "sdks/go",
         "sdks/typescript",
-        "sdks/python"
+        "sdks/python",
+        "wire"
       ]
     }
   ],
