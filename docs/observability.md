@@ -63,10 +63,31 @@ go tool pprof http://127.0.0.1:6060/debug/pprof/heap
 Off by default. pprof exposes process memory, so bind **loopback** (or protect
 the port) — the daemon warns on a non-loopback bind.
 
-## OTLP export (coming)
+## OTLP metric export
 
-OTLP export of metrics, logs, and traces is the next milestone. The daemon will
-honor the standard `OTEL_EXPORTER_OTLP_ENDPOINT` / `OTEL_RESOURCE_ATTRIBUTES`
-environment variables (and explicit flags), so pointing it at any OTLP backend
-or your own Collector is a one-liner. Until then, scrape `/metrics` — Prometheus
-itself now ingests OTLP natively, so the same data flows either way.
+The daemon can push the **same `/metrics` series** over OTLP to any OTLP backend
+or your own Collector/Vector/Alloy — no metric is redefined; an OpenTelemetry
+Prometheus **bridge** pulls the registry and exports it. One flag turns it on:
+
+```bash
+crucible daemon … --otlp-endpoint http://collector:4317        # gRPC (default)
+crucible daemon … --otlp-endpoint http://collector:4318 --otlp-protocol http
+```
+
+- `--otlp-protocol grpc|http`, `--otlp-headers k=v,k=v` (auth/tenant),
+  `--otlp-insecure` (plaintext).
+- Standard **`OTEL_EXPORTER_OTLP_*`** and `OTEL_RESOURCE_ATTRIBUTES` /
+  `OTEL_SERVICE_NAME` env vars are honored natively (flags override them), so if
+  you already run OpenTelemetry it just works.
+- The export carries a resource of `service.name` (default `crucible`),
+  `service.version`, and `host.name`, plus your `OTEL_RESOURCE_ATTRIBUTES`.
+- Off by default. Setup failures are logged and skipped — `/metrics` keeps
+  serving regardless.
+
+`/metrics` and OTLP are two views of one registry; use either, or both.
+
+## Logs & traces over OTLP (coming)
+
+App-log and trace export over OTLP are the next milestones (logs stream from the
+durable log store; traces cover deploy / sleep / wake / proxy spans). Until then,
+app logs are available via `crucible logs` / `crucible app logs -f`.

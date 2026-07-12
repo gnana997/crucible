@@ -3,6 +3,9 @@ package telemetry
 import (
 	"context"
 	"log/slog"
+	"os"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // Exporter is the seam for a telemetry sink. O-M1 defines the interface and the
@@ -24,17 +27,26 @@ type Provider struct {
 	log       *slog.Logger
 }
 
-// Config configures the Provider. O-M1 carries only the identity; exporter
-// config (OTLP endpoint, stdout, log routing) arrives in later milestones.
+// Config configures the Provider.
 type Config struct {
 	ServiceName string
 	Logger      *slog.Logger
+
+	// OTLP metric export (v0.5.4 O-M3). Off unless OTLPEndpoint or an
+	// OTEL_EXPORTER_OTLP_* env var is set. Gatherer is the Prometheus registry
+	// bridged to OTLP (the same series /metrics serves).
+	OTLPEndpoint string
+	OTLPProtocol string // "grpc" (default) or "http"
+	OTLPHeaders  string // "k=v,k=v" (auth/tenant); SDK-parsed
+	OTLPInsecure bool
+	Gatherer     prometheus.Gatherer
 }
 
-// New builds the Provider. It never fails for a plain daemon: with no exporters
-// configured it is an inert identity holder, so telemetry stays zero-surprise —
-// nothing is exported unless an exporter is explicitly configured.
-func New(cfg Config) *Provider {
+// New builds the Provider. It never hard-fails: with no exporters configured it
+// is an inert identity holder (zero-surprise — nothing exported unless asked),
+// and an OTLP setup error is logged and skipped so the daemon still starts (and
+// /metrics keeps serving regardless).
+func New(ctx context.Context, cfg Config) *Provider {
 	log := cfg.Logger
 	if log == nil {
 		log = slog.Default()
@@ -45,6 +57,22 @@ func New(cfg Config) *Provider {
 		"service.name", res.ServiceName,
 		"service.version", res.ServiceVersion,
 		"host.name", res.HostName)
+
+	applyOTLPEnv(cfg)
+	if otlpEnabled() {
+		switch cfg.Gatherer {
+		case nil:
+			p.log.Warn("otlp metrics: no metrics registry supplied; export skipped")
+		default:
+			if om, err := newOTLPMetrics(ctx, res.otel(), cfg.Gatherer); err != nil {
+				p.log.Warn("otlp metrics export disabled", "err", err)
+			} else {
+				p.Register(om)
+				p.log.Info("otlp metrics export enabled",
+					"endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+			}
+		}
+	}
 	return p
 }
 

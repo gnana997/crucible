@@ -104,7 +104,7 @@ func TestProviderLifecycle(t *testing.T) {
 	}
 	nilP.Register(&fakeExporter{name: "x"}) // must not panic
 
-	p := New(Config{ServiceName: "test"})
+	p := New(context.Background(), Config{ServiceName: "test"})
 	if p.Resource.ServiceName != "test" {
 		t.Errorf("resource service name = %q", p.Resource.ServiceName)
 	}

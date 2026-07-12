@@ -129,6 +129,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// honored when the flag is unset.
 		otelService  = fs.String("otel-service-name", "", "service.name for exported telemetry (default: $OTEL_SERVICE_NAME, else \"crucible\")")
 		pprofListen  = fs.String("pprof-listen", "", "serve Go net/http/pprof on this address for daemon profiling; empty = off. Exposes process memory — bind loopback (e.g. 127.0.0.1:6060) or protect the port")
+		otlpEndpoint = fs.String("otlp-endpoint", "", "OTLP endpoint to push metrics to (e.g. http://collector:4317); empty = off. Honors OTEL_EXPORTER_OTLP_ENDPOINT")
+		otlpProtocol = fs.String("otlp-protocol", "", "OTLP protocol: grpc (default) or http")
+		otlpHeaders  = fs.String("otlp-headers", "", "OTLP headers as k=v,k=v (auth/tenant); also OTEL_EXPORTER_OTLP_HEADERS")
+		otlpInsecure = fs.Bool("otlp-insecure", false, "use plaintext (no TLS) for the OTLP exporter")
 		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
 		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
 		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
@@ -441,10 +445,19 @@ Required flags:
 
 	mx := metrics.New()
 
-	// Telemetry seam (v0.5.4 O-M1): the daemon's exported-signal identity.
-	// Inert until an exporter is configured (Prometheus /metrics is separate and
-	// always on); OTLP export rides this in a later milestone.
-	tele := telemetry.New(telemetry.Config{ServiceName: *otelService, Logger: logger})
+	// Telemetry seam (v0.5.4): the daemon's exported-signal identity + OTLP metric
+	// export. Prometheus /metrics is separate and always on; OTLP bridges the same
+	// registry and pushes it when --otlp-endpoint (or OTEL_* env) is set. Failure
+	// to set up OTLP is logged and skipped — the daemon still starts.
+	tele := telemetry.New(context.Background(), telemetry.Config{
+		ServiceName:  *otelService,
+		Logger:       logger,
+		OTLPEndpoint: *otlpEndpoint,
+		OTLPProtocol: *otlpProtocol,
+		OTLPHeaders:  *otlpHeaders,
+		OTLPInsecure: *otlpInsecure,
+		Gatherer:     mx.Gatherer(),
+	})
 
 	// Go pprof (v0.5.4 J9 slice): off unless --pprof-listen is set.
 	var pprofSrv *http.Server

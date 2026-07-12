@@ -4,6 +4,9 @@ import (
 	"os"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+
 	"github.com/gnana997/crucible/internal/version"
 )
 
@@ -37,6 +40,22 @@ func NewResource(serviceName string) Resource {
 		HostName:       host,
 		Extra:          parseResourceAttrs(os.Getenv("OTEL_RESOURCE_ATTRIBUTES")),
 	}
+}
+
+// otel maps the Resource to an OpenTelemetry *resource.Resource for the OTLP
+// pipeline: service.name/version, host.name, and any OTEL_RESOURCE_ATTRIBUTES.
+func (r Resource) otel() *sdkresource.Resource {
+	attrs := []attribute.KeyValue{
+		attribute.String("service.name", r.ServiceName),
+		attribute.String("service.version", r.ServiceVersion),
+	}
+	if r.HostName != "" {
+		attrs = append(attrs, attribute.String("host.name", r.HostName))
+	}
+	for k, v := range r.Extra {
+		attrs = append(attrs, attribute.String(k, v))
+	}
+	return sdkresource.NewSchemaless(attrs...)
 }
 
 func parseResourceAttrs(s string) map[string]string {

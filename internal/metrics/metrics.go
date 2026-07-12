@@ -154,6 +154,16 @@ func (m *Metrics) ObserveSnapshotRestore(d time.Duration) {
 	m.snapshotRestoreDuration.Observe(d.Seconds())
 }
 
+// Gatherer exposes the underlying Prometheus registry so an OTLP metric pipeline
+// (the OTel Prometheus bridge) can pull the same series and push them over OTLP
+// without redefining any metric. Nil-safe: returns nil on a nil *Metrics.
+func (m *Metrics) Gatherer() prometheus.Gatherer {
+	if m == nil {
+		return nil
+	}
+	return m.reg
+}
+
 // Handler returns the /metrics HTTP handler. On a nil *Metrics it returns
 // a 404 handler so the route can be registered unconditionally.
 func (m *Metrics) Handler() http.Handler {

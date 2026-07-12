@@ -35,6 +35,7 @@ CHROOT_BASE="${CHROOT_BASE:-/srv/jailer}"
 LISTEN="${LISTEN:-127.0.0.1:7901}"
 PROXY_PORT="${PROXY_PORT:-7902}"
 PPROF_PORT="${PPROF_PORT:-7903}"
+OTLP_PORT="${OTLP_PORT:-14317}"   # a dummy OTLP endpoint (no collector) — wiring check only
 DOMAIN="${DOMAIN:-apps.local}"
 BASE_URL="http://${LISTEN}"
 IMAGE="${IMAGE:-nginx:alpine}"
@@ -87,6 +88,7 @@ start_daemon() {
     --app-db "$APP_DB" --network-egress-iface "$EGRESS_IFACE" \
     --proxy-listen "127.0.0.1:$PROXY_PORT" --proxy-domain "$DOMAIN" \
     --pprof-listen "127.0.0.1:$PPROF_PORT" \
+    --otlp-endpoint "http://127.0.0.1:${OTLP_PORT}" --otlp-insecure \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
   for _ in {1..150}; do
@@ -141,6 +143,16 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:${
 [[ "$code" == "200" ]] && pass "pprof index serves 200 on :$PPROF_PORT" || fail "pprof did not serve (code=$code)"
 hcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:${PPROF_PORT}/debug/pprof/heap" 2>/dev/null)"
 [[ "$hcode" == "200" ]] && pass "pprof heap profile serves" || fail "pprof heap did not serve (code=$hcode)"
+
+echo "== 05 OTLP metric export wired (O-M3)"
+# No collector runs, so we assert the pipeline was BUILT (the grpc exporter is
+# lazy — a missing collector doesn't fail startup). Full arrival is validated
+# against a real collector + the internal/telemetry bridge unit test.
+if grep -qa '"msg":"otlp metrics export enabled"' "$DAEMON_LOG"; then
+  pass "OTLP metric export enabled (bridges the Prometheus registry)"
+else
+  fail "OTLP export not enabled — expected the enable log line"
+fi
 
 echo "==============================================================="
 echo " observability smoke: $PASS passed, $FAIL failed"
