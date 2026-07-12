@@ -18,8 +18,10 @@ class AppStatus(BaseModel):
     instance_generation: conint(ge=0) | None = None
     instance_id: str | None = None
     last_error: str | None = None
+    last_wake_latency_ms: int | None = None
     phase: str | None = None
     restarts: int | None = None
+    sleep_count: int | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -153,6 +155,11 @@ class ServiceStopReq(BaseModel):
     grace_s: int | None = None
 
 
+class SleepPolicy(BaseModel):
+    idle_timeout_s: int | None = None
+    min_scale: int | None = None
+
+
 class SnapshotResponse(BaseModel):
     created_at: AwareDatetime | None = None
     dir: str | None = None
@@ -220,6 +227,7 @@ class AppResponse(BaseModel):
     pull: str | None = None
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
+    sleep: SleepPolicy | None = None
     status: AppStatus | None = None
     updated_at: AwareDatetime | None = None
     vcpus: int | None = None
@@ -252,6 +260,7 @@ class CreateAppRequest(BaseModel):
     pull: str | None = None
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
+    sleep: SleepPolicy | None = None
     vcpus: int | None = None
 
 
@@ -311,6 +320,7 @@ class UpdateAppReq(BaseModel):
     pull: str | None = None
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
+    sleep: SleepPolicy | None = None
     vcpus: int | None = None
 
 

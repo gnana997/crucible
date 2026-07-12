@@ -568,6 +568,7 @@ export interface components {
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
+            sleep?: components["schemas"]["SleepPolicy"];
             status?: components["schemas"]["AppStatus"];
             /** Format: date-time */
             updated_at?: string;
@@ -578,8 +579,11 @@ export interface components {
             instance_generation?: number;
             instance_id?: string;
             last_error?: string;
+            /** Format: int64 */
+            last_wake_latency_ms?: number;
             phase?: string;
             restarts?: number;
+            sleep_count?: number;
         };
         ConfigureServiceReq: {
             cmd?: string[] | null;
@@ -612,6 +616,7 @@ export interface components {
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
+            sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
         };
         CreateSandboxRequest: {
@@ -769,6 +774,10 @@ export interface components {
         ServiceStopReq: {
             grace_s?: number;
         };
+        SleepPolicy: {
+            idle_timeout_s?: number;
+            min_scale?: number;
+        };
         SnapshotListResponse: {
             snapshots?: components["schemas"]["SnapshotResponse"][] | null;
         };
@@ -801,6 +810,7 @@ export interface components {
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
+            sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
         };
         Whoami: {

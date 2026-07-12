@@ -174,6 +174,12 @@ type Sandbox struct {
 	execClient *agentapi.Client // cached; nil when VSockPath is empty
 	publish    PublishHandle    // active forwarders; nil when nothing published
 
+	// asleep, when non-nil, holds the snapshot artifacts captured by
+	// SleepInPlace to wake from: the VMM is stopped (RAM freed) but the record,
+	// netns, and workdir are kept. Cleared by WakeInPlace. In-memory only —
+	// surviving a daemon restart while asleep is a later item (C8).
+	asleep *sleepState
+
 	// done is closed by Manager.Delete once this sandbox is removed
 	// from the map. Used by the lifetime-timeout goroutine to exit
 	// cleanly when the sandbox is deleted by other means. Callers

@@ -1,8 +1,9 @@
 package daemon
 
-// SPIKE (v0.5.0 B3/B4) — experimental, undocumented routes that drive the
-// in-place sleep/wake spike in internal/sandbox/spike_sleepwake.go. Not part of
-// the public API; delete alongside the spike once B3/B4 land for real.
+// Sandbox-level in-place sleep/wake routes (v0.5.0 B3/B4). These are the
+// low-level primitive, parallel to snapshot/fork; the product-facing surface is
+// app-level sleep/wake (drives these through the app control plane). Not yet in
+// the public API docs while scale-to-zero is under construction.
 
 import (
 	"errors"
@@ -12,7 +13,7 @@ import (
 	"github.com/gnana997/crucible/internal/sandbox"
 )
 
-func (s *Server) handleSpikeSleep(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSleepSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !sandbox.IsValidID(id) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))
@@ -34,7 +35,7 @@ func (s *Server) handleSpikeSleep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "state": "asleep"})
 }
 
-func (s *Server) handleSpikeWake(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleWakeSandbox(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !sandbox.IsValidID(id) {
 		writeError(w, http.StatusBadRequest, errors.New("invalid sandbox id"))

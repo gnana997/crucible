@@ -79,6 +79,7 @@ func stubAgentHandler() http.Handler {
 	}
 	mux.HandleFunc("POST /identity/refresh", ok)
 	mux.HandleFunc("POST /network/refresh", ok)
+	mux.HandleFunc("POST /wake", ok)
 	return mux
 }
 

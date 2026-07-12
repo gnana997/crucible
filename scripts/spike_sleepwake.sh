@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# SPIKE (v0.5.0 B3/B4) — de-risk the in-place sleep/wake snapshot flow.
+# Smoke test for in-place sleep/wake (v0.5.0 B3/B4).
 #
-# What this proves (or disproves) on real KVM:
+# Drives the real sandbox-level primitives: SleepInPlace snapshots + stops the
+# VMM (freeing RAM) keeping the netns; WakeInPlace restores in place, reseeding
+# the CRNG and stepping the guest clock via the agent /wake endpoint.
+#
+# What this proves on real KVM:
 #   1. A networked, listening guest can be snapshotted, its VMM killed
 #      (RAM freed), and then RESTORED IN PLACE — same id, same netns, same IP.
 #   2. The netns is KEPT across sleep (teardown asymmetry): unlike Delete, sleep

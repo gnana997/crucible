@@ -2120,6 +2120,9 @@
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
           },
+          "sleep": {
+            "$ref": "#/components/schemas/SleepPolicy"
+          },
           "status": {
             "$ref": "#/components/schemas/AppStatus"
           },
@@ -2148,10 +2151,17 @@
           "last_error": {
             "type": "string"
           },
+          "last_wake_latency_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
           "phase": {
             "type": "string"
           },
           "restarts": {
+            "type": "integer"
+          },
+          "sleep_count": {
             "type": "integer"
           }
         }
@@ -2246,6 +2256,9 @@
           },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
+          },
+          "sleep": {
+            "$ref": "#/components/schemas/SleepPolicy"
           },
           "vcpus": {
             "type": "integer"
@@ -2739,6 +2752,17 @@
           }
         }
       },
+      "SleepPolicy": {
+        "type": "object",
+        "properties": {
+          "idle_timeout_s": {
+            "type": "integer"
+          },
+          "min_scale": {
+            "type": "integer"
+          }
+        }
+      },
       "SnapshotListResponse": {
         "type": "object",
         "properties": {
@@ -2832,6 +2856,9 @@
           },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
+          },
+          "sleep": {
+            "$ref": "#/components/schemas/SleepPolicy"
           },
           "vcpus": {
             "type": "integer"

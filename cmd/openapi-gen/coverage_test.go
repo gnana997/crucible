@@ -15,6 +15,11 @@ import (
 // declared in buildReflector or listed here on purpose — never silently missing.
 var routesExcludedFromSpec = map[string]string{
 	"GET /metrics": "Prometheus scrape endpoint; not SDK-facing (text exposition, not JSON)",
+	// Sandbox-level in-place sleep/wake (v0.5.0 B3/B4): low-level primitive,
+	// not in the public API surface while scale-to-zero is under construction
+	// (the product surface will be app-level sleep/wake).
+	"POST /sandboxes/{id}/sleep": "v0.5.0 scale-to-zero primitive; not yet public API",
+	"POST /sandboxes/{id}/wake":  "v0.5.0 scale-to-zero primitive; not yet public API",
 }
 
 // TestOpenAPICoversAllRoutes is the drift guard for the reflection-based generator.
