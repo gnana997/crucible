@@ -274,6 +274,40 @@ func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string
 	return sb.ID, nil
 }
 
+// SnapshotInstance snapshots a running instance WITHOUT stopping it — the golden
+// template a horizontally-scaled app forks its warm replicas from.
+func (a appInstantiator) SnapshotInstance(ctx context.Context, instanceID string) (string, error) {
+	snap, err := a.s.cfg.Manager.Snapshot(ctx, instanceID)
+	if err != nil {
+		return "", err
+	}
+	return snap.ID, nil
+}
+
+// ForkInstance stamps a fresh warm instance from a golden snapshot (lazy memory,
+// clone-safe identity rotation → a distinct machine-id/hostname/IP). No host
+// publish: extras are reached through the ingress proxy by name, so they don't
+// bind host ports (which a second instance couldn't co-bind anyway).
+func (a appInstantiator) ForkInstance(ctx context.Context, snapshotID string) (string, error) {
+	sbs, err := a.s.cfg.Manager.Fork(ctx, snapshotID, 1, "", nil)
+	if err != nil {
+		return "", err
+	}
+	if len(sbs) == 0 {
+		return "", fmt.Errorf("fork from %s returned no instance", snapshotID)
+	}
+	return sbs[0].ID, nil
+}
+
+// DeleteSnapshot GCs a golden snapshot. Already-gone is success.
+func (a appInstantiator) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	err := a.s.cfg.Manager.DeleteSnapshot(ctx, snapshotID)
+	if errors.Is(err, sandbox.ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // NewAppInstantiator returns the daemon's app.Instantiator. Exposed so the
 // process wiring (cmd/crucible) can construct the app manager.
 func (s *Server) NewAppInstantiator() app.Instantiator { return appInstantiator{s: s} }

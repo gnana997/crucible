@@ -66,6 +66,21 @@ type Instantiator interface {
 	// persisted-asleep app can be re-adopted vs. cold-booted.
 	SnapshotExists(snapshotID string) bool
 
+	// SnapshotInstance snapshots a RUNNING instance without stopping it, returning
+	// the snapshot id — the "golden" template a horizontally-scaled app forks its
+	// warm replicas from (v0.5.2). Distinct from Sleep, which stops the VMM.
+	SnapshotInstance(ctx context.Context, instanceID string) (snapshotID string, err error)
+
+	// ForkInstance stamps a fresh WARM instance from a golden snapshot (lazy
+	// memory, ~O(working set)), with clone-safe identity rotation — a distinct
+	// machine-id/hostname/IP from every other replica. The scale-up path that
+	// beats a cold boot.
+	ForkInstance(ctx context.Context, snapshotID string) (instanceID string, err error)
+
+	// DeleteSnapshot GCs a golden snapshot (on app delete/stop or a generation
+	// change). Absent/already-gone is not an error.
+	DeleteSnapshot(ctx context.Context, snapshotID string) error
+
 	// ImageHealth returns the health check derived from the image's Docker
 	// HEALTHCHECK, or nil if the image declares none (or NONE). Used to seed an
 	// app's health when it declares none of its own.
@@ -142,6 +157,13 @@ type replica struct {
 	health     string // healthy | unknown (probed as part of L4's traffic-based checks)
 }
 
+// goldenSnap is the snapshot of a healthy primary that an app's warm replicas
+// are forked from, tagged with the spec generation it was captured at.
+type goldenSnap struct {
+	snapshotID string
+	generation uint64
+}
+
 // Tuning. Backoff is exponential between restart attempts; a run that
 // survives crashLoopWindow resets the failure count; crashLoopThreshold
 // consecutive fast failures flip the phase to crashlooping (still retried,
@@ -198,6 +220,10 @@ type Manager struct {
 	// orphan them. Empty for a single-instance app, so the primary path is
 	// unchanged.
 	extras map[string][]*replica
+	// golden holds, per app, the snapshot of a healthy primary that extras are
+	// forked warm from (v0.5.2). Keyed by app id, guarded by obsMu; re-captured on
+	// a generation change and GC'd on delete/stop.
+	golden map[string]*goldenSnap
 
 	// transitionMu guards transitions; each per-app mutex serializes that app's
 	// sleep/wake lifecycle transitions so Sleep and Wake are mutually exclusive
@@ -228,6 +254,7 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		now:          time.Now,
 		obs:          make(map[string]*observed),
 		extras:       make(map[string][]*replica),
+		golden:       make(map[string]*goldenSnap),
 		transitions:  make(map[string]*sync.Mutex),
 		trigger:      make(chan struct{}, 1),
 	}
@@ -835,9 +862,10 @@ func (m *Manager) reconcileExtras(ctx context.Context, rec Record, now time.Time
 		_ = m.inst.Destroy(ctx, last.id)
 		alive = alive[:len(alive)-1]
 	}
-	// Cold-boot the deficit up to target.
+	// Boot the deficit up to target — warm-forked from the golden snapshot when
+	// available, else a cold boot.
 	for len(alive) < target {
-		id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
+		id, err := m.bootExtra(ctx, rec)
 		if err != nil {
 			m.log.Error("app: boot extra replica", "app", rec.ID, "name", rec.Spec.Name, "err", err)
 			break // retry next pass
@@ -846,7 +874,6 @@ func (m *Manager) reconcileExtras(ctx context.Context, rec Record, now time.Time
 		if hc := rec.Spec.Health; hc != nil && hc.Type != "" {
 			health = "unknown"
 		}
-		m.log.Info("app extra replica booted", "app", rec.ID, "name", rec.Spec.Name, "instance", id)
 		alive = append(alive, &replica{id: id, generation: rec.Generation, bootedAt: now, health: health})
 	}
 
@@ -855,15 +882,76 @@ func (m *Manager) reconcileExtras(ctx context.Context, rec Record, now time.Time
 	m.obsMu.Unlock()
 }
 
+// bootExtra brings up one extra replica: fork it WARM from the app's golden
+// snapshot (~O(working set), clone-safe identity) when one is available for the
+// current generation, otherwise cold-boot. A warm-fork error falls back to a
+// cold boot rather than blocking the scale-up.
+func (m *Manager) bootExtra(ctx context.Context, rec Record) (string, error) {
+	if snapID, ok := m.goldenFor(ctx, rec); ok {
+		id, err := m.inst.ForkInstance(ctx, snapID)
+		if err == nil {
+			m.log.Info("app extra replica forked (warm)", "app", rec.ID, "name", rec.Spec.Name, "instance", id, "snapshot", snapID)
+			return id, nil
+		}
+		m.log.Warn("app: warm fork failed, cold-booting extra", "app", rec.ID, "name", rec.Spec.Name, "err", err)
+	}
+	id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
+	if err == nil {
+		m.log.Info("app extra replica booted (cold)", "app", rec.ID, "name", rec.Spec.Name, "instance", id)
+	}
+	return id, err
+}
+
+// goldenFor returns the app's golden snapshot for the current generation,
+// capturing a fresh one from the healthy primary (and GC'ing a stale one) when
+// needed. Returns false when there's no healthy primary to snapshot yet, or the
+// capture failed — the caller then cold-boots.
+func (m *Manager) goldenFor(ctx context.Context, rec Record) (string, bool) {
+	m.obsMu.Lock()
+	g := m.golden[rec.ID]
+	var primary, health string
+	if ob := m.obs[rec.ID]; ob != nil {
+		primary, health = ob.instanceID, ob.health
+	}
+	m.obsMu.Unlock()
+
+	if g != nil && g.generation == rec.Generation {
+		return g.snapshotID, true
+	}
+	// Stale (superseded generation) or missing: only capture from a healthy
+	// primary, so replicas fork from good state.
+	if primary == "" || health == "unhealthy" {
+		return "", false
+	}
+	snapID, err := m.inst.SnapshotInstance(ctx, primary)
+	if err != nil {
+		m.log.Warn("app: capture golden snapshot failed", "app", rec.ID, "name", rec.Spec.Name, "err", err)
+		return "", false
+	}
+	if g != nil {
+		_ = m.inst.DeleteSnapshot(ctx, g.snapshotID) // GC the superseded template
+	}
+	m.obsMu.Lock()
+	m.golden[rec.ID] = &goldenSnap{snapshotID: snapID, generation: rec.Generation}
+	m.obsMu.Unlock()
+	m.log.Info("app: captured golden snapshot for scale-out", "app", rec.ID, "name", rec.Spec.Name, "snapshot", snapID, "generation", rec.Generation)
+	return snapID, true
+}
+
 // destroyExtras tears down and forgets an app's extra replicas (on sleep, stop,
 // or delete).
 func (m *Manager) destroyExtras(ctx context.Context, appID string) {
 	m.obsMu.Lock()
 	extras := m.extras[appID]
 	delete(m.extras, appID)
+	g := m.golden[appID]
+	delete(m.golden, appID)
 	m.obsMu.Unlock()
 	for _, r := range extras {
 		_ = m.inst.Destroy(ctx, r.id)
+	}
+	if g != nil {
+		_ = m.inst.DeleteSnapshot(ctx, g.snapshotID) // GC the golden template
 	}
 }
 

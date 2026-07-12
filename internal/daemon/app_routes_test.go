@@ -56,6 +56,11 @@ func (f *fakeInst) WakeFromSnapshot(context.Context, string, api.AppSpec) (strin
 	return "sbx_woken", nil
 }
 func (f *fakeInst) Wake(context.Context, string) error { return nil }
+func (f *fakeInst) SnapshotInstance(context.Context, string) (string, error) {
+	return "golden_x", nil
+}
+func (f *fakeInst) ForkInstance(context.Context, string) (string, error) { return "sbx_fork_x", nil }
+func (f *fakeInst) DeleteSnapshot(context.Context, string) error         { return nil }
 func (f *fakeInst) Probe(context.Context, string, api.HealthCheck) app.Health {
 	return app.HealthPassing
 }

@@ -27,7 +27,35 @@ type fakeInstantiator struct {
 	imageHealth *api.HealthCheck // what ImageHealth returns (nil = image has none)
 	slept       map[string]bool  // instanceIDs currently asleep
 	onSleep     func()           // if set, called (outside f.mu) mid-Sleep — a test gate
+	snapshots   int              // count of SnapshotInstance calls (golden captures)
+	forks       int              // count of ForkInstance calls (warm extras)
 }
+
+func (f *fakeInstantiator) SnapshotInstance(_ context.Context, instanceID string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.live[instanceID]; !ok {
+		return "", errors.New("fake: no such instance")
+	}
+	f.snapshots++
+	f.next++
+	return "golden_" + string(rune('a'+f.next)), nil
+}
+
+func (f *fakeInstantiator) ForkInstance(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.createErr != nil {
+		return "", f.createErr
+	}
+	f.forks++
+	f.next++
+	id := "sbx_fork_" + string(rune('a'+f.next))
+	f.live[id] = "forked"
+	return id, nil
+}
+
+func (f *fakeInstantiator) DeleteSnapshot(_ context.Context, _ string) error { return nil }
 
 func (f *fakeInstantiator) ImageHealth(_ context.Context, _ api.AppSpec) (*api.HealthCheck, error) {
 	f.mu.Lock()
@@ -889,5 +917,27 @@ func TestConvergeReplicas(t *testing.T) {
 	m2.reconcile(c)
 	if f2.liveCount() != 1 {
 		t.Fatalf("single-instance app: %d live, want 1", f2.liveCount())
+	}
+}
+
+func TestExtrasForkFromGolden(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Sleep = &api.SleepPolicy{MinScale: 3}
+	mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	if f.liveCount() != 3 {
+		t.Fatalf("%d live, want 3", f.liveCount())
+	}
+	if f.snapshots < 1 {
+		t.Error("expected a golden snapshot captured for scale-out, got 0")
+	}
+	if f.forks != 2 {
+		t.Errorf("expected 2 warm-forked extras, got %d", f.forks)
+	}
+	// Only the primary is a cold create; the extras are warm forks, not creates.
+	if len(f.creates) != 1 {
+		t.Errorf("expected 1 cold create (the primary), got %d", len(f.creates))
 	}
 }
