@@ -198,6 +198,46 @@ func (c *Client) RefreshIdentity(ctx context.Context, seed []byte, sandboxID str
 	return nil
 }
 
+// ErrWakeUnsupported reports that the guest agent predates the /wake endpoint
+// (HTTP 404) — the rootfs was built with an older crucible-agent. Fatal to a
+// wake: continuing would leave the guest with replayed entropy and a stale
+// clock. Fix: rebuild the rootfs with the current crucible-agent.
+var ErrWakeUnsupported = errors.New(
+	"agentapi: guest agent does not support wake — rebuild the rootfs with the current crucible-agent")
+
+// Wake asks the guest agent to restore a slept VM's non-persistent state after
+// a wake-in-place restore: credit the host-generated 32-byte seed to the kernel
+// entropy pool (forcing a CRNG reseed) and step CLOCK_REALTIME to
+// wallTimeUnixNano. Unlike RefreshIdentity it does NOT rotate machine-id or
+// hostname — wake preserves identity. Failures ARE fatal to the wake (neither
+// replayed entropy nor a stale clock self-heals); a 404 maps to
+// ErrWakeUnsupported.
+func (c *Client) Wake(ctx context.Context, seed []byte, wallTimeUnixNano int64) error {
+	body, err := json.Marshal(agentwire.WakeRequest{Seed: seed, WallTimeUnixNano: wallTimeUnixNano})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/wake", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentapi: wake: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBody))
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrWakeUnsupported
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agentapi: wake returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // dial is http.Transport.DialContext: open the UDS, do the hybrid-vsock
 // handshake, return the stream for HTTP to use. All errors mean the
 // caller gets a dial-level failure — http.Client won't retry HTTP-level

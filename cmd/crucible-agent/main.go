@@ -92,6 +92,7 @@ func run(logger *slog.Logger) int {
 	mux.HandleFunc("POST /network/refresh", handleNetworkRefresh)
 	mux.HandleFunc("POST /network/configure", handleNetworkConfigure)
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
+	mux.HandleFunc("POST /wake", handleWake)
 	mux.HandleFunc("PUT /files", handleFilesPut)
 	mux.HandleFunc("GET /files", handleFilesGet)
 	(&serviceAPI{sup: sup}).register(mux)
