@@ -80,6 +80,17 @@ echo "==============================================================="
 
 # ---- preflight --------------------------------------------------------------
 if [[ $EUID -ne 0 ]]; then echo "error: must run as root (KVM + jailer)" >&2; exit 2; fi
+# This smoke starts its OWN daemon, and the app→app VIP (10.20.255.254 anycast +
+# the inet crucible nft table) is a host-global singleton — a second daemon can't
+# bind it, and initializing one clobbers a running daemon's network state. Refuse
+# to run while the systemd daemon is up rather than corrupt it.
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet crucible 2>/dev/null; then
+  echo "error: the systemd 'crucible' daemon is running — it holds the host-global" >&2
+  echo "       anycast VIP (10.20.255.254) + nft table this smoke's private daemon needs." >&2
+  echo "       stop it first, then restore it afterward:" >&2
+  echo "         sudo systemctl stop crucible && sudo $0 ; sudo systemctl start crucible" >&2
+  exit 2
+fi
 [[ -x "$CRUCIBLE_BIN" ]] || { echo "error: $CRUCIBLE_BIN not executable (make build)" >&2; exit 2; }
 for bin in "$FIRECRACKER_BIN" "$JAILER_BIN"; do
   [[ -x "$bin" ]] || { echo "error: missing $bin" >&2; exit 2; }
