@@ -489,6 +489,7 @@ Required flags:
 				HTTPListen: *proxyListen,
 				TLSListen:  *proxyTLSListen,
 				Logger:     logger,
+				Waker:      appMgr, // wake a slept app on the first request for it
 			})
 			if perr := proxy.Start(); perr != nil {
 				logger.Error("ingress proxy start failed", "err", perr)

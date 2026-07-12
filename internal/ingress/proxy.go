@@ -31,6 +31,12 @@ type Config struct {
 	HTTPListen string // e.g. ":80"; empty disables the HTTP (host-header) proxy
 	TLSListen  string // e.g. ":443"; empty disables the TLS (SNI-passthrough) proxy
 	Logger     *slog.Logger
+
+	// Waker, when set, makes the proxy wake a slept app on the first request
+	// for it (scale-to-zero): an ErrAsleep resolve triggers a coalesced wake and
+	// the request is held until the app is running. Nil disables wake-on-request
+	// (a slept app then 503s).
+	Waker Waker
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -46,7 +52,8 @@ type Proxy struct {
 	rp      *httputil.ReverseProxy
 	httpSrv *http.Server
 	tlsLn   net.Listener
-	tlsSem  chan struct{} // bounds concurrent SNI-passthrough handlers
+	tlsSem  chan struct{}    // bounds concurrent SNI-passthrough handlers
+	coord   *wakeCoordinator // nil when no Waker configured
 	wg      sync.WaitGroup
 }
 
@@ -62,6 +69,9 @@ func New(cfg Config) *Proxy {
 		httpListen: cfg.HTTPListen,
 		tlsListen:  cfg.TLSListen,
 		tlsSem:     make(chan struct{}, maxTLSConns),
+	}
+	if cfg.Waker != nil {
+		p.coord = newWakeCoordinator(cfg.Waker, 0)
 	}
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -84,11 +94,15 @@ func New(cfg Config) *Proxy {
 // current instance. Unknown host → 404; app with no ready instance → 502.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tg, err := p.resolver.Resolve(r.Host)
+	if errors.Is(err, ErrAsleep) && p.coord != nil {
+		// Slept app: wake it (coalesced across a herd) and re-resolve, holding
+		// this request in the blocked goroutine until it is running.
+		tg, err = p.wakeAndResolve(r.Context(), r.Host)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAsleep):
-			// M2-4 replaces this with wake-and-forward; until then a slept app
-			// is a clean 503 (not a misleading 404).
+			// Wake failed or timed out (or no waker configured): clean 503.
 			http.Error(w, "app is asleep", http.StatusServiceUnavailable)
 		case errors.Is(err, ErrNoInstance):
 			http.Error(w, "app has no ready instance", http.StatusBadGateway)
@@ -99,6 +113,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(context.WithValue(r.Context(), targetKey{}, tg))
 	p.rp.ServeHTTP(w, r)
+}
+
+// wakeAndResolve triggers a coalesced wake of the app for host, then re-resolves
+// to read the real post-wake state. It deliberately ignores the wake's own error
+// and trusts the re-resolve: a successful wake → a running Target; a failed or
+// timed-out wake → the app is still asleep → ErrAsleep (→ 503 upstream); and the
+// "someone else already woke it" race resolves straight to a running Target.
+func (p *Proxy) wakeAndResolve(ctx context.Context, host string) (Target, error) {
+	name := p.resolver.AppName(host)
+	if name == "" {
+		return Target{}, ErrNoRoute
+	}
+	_ = p.coord.wake(ctx, name)
+	return p.resolver.Resolve(host)
 }
 
 // Start binds the configured listeners and serves them in the background.
@@ -186,6 +214,13 @@ func (p *Proxy) handleSNI(conn net.Conn) {
 		return
 	}
 	tg, err := p.resolver.Resolve(sni)
+	if errors.Is(err, ErrAsleep) && p.coord != nil {
+		// Raw TCP has no request context; bound the wake so a stuck restore
+		// can't pin this connection (and its tlsSem slot) indefinitely.
+		wctx, cancel := context.WithTimeout(context.Background(), defaultWakeTimeout)
+		tg, err = p.wakeAndResolve(wctx, sni)
+		cancel()
+	}
 	if err != nil {
 		p.log.Debug("ingress: sni no route", "sni", sni, "err", err)
 		return
