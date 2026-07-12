@@ -609,7 +609,7 @@ func TestProxyBlockedPrefixes(t *testing.T) {
 	}
 }
 
-// TestProxyBatchesAndCapsAnswerRecords covers the H3 fan-out fix:
+// TestProxyBatchesAndCapsAnswerRecords covers the answer-record fan-out fix:
 // a fat reply produces exactly one AllowIP invocation carrying at
 // most maxAnswerIPs records, and the guest sees the same capped
 // set.

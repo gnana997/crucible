@@ -181,6 +181,40 @@ than thrashing the box. Sleeping drains in-flight requests; idle keepalive TCP
 connections are reset at sleep, and the proxy never reuses a pre-sleep upstream
 connection.
 
+## App-to-app networking
+
+Deploy your frontend and API as **separate apps** and let them talk. With the
+daemon started with **`--internal-networking`** (experimental, off by default),
+an app reaches another by name:
+
+```bash
+crucible app create backend --image myapi --port 8080
+crucible app create web --image myfrontend --port 3000 --can-call backend
+# inside web's guest:  curl http://backend.internal:8080/
+```
+
+`web` resolves `backend.internal` and connects to it; the request is routed
+**through the ingress proxy** to `backend`'s current instance. Because it goes
+through the proxy — a private VIP (the DNS anycast), not a direct guest-to-guest
+connection — an internal call gets the same treatment external traffic does:
+
+- **Wake-on-request.** If `backend` is scaled to zero, `web`'s call wakes it and
+  is served once it's ready — internal traffic gets scale-to-zero for free.
+- **Isolation stays intact.** The caller talks to the host proxy, never to a
+  peer's netns, so a guest still **cannot** reach another guest's IP directly.
+
+**Default-deny.** An app may call only the apps its spec lists in `can_call`
+(`--can-call <app>`, repeatable). It's enforced daemon-side at two layers: the
+proxy returns **403** on an un-granted call, and DNS answers `<app>.internal`
+only for granted callers — otherwise **NXDOMAIN**, so a guest can't even
+*discover* an app it may not call. Grants are visible in `app get` and settable
+on the Go SDK (`AppSpec.CanCall`) and MCP (`create_app`/`update_app`). Authorized
+app→app requests are counted by `app_internal_requests_total` on `/metrics`.
+
+> This is the **stateless** frontend→API tier. A shared *stateful* app (a
+> database) waits for volumes — until then, run the database's persistence
+> outside the app model.
+
 ## Status fields
 
 `app get` / `app ls` surface the observed status the reconciler maintains:

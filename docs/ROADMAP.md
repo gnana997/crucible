@@ -95,7 +95,7 @@ Pull authenticated images, with the credential on the daemon.
 
 - [x] **Private-registry pull** — `crucible registry login/logout/ls` stores a per-registry credential on the daemon (`--registry-store`, `0600`, gated by a new `registry` scoped-token op) that feeds every pull: `run`, `app create`, and an app's **re-pull on restart** (so a durable app on a private image survives a reboot). Static creds cover Docker Hub, GHCR, GitLab, Quay, self-hosted, and static GCP/ACR; ECR via `aws ecr get-login-password`. Never reads `~/.docker/config.json`. Plus one-shot `run --registry-auth` for CI ([registry.md](registry.md)).
 
-### v0.5.0 — Scale to zero *(current)*
+### v0.5.0 — Scale to zero
 
 An app sleeps when idle and wakes on the next request in under a second — same IP, same identity, correct clock — and survives a daemon restart while asleep. Built by re-pointing machinery crucible already ships (snapshot/restore with lazy memory, clone-safety, the reconciler, the ingress proxy) at a new policy, not a new subsystem.
 
@@ -104,11 +104,18 @@ An app sleeps when idle and wakes on the next request in under a second — same
 - [x] **Survives a daemon restart while asleep** — sleep captures a durable snapshot (journaled record + cloned rootfs), so a slept app is re-adopted on daemon start and the first post-restart request wakes a fresh instance from it.
 - [x] **Wake admission gate** — a wake is refused (`503`, app stays asleep) when host free memory is below `--wake-min-free-mib` (default 256), plus `snapshots_active` and an `app_wake_latency_seconds` histogram on `/metrics`.
 
+### v0.5.1 — App→app networking *(current)*
+
+Deploy your frontend and API as separate apps and let them talk — the first step from "run an app" to "deploy a system." Stateless service-to-service, so it doesn't wait on volumes.
+
+- [x] **Reach another app by name** — with the daemon's `--internal-networking`, an app calls another at `http://<app>.internal/`, routed **through the ingress proxy VIP** (the DNS anycast) to the callee's current instance. Because it goes through the proxy — not a direct guest-to-guest path — an internal call inherits **wake-on-request** (a scaled-to-zero callee wakes and serves) and leaves per-sandbox isolation intact (a guest still can't reach a peer's IP directly) ([apps.md](apps.md)).
+- [x] **Default-deny authorization** — `app create <app> --can-call <other>` declares the calls an app may make (empty = none). Enforced daemon-side: the proxy returns 403 on an un-granted call, and DNS answers `<app>.internal` only for granted callers (else NXDOMAIN — no discovery of apps you can't call). On the Go SDK (`AppSpec.CanCall`) and MCP; `app_internal_requests_total` on `/metrics`. Experimental, off by default.
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, and scale-to-zero exist (v0.4.0–v0.5.0); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, and app→app networking exist (v0.4.0–v0.5.1); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
@@ -124,17 +131,17 @@ The app model, its front door, zero-downtime updates, operate-by-name, private-r
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
 - • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
 
-### v0.5.x — Scale out & observability
+### v0.5.2 — Scale out
 
-The scale-to-zero fast-follow, in two parts: first generalize the wake path from 0→1 into 0→N, then make the savings and behavior visible.
-
-**Scale out** — the other half of the headline:
+Same-app horizontal scaling — generalizing the 0→1 wake path into 0→N. (App→app networking already shipped in v0.5.1.)
 
 - • **Multiple instances behind the proxy.** Run N copies of an app with round-robin / least-connection load balancing. Fork stamps each warm instance from a snapshot, so scaling up is cheap — a better cold-scale story than copying a full VM.
 - • **Autoscaling.** Scale on request rate / concurrency between a `min` (which may be **0**, unifying with scale-to-zero) and a `max` — so autoscale-from-zero is just "scale 0→N" on top of the wake primitive that already ships.
-- • **Private inter-app networking.** An `app.internal` DNS zone so one app can reach another (a service → its database app) over the existing DNS proxy, plus per-app egress allowlists (CIDR/port) for real multi-service deployments.
+- • **Per-app egress allowlists for internal calls.** CIDR/port scoping on top of the `--can-call` grant, for tighter multi-service policies.
 
-**Observability** — first-class, exportable telemetry (v0.5.0 ships only the wake-latency / sleep-count slice):
+### v0.5.x — Observability
+
+First-class, exportable telemetry (v0.5.0–v0.5.1 ship only the wake-latency / sleep-count / internal-request slices):
 
 - • **Per-app request metrics.** RPS, latency percentiles, and error rates per app on `/metrics`, plus reference Grafana dashboards as code.
 - • **OpenTelemetry export.** Every lifecycle event, exec, snapshot, and sleep/wake as OTel spans with stable semantic conventions; OTLP to Jaeger / Tempo / Datadog / Honeycomb / Grafana.

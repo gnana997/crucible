@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.5.1] — 2026-07-12
+
+App→app service networking. Deploy your frontend and API as separate apps; the
+frontend reaches the API by name — `backend.internal` — over the ingress proxy,
+default-deny, and a scaled-to-zero callee wakes on the internal call.
+
+### Added
+
+- **Reach another app by name.** With the daemon's `--internal-networking`, an
+  app calls another at `http://<app>.internal/`, routed through the ingress proxy
+  to the callee's current instance. Traffic goes through the proxy VIP (the DNS
+  anycast), not a direct guest-to-guest path — so an internal call inherits
+  **wake-on-request** (a scaled-to-zero callee wakes and serves) and leaves
+  per-sandbox network isolation intact (a guest still can't reach a peer's IP
+  directly).
+- **Default-deny authorization.** `crucible app create <app> --can-call <other>`
+  (repeatable) declares the apps an app may call; empty means it may call none.
+  Enforced daemon-side at two layers: the ingress proxy returns **403** on an
+  un-granted call, and the DNS answers `<app>.internal` only for granted callers
+  (otherwise **NXDOMAIN** — a guest can't even *discover* an app it may not
+  call). On the Go SDK (`AppSpec.CanCall`) and MCP (`create_app`/`update_app`
+  `can_call`).
+- **Metric.** `app_internal_requests_total` on `/metrics` counts authorized
+  app→app requests.
+
+App→app networking is experimental and **off by default** (`--internal-networking`;
+`--internal-proxy-port`, default 80). This is the stateless frontend→API tier;
+stateful apps (a shared database) still wait for volumes.
+
 ## [0.5.0] — 2026-07-12
 
 Scale to zero. An app sleeps when idle and wakes on the next request in under a

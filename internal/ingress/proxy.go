@@ -266,7 +266,8 @@ func (p *Proxy) Start() error {
 		}
 		// Same L7 routing as the external listener, but over the internal zone
 		// (backend.internal). Bound to the anycast VIP, so only guest netns can
-		// reach it (enforced by nft; the caller-authz check lands in v0.5.1 M2).
+		// reach it (enforced by nft), with per-app caller authorization enforced
+		// in handle() before any resolve/wake.
 		p.internalSrv = &http.Server{
 			Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, true) }),
 			ReadHeaderTimeout: httpHeaderTimeout,

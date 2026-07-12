@@ -15,7 +15,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.5.0 — durable apps you deploy, reach, update, pull privately, and scale to zero. The core runtime
+**Status:** v0.5.1 — durable apps you deploy, reach, update, pull privately, scale to zero, and wire together (app→app by name). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -36,8 +36,11 @@ an app's re-pull on restart; gated by the `registry` scoped-token op; never read
 scale-to-zero** (`crucible app sleep`/`wake` + `app create --idle-timeout`
 `--min-scale 0`) — an idle app snapshots to ~zero RAM and wakes **in place** on
 the next request through the ingress proxy in under a second (same IP + identity,
-clock stepped to now), and a slept app survives a daemon restart. See the ROADMAP
-for what's next.
+clock stepped to now), and a slept app survives a daemon restart; **v0.5.1
+app→app networking** (`--internal-networking` + `app create --can-call <other>`)
+— apps reach each other by name at `<app>.internal` through the proxy VIP,
+default-deny, and a scaled-to-zero callee wakes on the internal call. See the
+ROADMAP for what's next.
 
 ## Working style
 
