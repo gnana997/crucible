@@ -85,9 +85,14 @@ func New(cfg Config) *Proxy {
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tg, err := p.resolver.Resolve(r.Host)
 	if err != nil {
-		if errors.Is(err, ErrNoInstance) {
+		switch {
+		case errors.Is(err, ErrAsleep):
+			// M2-4 replaces this with wake-and-forward; until then a slept app
+			// is a clean 503 (not a misleading 404).
+			http.Error(w, "app is asleep", http.StatusServiceUnavailable)
+		case errors.Is(err, ErrNoInstance):
 			http.Error(w, "app has no ready instance", http.StatusBadGateway)
-		} else {
+		default:
 			http.Error(w, "no such app", http.StatusNotFound)
 		}
 		return

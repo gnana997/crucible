@@ -25,6 +25,11 @@ var (
 	// ErrNoInstance means the app exists but has no ready instance to route to
 	// (pending, crashlooping, stopped, or the IP isn't known yet).
 	ErrNoInstance = errors.New("ingress: app has no ready instance")
+	// ErrAsleep means the app is asleep (or mid-wake): it has a snapshot to
+	// restore but no running VMM. The proxy treats this as "trigger a wake and
+	// hold the request", not as a hard error — distinct from ErrNoInstance,
+	// which is a genuinely unroutable app.
+	ErrAsleep = errors.New("ingress: app is asleep")
 )
 
 // AppLookup resolves an app by its user-facing name. Satisfied directly by
@@ -128,7 +133,15 @@ func (r *Resolver) Resolve(host string) (Target, error) {
 	if err != nil {
 		return Target{}, ErrNoRoute // unknown app (or store error) → no route
 	}
-	if resp.Status == nil || resp.Status.InstanceID == "" || resp.Status.Phase != "running" {
+	if resp.Status == nil || resp.Status.InstanceID == "" {
+		return Target{}, ErrNoInstance
+	}
+	switch resp.Status.Phase {
+	case "running":
+		// routable — fall through
+	case "asleep", "waking":
+		return Target{}, ErrAsleep // wakeable: the proxy triggers a wake
+	default: // pending, crashlooping, stopped
 		return Target{}, ErrNoInstance
 	}
 	ip, ok := r.instances.GuestIP(resp.Status.InstanceID)

@@ -50,11 +50,10 @@ const defaultTokenFile = "/var/lib/crucible/tokens.json"
 type sandboxGuestIP struct{ mgr *sandbox.Manager }
 
 func (s sandboxGuestIP) GuestIP(instanceID string) (string, bool) {
-	sb, err := s.mgr.Get(instanceID)
-	if err != nil || sb.Network == nil || sb.Network.GuestIP == "" {
-		return "", false
-	}
-	return sb.Network.GuestIP, true
+	// Routable returns false for an asleep instance, so the resolver's cache
+	// falls through to a fresh lookup (→ ErrAsleep) rather than routing to a
+	// slept, VMM-stopped guest.
+	return s.mgr.Routable(instanceID)
 }
 
 // runDaemon implements the `crucible daemon` subcommand.

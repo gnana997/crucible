@@ -102,6 +102,30 @@ func TestResolveErrors(t *testing.T) {
 	}
 }
 
+// TestResolveAsleep is M2-1: asleep/waking apps (instance id kept, VMM stopped)
+// resolve to the distinct ErrAsleep — the proxy's signal to wake and hold —
+// while other non-running phases stay ErrNoInstance.
+func TestResolveAsleep(t *testing.T) {
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
+	phased := func(phase string) api.AppResponse {
+		a := runningApp("web", 80, "sbx_1")
+		a.Status.Phase = phase
+		return a
+	}
+	for _, phase := range []string{"asleep", "waking"} {
+		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", 0)
+		if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrAsleep) {
+			t.Errorf("phase %q err = %v, want ErrAsleep", phase, err)
+		}
+	}
+	for _, phase := range []string{"pending", "crashlooping", "stopped"} {
+		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", 0)
+		if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrNoInstance) {
+			t.Errorf("phase %q err = %v, want ErrNoInstance", phase, err)
+		}
+	}
+}
+
 func TestResolvePortFallback(t *testing.T) {
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
 

@@ -1007,6 +1007,21 @@ func (m *Manager) Get(id string) (*Sandbox, error) {
 	return s, nil
 }
 
+// Routable returns the guest IP to route inbound traffic to, or ("", false)
+// when the sandbox is unknown, has no network, or is asleep — a slept sandbox's
+// VMM is stopped, so its IP must not be routed to until it is woken. Reads the
+// asleep flag under the registry lock (it is written under the same lock by
+// SleepInPlace/WakeInPlace), so this is race-free.
+func (m *Manager) Routable(id string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.sandboxes[id]
+	if !ok || s.asleep != nil || s.Network == nil || s.Network.GuestIP == "" {
+		return "", false
+	}
+	return s.Network.GuestIP, true
+}
+
 // List returns a snapshot of current sandboxes. The slice is a copy; the
 // pointed-to Sandbox values are shared and must not be mutated by callers.
 func (m *Manager) List() []*Sandbox {
