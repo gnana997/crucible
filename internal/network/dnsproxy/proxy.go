@@ -105,13 +105,14 @@ type Config struct {
 	// is empty or InternalVIP is invalid.
 	InternalVIP netip.Addr
 
-	// InternalAuthz authorizes an internal-zone lookup: given the querying
-	// sandbox and the target app, may the caller reach it? When InternalZone is
+	// InternalAuthz authorizes an internal-zone lookup: given the querying guest's
+	// source IP and the target app, may the caller reach it? When InternalZone is
 	// set this MUST be set too — a nil authorizer denies every internal lookup
 	// (NXDOMAIN), so a guest can't even discover an app it isn't granted (no
-	// inventory leak). The ingress proxy remains the enforcing boundary; this
-	// mirrors its decision at the DNS layer.
-	InternalAuthz func(sandboxID, targetApp string) bool
+	// inventory leak). Keyed by source IP (not sandbox id) so it uses the same
+	// caller→app mapping as the ingress proxy, which remains the enforcing
+	// boundary; this mirrors its decision at the DNS layer.
+	InternalAuthz func(callerIP, targetApp string) bool
 }
 
 // Defaults picked to be tight enough that a wedged upstream
@@ -369,7 +370,7 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	// ingress VIP, bypassing the egress allowlist + upstream. The name is not in
 	// any guest's egress allowlist by design, so this branch must run before the
 	// allowlist check below.
-	if reply := p.internalAnswer(req, pol.SandboxID); reply != nil {
+	if reply := p.internalAnswer(req, srcIP.String()); reply != nil {
 		if err := w.WriteMsg(reply); err != nil {
 			p.log.Debug("write internal reply failed", "err", err)
 		}
@@ -583,7 +584,7 @@ const internalRecordTTL = 30
 // under it. A queries return the ingress VIP; AAAA (and other qtypes) get an
 // empty NOERROR (NODATA) so a dual-stack resolver falls back to the A record on
 // the IPv4-only guest fabric.
-func (p *Proxy) internalAnswer(req *dns.Msg, sandboxID string) *dns.Msg {
+func (p *Proxy) internalAnswer(req *dns.Msg, callerIP string) *dns.Msg {
 	if p.cfg.InternalZone == "" || !p.cfg.InternalVIP.IsValid() || len(req.Question) != 1 {
 		return nil
 	}
@@ -600,7 +601,7 @@ func (p *Proxy) internalAnswer(req *dns.Msg, sandboxID string) *dns.Msg {
 	// isn't authorized (or no authorizer is wired), return NXDOMAIN so a guest
 	// can't even discover an app it may not call.
 	target := strings.TrimSuffix(strings.TrimSuffix(qn, zone), ".")
-	if p.cfg.InternalAuthz == nil || !p.cfg.InternalAuthz(sandboxID, target) {
+	if p.cfg.InternalAuthz == nil || !p.cfg.InternalAuthz(callerIP, target) {
 		m := new(dns.Msg)
 		m.SetRcode(req, dns.RcodeNameError)
 		m.Authoritative = true

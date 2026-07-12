@@ -66,6 +66,10 @@ type Config struct {
 	// OnWake, when set, is called with the proxy-observed wake latency each time
 	// a slept app is woken on request (for the wake-latency metric).
 	OnWake func(latency time.Duration)
+
+	// OnInternal, when set, is called once per authorized app→app request (for
+	// the internal-request metric).
+	OnInternal func()
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -88,6 +92,7 @@ type Proxy struct {
 	coord       *wakeCoordinator // nil when no Waker configured
 	activity    *ActivityTracker // nil when activity tracking disabled
 	onWake      func(time.Duration)
+	onInternal  func()
 	wg          sync.WaitGroup
 }
 
@@ -111,6 +116,7 @@ func New(cfg Config) *Proxy {
 	}
 	p.activity = cfg.Activity
 	p.onWake = cfg.OnWake
+	p.onInternal = cfg.OnInternal
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Always set by ServeHTTP before this runs; comma-ok so a missing
@@ -145,6 +151,9 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 		// callee. A denied or unknown caller gets 403; an out-of-zone host, 404.
 		if !p.authorizeInternal(w, r, appName(r.Host)) {
 			return
+		}
+		if p.onInternal != nil {
+			p.onInternal()
 		}
 	}
 	tg, err := resolve(r.Host)

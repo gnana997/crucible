@@ -65,10 +65,11 @@ type ManagerConfig struct {
 	// DNS anycast (the ingress VIP) when set together with InternalProxyPort.
 	InternalZone string
 
-	// InternalAuthz authorizes an internal-zone DNS lookup (default-deny). Passed
-	// to the DNS proxy; nil with a set InternalZone means every internal lookup is
-	// NXDOMAIN. The daemon wires it to the app manager's can_call check.
-	InternalAuthz func(sandboxID, targetApp string) bool
+	// InternalAuthz authorizes an internal-zone DNS lookup (default-deny), keyed by
+	// the querying guest's source IP (same caller→app mapping as the ingress
+	// proxy). Passed to the DNS proxy; nil with a set InternalZone means every
+	// internal lookup is NXDOMAIN. The daemon wires it to the app can_call check.
+	InternalAuthz func(callerIP, targetApp string) bool
 
 	// Logger receives Manager lifecycle events. Nil means
 	// slog.Default.

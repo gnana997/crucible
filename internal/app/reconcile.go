@@ -378,25 +378,6 @@ func (m *Manager) CanCall(caller, target string) bool {
 	return false
 }
 
-// AppForInstance returns the name of the app whose CURRENT instance is the given
-// sandbox id, or ("", false) if none — used to identify an app→app caller from
-// the source sandbox of an internal request or DNS query.
-func (m *Manager) AppForInstance(instanceID string) (string, bool) {
-	if instanceID == "" {
-		return "", false
-	}
-	apps, err := m.List()
-	if err != nil {
-		return "", false
-	}
-	for _, a := range apps {
-		if a.Status != nil && a.Status.InstanceID == instanceID {
-			return a.Name, true
-		}
-	}
-	return "", false
-}
-
 // DeleteByName removes the app with the given name.
 func (m *Manager) DeleteByName(name string) error {
 	rec, found, err := m.store.GetByName(name)

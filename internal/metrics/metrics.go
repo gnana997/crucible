@@ -25,6 +25,7 @@ type Metrics struct {
 	forkDuration            prometheus.Histogram
 	snapshotRestoreDuration prometheus.Histogram
 	wakeLatency             prometheus.Histogram
+	internalRequests        prometheus.Counter
 }
 
 // New constructs a Metrics with its own registry (not the global default
@@ -52,8 +53,12 @@ func New() *Metrics {
 			Help:    "Proxy-observed time to wake a slept app on request (trigger → routable again).",
 			Buckets: prometheus.DefBuckets,
 		}),
+		internalRequests: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "app_internal_requests_total",
+			Help: "Total authorized app→app (<app>.internal) requests routed by the ingress proxy.",
+		}),
 	}
-	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration, m.wakeLatency)
+	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration, m.wakeLatency, m.internalRequests)
 	return m
 }
 
@@ -82,6 +87,15 @@ func (m *Metrics) SetSnapshotSource(fn func() int) {
 		Name: "snapshots_active",
 		Help: "Snapshots currently registered (forks + durable sleep snapshots).",
 	}, func() float64 { return float64(fn()) }))
+}
+
+// IncInternalRequest bumps app_internal_requests_total. Call once per authorized
+// app→app request the ingress proxy routes.
+func (m *Metrics) IncInternalRequest() {
+	if m == nil {
+		return
+	}
+	m.internalRequests.Inc()
 }
 
 // IncSandboxCreated bumps sandboxes_created_total. Call once per sandbox

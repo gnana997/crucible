@@ -361,10 +361,13 @@ Required flags:
 	network.ReapOrphans(context.Background(), logger)
 
 	// Declared before the network manager so the DNS proxy's app→app authorizer
-	// (below) can close over it; it's assigned when durable apps start, and the
-	// closure is only invoked at query time (after that), nil-checking to fail
-	// closed in the interim.
+	// (below) can close over them; both are assigned later (appMgr when durable
+	// apps start, internalAuth when the proxy starts), and the closure is only
+	// invoked at query time (after that), nil-checking to fail closed in the
+	// interim. internalAuth is the SAME (source-IP-keyed) authorizer the ingress
+	// proxy uses, so the DNS and proxy layers agree on the caller→app mapping.
 	var appMgr *app.Manager
+	var internalAuth *internalAuthorizer
 	var netMgr *network.Manager
 	if *netEgressIface != "" && *jailerBin != "" {
 		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
@@ -388,15 +391,15 @@ Required flags:
 			DNSUpstream:       *dnsUpstream,
 			InternalProxyPort: internalProxyPort,
 			InternalZone:      internalZone,
-			// App→app DNS authorization (default-deny): the querying sandbox's app
-			// must list the target in its can_call. nil appMgr / unknown source /
-			// missing grant → deny (NXDOMAIN at the DNS layer).
-			InternalAuthz: func(sandboxID, target string) bool {
-				if appMgr == nil {
+			// App→app DNS authorization (default-deny), via the same source-IP-keyed
+			// authorizer the ingress proxy uses. nil (proxy not up) / unknown source
+			// / missing grant → deny (NXDOMAIN at the DNS layer).
+			InternalAuthz: func(callerIP, target string) bool {
+				if internalAuth == nil {
 					return false
 				}
-				caller, ok := appMgr.AppForInstance(sandboxID)
-				return ok && appMgr.CanCall(caller, target)
+				_, ok := internalAuth.AuthorizeCall(callerIP, target)
+				return ok
 			},
 			Logger: logger,
 		})
@@ -575,7 +578,10 @@ Required flags:
 			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, internalZone, time.Second)
 			var internalAuthz ingress.CallerAuthorizer
 			if internalListen != "" {
-				internalAuthz = internalAuthorizer{apps: appMgr, ips: sandboxGuestIP{mgr}}
+				// The same authorizer instance backs both the proxy (per-request 403)
+				// and the DNS proxy (NXDOMAIN), so the two layers can't disagree.
+				internalAuth = &internalAuthorizer{apps: appMgr, ips: sandboxGuestIP{mgr}}
+				internalAuthz = internalAuth
 			}
 			proxy = ingress.New(ingress.Config{
 				Resolver:       resolver,
@@ -587,6 +593,7 @@ Required flags:
 				Waker:          appMgr,          // wake a slept app on the first request for it
 				Activity:       activityTracker, // feed the idle monitor
 				OnWake:         mx.ObserveWakeLatency,
+				OnInternal:     mx.IncInternalRequest,
 			})
 			if perr := proxy.Start(); perr != nil {
 				logger.Error("ingress proxy start failed", "err", perr)
