@@ -198,6 +198,38 @@ func (c *Client) RefreshIdentity(ctx context.Context, seed []byte, sandboxID str
 	return nil
 }
 
+// ErrQuiesceUnsupported reports that the guest agent predates the /quiesce
+// endpoint (HTTP 404). Non-fatal: the caller may proceed with a crash-consistent
+// snapshot (a journaling filesystem recovers from it); rebuild the rootfs with
+// the current crucible-agent for clean snapshots.
+var ErrQuiesceUnsupported = errors.New(
+	"agentapi: guest agent does not support quiesce — rebuild the rootfs with the current crucible-agent")
+
+// Quiesce asks the guest agent to sync its filesystems so a subsequent host
+// snapshot of the rootfs is clean rather than merely crash-consistent (used
+// before sleep). Advisory: callers may log-and-continue on failure. A 404 maps
+// to ErrQuiesceUnsupported.
+func (c *Client) Quiesce(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent/quiesce", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("agentapi: quiesce: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRefreshBody))
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrQuiesceUnsupported
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("agentapi: quiesce returned %d: %s",
+			resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
 // ErrWakeUnsupported reports that the guest agent predates the /wake endpoint
 // (HTTP 404) — the rootfs was built with an older crucible-agent. Fatal to a
 // wake: continuing would leave the guest with replayed entropy and a stale
