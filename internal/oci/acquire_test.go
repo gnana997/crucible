@@ -4,12 +4,14 @@ import (
 	"archive/tar"
 	"bytes"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -92,6 +94,73 @@ func pushImage(t *testing.T, ref string, img v1.Image) {
 	}
 	if err := remote.Write(parsed, img); err != nil {
 		t.Fatalf("push %s: %v", ref, err)
+	}
+}
+
+// newAuthedRegistry wraps the in-process registry with HTTP Basic auth, so a
+// pull must present the credential (the private-registry path).
+func newAuthedRegistry(t *testing.T, user, pass string) string {
+	t.Helper()
+	inner := registry.New()
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if u, p, ok := r.BasicAuth(); !ok || u != user || p != pass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="crucible-test"`)
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return strings.TrimPrefix(srv.URL, "http://")
+}
+
+// basicKeychain is a fixed authn.Keychain supplying one credential for any host.
+type basicKeychain struct{ user, pass string }
+
+func (k basicKeychain) Resolve(authn.Resource) (authn.Authenticator, error) {
+	return authn.FromConfig(authn.AuthConfig{Username: k.user, Password: k.pass}), nil
+}
+
+func pushImageAuth(t *testing.T, ref string, img v1.Image, kc authn.Keychain) {
+	t.Helper()
+	parsed, err := name.ParseReference(ref, name.Insecure)
+	if err != nil {
+		t.Fatalf("parse %q: %v", ref, err)
+	}
+	if err := remote.Write(parsed, img, remote.WithAuthFromKeychain(kc)); err != nil {
+		t.Fatalf("push %s (auth): %v", ref, err)
+	}
+}
+
+// TestPullWithKeychainBasicAuth: WithKeychain authenticates a private pull; the
+// same pull is refused anonymously or with a wrong credential.
+func TestPullWithKeychainBasicAuth(t *testing.T) {
+	const user, pass = "alice", "s3cret-token"
+	reg := newAuthedRegistry(t, user, pass)
+	ref := reg + "/team/private:latest"
+	img := craftImage(t, "linux", "amd64", v1.Config{})
+	good := basicKeychain{user, pass}
+
+	pushImageAuth(t, ref, img, good)
+
+	// Right credential → pull succeeds and resolves the pushed digest.
+	got, err := Pull(t.Context(), ref, WithInsecureRegistry(), WithKeychain(good))
+	if err != nil {
+		t.Fatalf("authenticated pull failed: %v", err)
+	}
+	if got.Digest != mustDigest(t, img) {
+		t.Errorf("digest = %s, want %s", got.Digest, mustDigest(t, img))
+	}
+
+	// Anonymous (no keychain) → auth error.
+	if _, err := Pull(t.Context(), ref, WithInsecureRegistry()); err == nil {
+		t.Error("anonymous pull of a private image succeeded; want an auth error")
+	}
+
+	// Wrong secret → auth error.
+	if _, err := Pull(t.Context(), ref, WithInsecureRegistry(), WithKeychain(basicKeychain{user, "wrong"})); err == nil {
+		t.Error("pull with a wrong credential succeeded; want an auth error")
 	}
 }
 

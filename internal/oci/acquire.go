@@ -40,21 +40,28 @@ type PullOption func(*pullConfig)
 
 type pullConfig struct {
 	nameOpts []name.Option
+	keychain authn.Keychain
 }
 
 // WithInsecureRegistry allows plain-HTTP registries. Used by tests
-// against in-process registries; also the eventual knob for LAN
-// registries (credentialed-registry auth is future work).
+// against in-process registries; also the knob for LAN registries.
 func WithInsecureRegistry() PullOption {
 	return func(c *pullConfig) { c.nameOpts = append(c.nameOpts, name.Insecure) }
 }
 
-// Pull fetches an image reference anonymously and resolves it to
-// linux/amd64. Multi-arch indexes resolve to the matching child (a
-// missing child is an error); a single-platform image of another
-// arch/OS is rejected. Credentialed registries are deliberately not
-// supported yet: auth is pinned to anonymous so a host's docker
+// WithKeychain resolves per-registry credentials at pull time (the private-
+// registry path). The keychain is consulted for the target registry host; a
+// host it doesn't recognize falls back to anonymous, so public pulls are
+// unaffected. Without this option a pull stays anonymous, so a host's docker
 // login can't leak into daemon behavior.
+func WithKeychain(kc authn.Keychain) PullOption {
+	return func(c *pullConfig) { c.keychain = kc }
+}
+
+// Pull fetches an image reference and resolves it to linux/amd64. Multi-arch
+// indexes resolve to the matching child (a missing child is an error); a
+// single-platform image of another arch/OS is rejected. Auth is anonymous
+// unless WithKeychain supplies per-registry credentials.
 func Pull(ctx context.Context, ref string, opts ...PullOption) (*Acquired, error) {
 	var cfg pullConfig
 	for _, o := range opts {
@@ -65,9 +72,13 @@ func Pull(ctx context.Context, ref string, opts ...PullOption) (*Acquired, error
 		return nil, fmt.Errorf("oci: parse reference %q: %w", ref, err)
 	}
 
+	authOpt := remote.WithAuth(authn.Anonymous)
+	if cfg.keychain != nil {
+		authOpt = remote.WithAuthFromKeychain(cfg.keychain)
+	}
 	img, err := remote.Image(parsed,
 		remote.WithContext(ctx),
-		remote.WithAuth(authn.Anonymous),
+		authOpt,
 		remote.WithPlatform(targetPlatform),
 	)
 	if err != nil {
