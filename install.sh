@@ -44,6 +44,11 @@
 #   (needs a TLS-serving guest): PROXY_TLS_LISTEN=:7880. --no-proxy turns it off.
 #   For a production ingress on the standard port (put env before sudo / sudo -E):
 #     PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 sudo -E bash install.sh --enable
+#   INTERNAL_NET=1 (off) opts into app→app networking (v0.5.1): apps reach each
+#   other by name (<app>.internal), default-deny via `app create --can-call`. It
+#   just seeds the daemon flag so users don't hand-edit config; INTERNAL_PORT
+#   overrides the VIP port (default 80). One-line enable (needs the proxy, on by
+#   default): INTERNAL_NET=1 sudo -E bash install.sh --enable
 
 set -euo pipefail
 
@@ -104,6 +109,14 @@ PROXY_LISTEN="${PROXY_LISTEN:-:7879}"
 PROXY_TLS_LISTEN="${PROXY_TLS_LISTEN-}"
 PROXY_DOMAIN="${PROXY_DOMAIN-apps.local}"
 PROXY_ENABLED=""   # set to the HTTP listen addr once we actually enable it
+# App→app networking (v0.5.1, EXPERIMENTAL): let apps reach each other by name
+# (<app>.internal) through the proxy VIP, default-deny (a peer is reachable only
+# via `app create --can-call <peer>`). OFF by default — it's experimental and a
+# new reachability surface. One-line opt-in: INTERNAL_NET=1 seeds the daemon flags
+# so users never hand-edit config. INTERNAL_PORT overrides the VIP port (default 80).
+INTERNAL_NET="${INTERNAL_NET:-0}"
+INTERNAL_PORT="${INTERNAL_PORT-}"
+INTERNAL_ENABLED=""   # set once we actually seed the flag
 CLIENT_EXPLICIT=0
 
 die()  { echo "install: $*" >&2; exit 1; }
@@ -386,20 +399,43 @@ provision_deps() {
     fi
 
     # 2) default rootfs (from crucible's own releases; amd64 profiles only).
-    if [[ -f "$STATEDIR/rootfs.ext4" ]]; then
-        kv deps "rootfs already present ($STATEDIR/rootfs.ext4) — skipped"
-    elif [[ "$fc_arch" != x86_64 ]]; then
+    #    TAG-STAMPED: fetch to rootfs-<tag>.ext4, not a fixed rootfs.ext4. That
+    #    way an UPGRADE (new tag) actually fetches the new rootfs — with its
+    #    current baked guest agent — instead of skip-if-present keeping a stale
+    #    one, and we re-point --rootfs at it so the daemon boots the new image.
+    #    Re-running the SAME tag still skips (no redundant download).
+    if [[ "$fc_arch" != x86_64 ]]; then
         warn "--with-deps: no prebuilt rootfs for $fc_arch — build one with 'make profile' or supply --rootfs"
     else
         local tag; tag=$(resolve_tag)
-        local url="https://github.com/$REPO/releases/download/$tag/${ROOTFS_PROFILE}.ext4"
-        local tmp; tmp="$(mktemp -d)"
-        kv deps "fetching rootfs profile '${ROOTFS_PROFILE}' ($tag)"
-        fetch "$url" "$tmp/rootfs.ext4"
-        verify_sha256 "$tmp/rootfs.ext4" "${url}.sha256"
-        install -Dm644 "$tmp/rootfs.ext4" "$STATEDIR/rootfs.ext4"
-        rm -rf "$tmp"
-        kv deps "installed rootfs -> $STATEDIR/rootfs.ext4"
+        local dest="$STATEDIR/rootfs-${tag}.ext4"
+        if [[ -f "$dest" ]]; then
+            kv deps "rootfs for $tag already present ($dest) — skipped"
+        else
+            local url="https://github.com/$REPO/releases/download/$tag/${ROOTFS_PROFILE}.ext4"
+            local tmp; tmp="$(mktemp -d)"
+            kv deps "fetching rootfs profile '${ROOTFS_PROFILE}' ($tag)"
+            fetch "$url" "$tmp/rootfs.ext4"
+            verify_sha256 "$tmp/rootfs.ext4" "${url}.sha256"
+            install -Dm644 "$tmp/rootfs.ext4" "$dest"
+            rm -rf "$tmp"
+            kv deps "installed rootfs -> $dest"
+        fi
+        # Re-point the config at the fetched rootfs — but only when --rootfs is a
+        # path we own (legacy rootfs.ext4 or a prior rootfs-<tag>.ext4). A custom
+        # path means the operator brought their own image; leave it untouched.
+        local cfg="$CONFDIR/crucible.env" cur
+        cur="$(grep '^CRUCIBLE_FLAGS=' "$cfg" 2>/dev/null | grep -o -- '--rootfs [^ "]*' | head -1 | awk '{print $2}')"
+        if [[ -z "$cur" ]] || is_managed_rootfs "$cur"; then
+            if set_cfg_flag "$cfg" "--rootfs" "$dest"; then
+                systemctl is-active --quiet crucible 2>/dev/null \
+                    && kv deps "restart to boot the new rootfs: sudo systemctl restart crucible"
+                [[ -n "$cur" && "$cur" != "$dest" && -f "$cur" ]] \
+                    && kv deps "previous rootfs kept for rollback: $cur"
+            fi
+        else
+            kv deps "--rootfs points at a custom image ($cur) — left as-is; new profile rootfs at $dest"
+        fi
     fi
 
     # 3) guest kernel. Prefer our own pinned release asset (supply-chain
@@ -561,6 +597,28 @@ add_cfg_flag() {
     return 0
 }
 
+# set_cfg_flag CFG FLAG VALUE — like add_cfg_flag, but REPLACES the value of a
+# flag already in CRUCIBLE_FLAGS (add_cfg_flag only appends-if-absent). Used to
+# re-point --rootfs at a freshly-fetched tag-stamped image on upgrade. Appends
+# the flag if it isn't present yet. Returns 0 iff it changed the file.
+set_cfg_flag() {
+    local cfg="$1" flag="$2" val="$3" cur
+    cur="$(grep '^CRUCIBLE_FLAGS=' "$cfg" 2>/dev/null | grep -o -- "$flag [^ \"]*" | head -1 | awk '{print $2}')"
+    if [[ -z "$cur" ]]; then add_cfg_flag "$cfg" "$flag" "$val"; return $?; fi
+    [[ "$cur" == "$val" ]] && return 1
+    # Replace only the value token following this flag on the CRUCIBLE_FLAGS line.
+    sed -i "s#\\(^CRUCIBLE_FLAGS=\"[^\"]*$flag \\)$cur#\\1$val#" "$cfg"
+    kv config "re-pointed $flag -> $val"
+    return 0
+}
+
+# is_managed_rootfs VALUE — true iff VALUE is a rootfs path install.sh owns (the
+# legacy fixed name or a tag-stamped one), so re-pointing it is safe. A path we
+# don't recognize means the operator supplied their own image — leave it alone.
+is_managed_rootfs() {
+    [[ "$1" == "$STATEDIR/rootfs.ext4" || "$1" == "$STATEDIR"/rootfs-*.ext4 ]]
+}
+
 # seed_proxy_flags CFG — enable the ingress proxy (v0.4.2) by default so apps are
 # reachable by name (<app>.<domain>) out of the box. Only adds a listener whose
 # port is free at install time (the daemon aborts on a busy proxy port), and only
@@ -590,6 +648,22 @@ seed_proxy_flags() {
     return $did
 }
 
+# seed_internal_flags CFG — opt-in app→app networking (v0.5.1). OFF unless
+# INTERNAL_NET=1 (experimental). One-line for users: it just adds the daemon
+# flags so `app create --can-call <peer>` works without a manual config edit.
+# Needs the proxy (rides its VIP) — the installer enables that by default.
+# Returns 0 iff it changed the file.
+seed_internal_flags() {
+    local cfg="$1" did=1
+    [[ "$INTERNAL_NET" == "1" ]] || return 1
+    if flags_have "--internal-networking" "$cfg"; then
+        INTERNAL_ENABLED="(already configured)"; return 1
+    fi
+    add_cfg_flag "$cfg" "--internal-networking" && { INTERNAL_ENABLED="on"; did=0; }
+    [[ -n "$INTERNAL_PORT" ]] && { add_cfg_flag "$cfg" "--internal-proxy-port" "$INTERNAL_PORT" && did=0; }
+    return $did
+}
+
 # apply_config_flags adds any missing daemon flags to CRUCIBLE_FLAGS in place,
 # so an upgraded config doesn't silently disable features. Returns 0 (nothing
 # changed) or 1 (updated — restart needed).
@@ -602,6 +676,7 @@ apply_config_flags() {
     add_cfg_flag "$cfg" "--registry-store" "$STATEDIR/registry.json" && changed=1
     [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && { add_cfg_flag "$cfg" "--network-egress-iface" "$egress" && changed=1; }
     seed_proxy_flags "$cfg" && changed=1
+    seed_internal_flags "$cfg" && changed=1
     return $changed
 }
 
@@ -644,6 +719,8 @@ else
     # (returns nonzero when it adds nothing — --no-proxy / busy port — which must
     # not trip set -e here, unlike the apply_config_flags call which is a condition.)
     seed_proxy_flags "$CONFDIR/crucible.env" || true
+    # App→app networking (v0.5.1) — off unless INTERNAL_NET=1 opts in.
+    seed_internal_flags "$CONFDIR/crucible.env" || true
 fi
 
 # Drop the inert example scoped policy so the guidance can point at a real file.
@@ -696,6 +773,13 @@ if [[ -n "$PROXY_ENABLED" && "$PROXY_ENABLED" != "(already configured)" ]]; then
     kv reach  "curl -H 'Host: web.${PROXY_DOMAIN:-<app>}' http://<this-host>${PROXY_ENABLED}/"
     [[ -n "$PROXY_DOMAIN" ]] && kv dns "point *.$PROXY_DOMAIN at this host (DNS or /etc/hosts) for real clients"
     kv smoke  "PROXY_ADDR=127.0.0.1${PROXY_ENABLED} PROXY_DOMAIN=${PROXY_DOMAIN} bash scripts/smoke_installed.sh"
+fi
+
+if [[ -n "$INTERNAL_ENABLED" && "$INTERNAL_ENABLED" != "(already configured)" ]]; then
+    echo
+    echo "==> app→app networking on (v0.5.1) — apps reach each other by name, default-deny"
+    kv grant  "crucible app create web --image … --port 80 --can-call backend"
+    kv reach  "from web's guest: curl http://backend.internal/   (ungranted peers get 403/NXDOMAIN)"
 fi
 
 # A plain install mints nothing: just show how to use it locally and how to open

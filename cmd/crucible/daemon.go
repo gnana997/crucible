@@ -184,9 +184,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		proxyTLSListen = fs.String("proxy-tls-listen", "", "ingress proxy TLS listen address (e.g. :443): SNI passthrough to an app's current instance (the guest terminates TLS). Empty disables it.")
 		proxyDomain    = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
 		// App→app service networking (v0.5.1, experimental). Off by default:
-		// grant-all reachability (no per-app authorization yet) — do not enable on
-		// an untrusted multi-tenant host until authz lands.
-		internalNet  = fs.Bool("internal-networking", false, "EXPERIMENTAL: let apps reach each other by name (<app>.internal) through the ingress proxy VIP. Requires --network-egress-iface + --app-db + the proxy. No per-app authorization yet (grant-all).")
+		// reachability is default-deny — an app reaches a peer only if its spec
+		// grants it (`app create --can-call <peer>`); ungranted calls get
+		// NXDOMAIN at DNS / 403 at the proxy.
+		internalNet  = fs.Bool("internal-networking", false, "EXPERIMENTAL: let apps reach each other by name (<app>.internal) through the ingress proxy VIP. Requires --network-egress-iface + --app-db + the proxy. Default-deny: a peer is reachable only via `app create --can-call <peer>`.")
 		internalPort = fs.Int("internal-proxy-port", 80, "TCP port the app→app (<app>.internal) ingress VIP listens on, bound to the DNS anycast; guests reach peers at http://<app>.internal[:port]/")
 	)
 	fs.Usage = func() {

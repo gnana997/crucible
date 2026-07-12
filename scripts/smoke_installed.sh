@@ -9,9 +9,11 @@
 # durable apps (v0.4), the MCP server, the full v0.4.1 surface (app --env, exec
 # health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P), the
 # v0.4.2 surface (app update, image-HEALTHCHECK seeding, and — opt-in — the
-# ingress proxy), and the v0.4.3 surface (operate an app by name — app exec /
-# app logs — plus, through the proxy, a zero-downtime rolling update). It answers
-# one question: "will someone who installs the release hit a wall?"
+# ingress proxy), the v0.4.3 surface (operate an app by name — app exec /
+# app logs — plus, through the proxy, a zero-downtime rolling update), and the
+# v0.5 surface (scale-to-zero `app sleep`/`wake`, opt-in app→app networking, and
+# horizontal scale-out via `--min-scale N`). It answers one question: "will
+# someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -66,6 +68,7 @@ HOST_PORT_B="${HOST_PORT_B:-8081}"
 HOST_PORT_C="${HOST_PORT_C:-8082}"   # durable-app instance
 HOST_PORT_D="${HOST_PORT_D:-8083}"   # v0.4.1 app (env + exec health)
 HOST_PORT_E="${HOST_PORT_E:-8084}"   # v0.4.2 app update
+HOST_PORT_F="${HOST_PORT_F:-8085}"   # v0.5.0 sleep/wake app
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -112,14 +115,14 @@ hit() {
 }
 
 # ---- 00 preflight: daemon up + version --------------------------------------
-echo "== 00 daemon reachable and on v0.3.x/v0.4.x"
+echo "== 00 daemon reachable and on v0.3.x/v0.4.x/v0.5.x"
 if ! curl -sf "$BASE_URL/healthz" >/dev/null 2>&1; then
   echo "error: no daemon at $BASE_URL — start it: sudo systemctl start crucible" >&2
   exit 3
 fi
 VER="$(cli version 2>&1)"
-if [[ "$VER" == *"v0.4."* || "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
-else fail "unexpected version: $VER (want v0.3.x or v0.4.x)"; fi
+if [[ "$VER" == *"v0.5."* || "$VER" == *"v0.4."* || "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
+else fail "unexpected version: $VER (want v0.3.x, v0.4.x, or v0.5.x)"; fi
 
 # ---- 01 boot an image + publish a port + reach it from the host -------------
 echo "== 01 run $IMAGE -p $HOST_PORT_A:80 (long-lived) and curl it"
@@ -636,6 +639,174 @@ else
     cli app rm "$OAPP" >/dev/null 2>&1
   else
     skip "app create for the by-name ops test failed"
+  fi
+fi
+
+# ---- 18 v0.5.0: scale-to-zero — app sleep + wake in place -------------------
+echo "== 18 scale-to-zero (v0.5.0): app sleep frees RAM, wake restores in place"
+# app-status helpers (JSON from GET /apps/<name>): phase is a plain string field;
+# containment matching mirrors the health checks above so no python3 is needed.
+app_phase() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1 | grep -o '[a-z]*"$' | tr -d '"'; }
+jnum() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o "\"$2\":[0-9]*" | head -1 | grep -o '[0-9]*'; }
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  SAPP="crucible-smoke-sleep"
+  cli app rm "$SAPP" >/dev/null 2>&1 || true
+  SERR="$(mktemp)"
+  OUT="$(cli app create "$SAPP" --image "$IMAGE" -p "$HOST_PORT_F:80" \
+           --restart always --health "http:80:/" --memory 256 2>"$SERR")"
+  if [[ "$OUT" == "$SAPP" ]]; then
+    track_app "$SAPP"; rm -f "$SERR"
+    if hit "http://localhost:$HOST_PORT_F/" "html" || hit "http://localhost:$HOST_PORT_F/" "nginx"; then
+      pass "sleep-test app booted and served on :$HOST_PORT_F"
+    else
+      fail "sleep-test app never served on :$HOST_PORT_F"
+    fi
+    # `app sleep` snapshots the instance and stops the VMM. If the subcommand is
+    # unknown (pre-v0.5.0 daemon) this errors and we skip the rest.
+    if cli app sleep "$SAPP" >/dev/null 2>&1; then
+      ASLEEP=0
+      for _ in {1..30}; do [[ "$(app_phase "$SAPP")" == "asleep" ]] && { ASLEEP=1; break; }; sleep 1; done
+      [[ "$ASLEEP" -eq 1 ]] && pass "app sleep → phase=asleep (VMM stopped, RAM freed)" \
+        || fail "app never reached phase=asleep: $(curl -s "$BASE_URL/apps/$SAPP" 2>&1)"
+      # while asleep the published port stops answering
+      curl -sf "http://localhost:$HOST_PORT_F/" >/dev/null 2>&1 \
+        && echo "   (note: published port still answered while asleep)" \
+        || pass "published port stops serving while asleep"
+      # `app wake` restores in place: phase=running, serves again, reports latency
+      cli app wake "$SAPP" >/dev/null 2>&1
+      WOKE=0
+      for _ in {1..40}; do
+        [[ "$(app_phase "$SAPP")" == "running" ]] && curl -sf "http://localhost:$HOST_PORT_F/" >/dev/null 2>&1 && { WOKE=1; break; }
+        sleep 1
+      done
+      if [[ "$WOKE" -eq 1 ]]; then
+        pass "app wake restored in place (phase=running, serving again)"
+        MS="$(jnum "$SAPP" last_wake_latency_ms)"
+        [[ "${MS:-0}" -gt 0 ]] 2>/dev/null && pass "status reports last_wake_latency_ms=$MS" \
+          || echo "   (note: last_wake_latency_ms=${MS:-0})"
+      else
+        APPJSON="$(curl -s "$BASE_URL/apps/$SAPP" 2>/dev/null)"
+        # A stale rootfs whose baked crucible-agent predates wake support reports
+        # this exact error. That's an old *install*, not a wake regression — self-
+        # skip (like the pre-v0.5.0 branch above), pointing at the real fix.
+        if [[ "$APPJSON" == *"does not support wake"* ]]; then
+          skip "installed rootfs predates wake support — rebuild the guest agent + rootfs (make agent && make build, then reinstall) so v0.5.0 wake is baked in"
+        else
+          fail "app wake did not restore service: $APPJSON"
+        fi
+      fi
+    else
+      skip "app sleep/wake unsupported (pre-v0.5.0 daemon)"
+    fi
+    cli app rm "$SAPP" >/dev/null 2>&1
+  else
+    skip "sleep-test app create failed: $(head -1 "$SERR" 2>/dev/null)"; rm -f "$SERR"
+  fi
+fi
+
+# ---- 19 v0.5.1: app→app networking — grant / default-deny / peer isolation --
+echo "== 19 app→app networking (v0.5.1): <app>.internal grant + default-deny"
+# Requires the daemon started with --internal-networking (EXPERIMENTAL, OFF by
+# default). We can't read the daemon's flags from a client, so we PROBE: create a
+# caller granted --can-call the backend and try the internal call. If it doesn't
+# resolve/serve, internal networking isn't enabled here → SKIP (not a failure).
+# Once the granted path works the feature IS on, so the deny + isolation checks
+# become HARD assertions (a security regression must fail, like the SSRF tripwire).
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  BACK="crucible-smoke-backend"; SECRET="crucible-smoke-secret"; CALL="crucible-smoke-caller"
+  for a in "$BACK" "$SECRET" "$CALL"; do cli app rm "$a" >/dev/null 2>&1 || true; done
+  A2A_ERR="$(mktemp)"
+  c_ok=1
+  cli app create "$BACK"   --image "$IMAGE" --port 80 --restart always --memory 256 >/dev/null 2>>"$A2A_ERR" || c_ok=0
+  cli app create "$SECRET" --image "$IMAGE" --port 80 --restart always --memory 256 >/dev/null 2>>"$A2A_ERR" || c_ok=0
+  cli app create "$CALL"   --image "$IMAGE" --port 80 --restart always --memory 256 --can-call "$BACK" >/dev/null 2>>"$A2A_ERR" || c_ok=0
+  if [[ "$c_ok" -ne 1 ]]; then
+    skip "app→app create failed (pre-v0.5.1 daemon? --can-call unsupported): $(head -1 "$A2A_ERR" 2>/dev/null)"
+    for a in "$BACK" "$SECRET" "$CALL"; do cli app rm "$a" >/dev/null 2>&1 || true; done
+    rm -f "$A2A_ERR"
+  else
+    track_app "$BACK"; track_app "$SECRET"; track_app "$CALL"; rm -f "$A2A_ERR"
+    # wait for the caller to have a live instance to exec into
+    CINST=""
+    for _ in {1..40}; do
+      CINST="$(curl -s "$BASE_URL/apps/$CALL" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+      [[ "$CINST" == sbx_* ]] && break; sleep 1
+    done
+    # PROBE the granted internal call (default internal VIP port is 80).
+    GOT=""
+    for _ in {1..30}; do
+      GOT="$(cli app exec "$CALL" -- wget -T 5 -q -O - "http://$BACK.internal/" 2>/dev/null)"
+      [[ "$GOT" == *nginx* || "$GOT" == *"<html"* ]] && break; sleep 1
+    done
+    if [[ "$GOT" != *nginx* && "$GOT" != *"<html"* ]]; then
+      skip "internal networking not enabled (daemon needs --internal-networking) — granted call to $BACK.internal did not resolve"
+    else
+      pass "GRANTED: caller reached $BACK.internal (served $(echo "$GOT" | wc -c) bytes)"
+      # HARD: an un-granted peer must be refused (default-deny; no body served).
+      DENIED="$(cli app exec "$CALL" -- wget -T 5 -q -O - "http://$SECRET.internal/" 2>/dev/null)"
+      if [[ -z "$DENIED" || ( "$DENIED" != *nginx* && "$DENIED" != *"<html"* ) ]]; then
+        pass "DEFAULT-DENY: un-granted caller→$SECRET.internal refused (no body served)"
+      else
+        fail "SECURITY: un-granted caller reached $SECRET.internal! (got: '${DENIED:0:60}')"
+      fi
+      # HARD: peer isolation — caller must NOT reach backend's guest IP directly.
+      BINST="$(curl -s "$BASE_URL/apps/$BACK" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+      BIP="$(curl -s "$BASE_URL/sandboxes/$BINST" 2>/dev/null | grep -o '"guest_ip":"[0-9.]*"' | grep -o '[0-9.]*' | head -1)"
+      if [[ -n "$BIP" ]]; then
+        if cli app exec "$CALL" -- sh -c "nc -w 3 $BIP 80 </dev/null" >/dev/null 2>&1; then
+          fail "SECURITY: caller reached backend guest IP $BIP directly — lateral isolation broken!"
+        else
+          pass "PEER ISOLATION: caller cannot reach backend guest IP $BIP directly (VIP is the only path)"
+        fi
+      else
+        skip "could not read backend guest IP for the isolation check"
+      fi
+    fi
+    for a in "$BACK" "$SECRET" "$CALL"; do cli app rm "$a" >/dev/null 2>&1 || true; done
+  fi
+fi
+
+# ---- 20 v0.5.2: horizontal scale-out — a --min-scale N app runs N replicas ---
+echo "== 20 horizontal scale-out (v0.5.2): --min-scale 2 converges to 2 replicas"
+# Acceptance-friendly proof of the scale-out machinery: a fixed floor of 2 warm
+# replicas (no slow autoscale-under-load dance — that's scripts/smoke_app_scaleout.sh).
+# Observable purely from the app status (replicas / ready_replicas / instances),
+# so no published port is consumed.
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  SOAPP="crucible-smoke-scaleout"
+  cli app rm "$SOAPP" >/dev/null 2>&1 || true
+  SOERR="$(mktemp)"
+  OUT="$(cli app create "$SOAPP" --image "$IMAGE" --port 80 --restart always --memory 256 \
+           --min-scale 2 --max-scale 4 2>"$SOERR")"
+  if [[ "$OUT" == "$SOAPP" ]]; then
+    track_app "$SOAPP"; rm -f "$SOERR"
+    # the fleet converges to 2 ready replicas (extras warm-forked from a golden snap)
+    READY=0
+    for _ in {1..60}; do
+      R="$(jnum "$SOAPP" ready_replicas)"
+      [[ "${R:-0}" -ge 2 ]] 2>/dev/null && { READY=1; break; }
+      sleep 2
+    done
+    if [[ "$READY" -eq 1 ]]; then
+      pass "converged to $(jnum "$SOAPP" ready_replicas) ready replicas ($(jnum "$SOAPP" replicas) desired)"
+    else
+      fail "did not reach 2 ready replicas: ready=$(jnum "$SOAPP" ready_replicas) desired=$(jnum "$SOAPP" replicas)"
+    fi
+    # the status lists a distinct instance per replica (endpoint set)
+    if command -v python3 >/dev/null 2>&1; then
+      NINST="$(curl -s "$BASE_URL/apps/$SOAPP" 2>/dev/null | python3 -c 'import json,sys; s=json.load(sys.stdin).get("status",{}); ids={i.get("instance_id") for i in s.get("instances",[])}; print(len([x for x in ids if x]))' 2>/dev/null)"
+      [[ "${NINST:-0}" -ge 2 ]] 2>/dev/null && pass "endpoint set lists $NINST distinct instances" \
+        || fail "endpoint set has ${NINST:-0} instances, want >= 2"
+    fi
+    cli app rm "$SOAPP" >/dev/null 2>&1
+  else
+    skip "scale-out unsupported (pre-v0.5.2 daemon? --min-scale/--max-scale): $(head -1 "$SOERR" 2>/dev/null)"; rm -f "$SOERR"
   fi
 fi
 

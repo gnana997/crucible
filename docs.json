@@ -55,6 +55,7 @@
       "tab": "Guides",
       "pages": [
         "README",
+        "install",
         {
           "group": "Core concepts",
           "pages": [
