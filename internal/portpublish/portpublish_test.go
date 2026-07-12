@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gnana997/crucible/internal/reuseport"
 )
 
 func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -162,6 +164,46 @@ func TestPublishBindConflictRollsBack(t *testing.T) {
 		t.Fatalf("first listener leaked after rollback: %v", err)
 	}
 	_ = ln.Close()
+}
+
+func TestPublishRejectsDuplicateHostPort(t *testing.T) {
+	// SO_REUSEPORT would let the kernel bind the same host port twice (and split
+	// traffic). The claimed-port registry must refuse the second publish instead.
+	p := freePort(t)
+	set1, err := Publish(testLogger(), []Mapping{{HostIP: "127.0.0.1", HostPort: p, GuestIP: "127.0.0.1", GuestPort: 9}})
+	if err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+
+	if _, err := Publish(testLogger(), []Mapping{{HostIP: "127.0.0.1", HostPort: p, GuestIP: "127.0.0.1", GuestPort: 9}}); err == nil {
+		t.Fatal("duplicate publish of the same host address was allowed")
+	}
+
+	// After the owner closes, the address is claimable again.
+	set1.Close()
+	set2, err := Publish(testLogger(), []Mapping{{HostIP: "127.0.0.1", HostPort: p, GuestIP: "127.0.0.1", GuestPort: 9}})
+	if err != nil {
+		t.Fatalf("republish after release failed: %v", err)
+	}
+	set2.Close()
+}
+
+func TestPublishCoexistsWithVIPStyleListener(t *testing.T) {
+	// The (d) regression: a wildcard host publish (0.0.0.0:p) must coexist with a
+	// specific-address listener on the same port — as the app→app VIP does on the
+	// anycast dummy iface. Both use SO_REUSEPORT, so the bind no longer clashes.
+	p := freePort(t)
+	vip, err := reuseport.Listen(net.JoinHostPort("127.9.9.9", strconv.Itoa(p)))
+	if err != nil {
+		t.Skipf("cannot bind VIP-style 127.9.9.9:%d: %v", p, err)
+	}
+	t.Cleanup(func() { _ = vip.Close() })
+
+	set, err := Publish(testLogger(), []Mapping{{HostIP: "", HostPort: p, GuestIP: "127.0.0.1", GuestPort: 9}})
+	if err != nil {
+		t.Fatalf("wildcard publish clashed with a specific-addr listener on :%d (SO_REUSEPORT not applied?): %v", p, err)
+	}
+	set.Close()
 }
 
 func TestForwarderGuestNotListening(t *testing.T) {

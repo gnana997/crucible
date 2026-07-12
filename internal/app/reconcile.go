@@ -155,7 +155,7 @@ type replica struct {
 	id         string
 	generation uint64
 	bootedAt   time.Time
-	health     string // healthy | unknown (probed as part of L4's traffic-based checks)
+	health     string // healthy | unknown (updated by the balancer's traffic-based checks)
 }
 
 // goldenSnap is the snapshot of a healthy primary that an app's warm replicas

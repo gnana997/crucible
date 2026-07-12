@@ -6,6 +6,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.5.3] — 2026-07-13
+
+Reliability & isolation hardening: no orphaned VMs across app-lifecycle edges, no
+stale guest agent after a daemon upgrade, and app→app networking no longer blocks
+publishing an app on the same host port.
+
+### Fixed
+
+- **No orphaned instances across app-lifecycle edges.** A rolling `app update`
+  keeps the old instance alive briefly to drain. Deleting the app, issuing a
+  second update, or sleeping it *during* that window used to leave that VM
+  running forever (the drain slot was reaped only while the app stayed desired).
+  Teardown now destroys **every** instance an app owns (current + draining +
+  incoming); a superseding update destroys the prior draining instance before
+  reusing the single drain slot; and sleep frees any in-flight roll instances —
+  so an asleep app truly runs zero VMs. Covered by `scripts/smoke_leaks.sh`.
+- **Upgrades no longer boot a stale guest agent from a cached image.** Converted
+  OCI images are now keyed by the injected agent's digest as well as the source
+  image digest: a daemon whose embedded agent changed (an upgrade) re-converts on
+  next use instead of silently reusing an old conversion. This is what made
+  scale-to-zero *wake* fail on an image an older daemon had already cached — the
+  manual `crucible image rm` workaround is no longer needed.
+- **A published host port coexists with app→app networking on the same port.**
+  With `--internal-networking`, the `<app>.internal` VIP binds its port on a
+  host-local address; publishing an app to that same host port (`-p 80:80` / `-P`
+  an EXPOSE-80 image while the VIP is on `:80`) used to fail with `address already
+  in use`. Both listeners now set `SO_REUSEPORT`, and a host-port registry
+  preserves one-owner-per-port, so the wildcard publish and the specific VIP
+  coexist (Linux routes each connection to the most-specific bind).
+
 ## [0.5.2] — 2026-07-13
 
 Scale out. An app runs multiple replicas behind the ingress proxy, load-balanced,

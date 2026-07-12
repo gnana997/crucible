@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/gnana997/crucible/internal/reuseport"
 )
 
 const (
@@ -268,7 +270,11 @@ func (p *Proxy) Start() error {
 		}()
 	}
 	if p.internalListen != "" {
-		ln, err := net.Listen("tcp", p.internalListen)
+		// SO_REUSEPORT: the VIP binds a specific host-local address (the anycast
+		// dummy iface), and it must coexist with a published wildcard host port on
+		// the same number (e.g. an app running `-p 80:80` while the VIP is on :80).
+		// Both sides need SO_REUSEPORT or the second bind hits EADDRINUSE.
+		ln, err := reuseport.Listen(p.internalListen)
 		if err != nil {
 			if p.httpSrv != nil {
 				_ = p.httpSrv.Close()

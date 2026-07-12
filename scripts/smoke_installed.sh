@@ -492,18 +492,15 @@ fi
 
 # ---- 14 v0.4.1: -P publishes the image's EXPOSEd port -----------------------
 echo "== 14 -P publishes the image's EXPOSEd port (guest 80 → host 80)"
-# -P maps the image's EXPOSEd :80 to host :80, so anything ALREADY bound to :80
-# would clash. A loopback `curl localhost:80` only catches a holder on 127.0.0.1 —
-# it MISSES one bound to a specific NIC (e.g. a docker-proxy on the LAN IP) or
-# *:80/[::]:80, which still collides with the daemon's 0.0.0.0:80 bind. So also
-# ask `ss` for ANY :80 listener, and if the bind still loses the race, read the
-# instance's last_error and SKIP on a port clash rather than FAIL (an occupied
-# host port is an environment issue, not a -P regression).
-port80_busy=0
-[[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:80/ 2>/dev/null)" != "000" ]] && port80_busy=1
-command -v ss >/dev/null 2>&1 && ss -ltnH 'sport = :80' 2>/dev/null | grep -q . && port80_busy=1
-if [[ "$port80_busy" -eq 1 ]]; then
-  skip "-P check: host :80 is already in use (ingress proxy / docker-proxy / other) — -P to host :80 would clash"
+# -P maps the image's EXPOSEd :80 to host :80. A holder on host :80 would clash —
+# EXCEPT the app→app VIP, which binds :80 on its own host-local address and now
+# coexists via SO_REUSEPORT (v0.5.3), so we do NOT pre-skip on it. A loopback
+# `curl localhost:80` catches a real server on 127.0.0.1:80 (the common clash);
+# anything else that genuinely can't share the port surfaces as the instance's
+# last_error ("bind :80: address already in use"), which we treat as a SKIP
+# (occupied host port = environment, not a -P regression) rather than a FAIL.
+if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:80/ 2>/dev/null)" != "000" ]]; then
+  skip "-P check: a server already answers on 127.0.0.1:80 — -P to host :80 would clash"
 elif ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
   skip "daemon has no /apps endpoint"
 else

@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.5.2](https://img.shields.io/badge/status-v0.5.2-orange)
+![Status: v0.5.3](https://img.shields.io/badge/status-v0.5.3-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -106,7 +106,8 @@ Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent
 
 ## Roadmap
 
-- **v0.5.2** (current): **scale out** — `app create --min-scale N` runs N replicas behind the proxy, **P2C load-balanced**; `--max-scale M --target-concurrency C` autoscales on concurrency (fast up, slow down). Each replica is **forked warm from a golden snapshot in milliseconds**, self-healed by the reconciler — k8s-style horizontal scaling where the VM properties (snapshot/restore) make scale-up cheap ([docs/apps.md#horizontal-scale-out](docs/apps.md#horizontal-scale-out)).
+- **v0.5.3** (current): **reliability & isolation hardening** — no orphaned VMs across app-lifecycle edges (a rolling update's old instance is always reaped, even on delete/re-update/sleep mid-drain); a daemon upgrade no longer boots a **stale guest agent** from a cached image (conversions are keyed by the injected agent too); and a published host port now **coexists** with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`). ([CHANGELOG](CHANGELOG.md#053--2026-07-13)).
+- **v0.5.2**: **scale out** — `app create --min-scale N` runs N replicas behind the proxy, **P2C load-balanced**; `--max-scale M --target-concurrency C` autoscales on concurrency (fast up, slow down). Each replica is **forked warm from a golden snapshot in milliseconds**, self-healed by the reconciler — k8s-style horizontal scaling where the VM properties (snapshot/restore) make scale-up cheap ([docs/apps.md#horizontal-scale-out](docs/apps.md#horizontal-scale-out)).
 - **v0.5.1**: **app→app networking** — deploy web + backend as separate apps and let them talk: `web` reaches `http://backend.internal/` through the ingress proxy, **default-deny** (`app create web --can-call backend`), and a scaled-to-zero backend **wakes on the internal call**. Through the proxy VIP (not a guest-to-guest mesh), so per-sandbox isolation holds. Experimental, off by default (`--internal-networking`) ([docs/apps.md](docs/apps.md)).
 - **v0.5.0**: **scale to zero** — an app **sleeps when idle and wakes on the next request in under a second**. `crucible app sleep`/`app wake` snapshot a running app and stop its VMM to free RAM+CPU, then restore it **in place** (same IP, same identity, clock stepped to now); `app create --idle-timeout <dur> --min-scale 0` does it automatically — the ingress proxy sleeps an idle app and the next request wakes it, buffered until it's ready (a request herd coalesces into one wake). A slept app **survives a daemon restart** (durable snapshot, re-adopted on start) ([docs/apps.md](docs/apps.md)).
 - **v0.4.4**: **private registries** — `crucible registry login <host>` stores a per-registry credential on the daemon so `run`, `app create`, and an app's re-pull on restart can fetch private images (Docker Hub, GHCR, GitLab, Quay, self-hosted, static GCP/ACR); plus a one-shot `run --registry-auth` for CI. Never reads your `~/.docker/config.json` ([docs/registry.md](docs/registry.md)).

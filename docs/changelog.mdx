@@ -10,6 +10,61 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.5.3" title="Reliability & isolation hardening">
+
+Close the sharp edges scale-out and app→app surfaced.
+
+- **No orphaned VMs** — a rolling `app update`'s draining instance is always reaped, even when the app is deleted, updated again, or slept mid-drain. An asleep app now truly runs zero VMs.
+- **Agent-fresh image cache** — converted images are keyed by the injected guest agent's digest, so a daemon upgrade re-converts instead of booting a stale agent (the cause of `wake` failing on a previously-cached image).
+- **Publish + app→app coexist** — a published host port (`-p 80:80` / `-P`) no longer clashes with the `<app>.internal` VIP on the same port (`SO_REUSEPORT` + a one-owner-per-port registry).
+
+</Update>
+
+<Update label="v0.5.2" title="Scale out">
+
+An app runs multiple replicas behind the proxy, forked **warm** from a snapshot in milliseconds.
+
+- **Horizontal scaling** — `app create <app> --min-scale N` runs N warm replicas, each forked from a golden snapshot of the healthy primary (clone-safe: distinct machine-id + IP). The reconciler self-heals the fleet.
+- **Load balancing** — power-of-two-choices least-request across live instances, with a slow-start ramp and passive outlier ejection. External and `<app>.internal` traffic share the one balancer.
+- **Autoscaling** — `--max-scale M --target-concurrency C` scales between the floor and M on request concurrency (fast up, slow down); composes with scale-to-zero.
+
+</Update>
+
+<Update label="v0.5.1" title="App-to-app networking">
+
+Deploy web + backend as separate apps and let them talk.
+
+- **Reach by name** — an app calls another at `http://<app>.internal/`, routed through the ingress proxy VIP; the call inherits **wake-on-request** (a scaled-to-zero callee wakes) and per-sandbox isolation holds.
+- **Default-deny** — `app create web --can-call backend` declares allowed calls; ungranted calls get 403 (proxy) / NXDOMAIN (DNS). Experimental, off by default (`--internal-networking`).
+
+</Update>
+
+<Update label="v0.5.0" title="Scale to zero">
+
+- **Sleep / wake** — `app sleep`/`wake`, or `app create --idle-timeout <dur> --min-scale 0`: an idle app snapshots to ~zero RAM and **wakes in place** on the next request through the proxy in under a second (same IP + identity, clock stepped to now). A slept app survives a daemon restart.
+
+</Update>
+
+<Update label="v0.4.4" title="Private registries">
+
+- **Registry credentials** — `crucible registry login <host>` stores a per-registry credential on the daemon so `run`, `app create`, and an app's re-pull on restart can fetch private images (Docker Hub, GHCR, GitLab, Quay, self-hosted). Gated by a `registry` scoped-token op; never reads `~/.docker/config.json`. Plus one-shot `run --registry-auth` for CI.
+
+</Update>
+
+<Update label="v0.4.3" title="Zero-downtime updates + operate by name">
+
+- **Rolling `app update`** — boot the new instance, gate on readiness, flip the route, drain the old; a failed update keeps the old instance serving, so the cutover drops nothing.
+- **Operate by name** — `app exec`/`logs`/`shell` (and MCP `app_exec`/`app_logs`) resolve to the app's current instance per call, so they keep working across a self-heal or redeploy.
+
+</Update>
+
+<Update label="v0.4.2" title="Reach an app by name">
+
+- **Ingress proxy** — a daemon-owned listener routes inbound traffic to an app **by name** (`web.<domain>`) instead of a fixed host port, following the app across self-heal and redeploys. L7 host routing + optional L4 SNI passthrough.
+- Plus **`app update`** (replace the spec + redeploy) and **image `HEALTHCHECK` seeding** (an app with no `--health` inherits the image's healthcheck).
+
+</Update>
+
 <Update label="v0.4.1" title="Apps you can actually deploy">
 
 Real config and real egress for the durable apps v0.4.0 introduced — across `app

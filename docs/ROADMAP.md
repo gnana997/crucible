@@ -111,7 +111,7 @@ Deploy your frontend and API as separate apps and let them talk — the first st
 - [x] **Reach another app by name** — with the daemon's `--internal-networking`, an app calls another at `http://<app>.internal/`, routed **through the ingress proxy VIP** (the DNS anycast) to the callee's current instance. Because it goes through the proxy — not a direct guest-to-guest path — an internal call inherits **wake-on-request** (a scaled-to-zero callee wakes and serves) and leaves per-sandbox isolation intact (a guest still can't reach a peer's IP directly) ([apps.md](apps.md)).
 - [x] **Default-deny authorization** — `app create <app> --can-call <other>` declares the calls an app may make (empty = none). Enforced daemon-side: the proxy returns 403 on an un-granted call, and DNS answers `<app>.internal` only for granted callers (else NXDOMAIN — no discovery of apps you can't call). On the Go SDK (`AppSpec.CanCall`) and MCP; `app_internal_requests_total` on `/metrics`. Experimental, off by default.
 
-### v0.5.2 — Scale out *(current)*
+### v0.5.2 — Scale out
 
 An app runs multiple replicas behind the proxy, load-balanced, and autoscales on request concurrency — each replica forked **warm** from a snapshot in milliseconds, not cold-booted. "k8s horizontal scaling, but the VM properties invert the tradeoffs."
 
@@ -119,11 +119,19 @@ An app runs multiple replicas behind the proxy, load-balanced, and autoscales on
 - [x] **Load balancing** — the proxy balances requests across an app's live instances with **power-of-two-choices least-request**, a slow-start ramp so a just-forked replica isn't slammed cold, and passive outlier ejection. External and app→app traffic both balance through the one path.
 - [x] **Autoscaling** — `--max-scale M --target-concurrency C` autoscales between the floor and M on concurrency: a fast window scales up on bursts, a slow window scales down when calm (stabilized against flapping). `min_scale=0` composes with scale-to-zero (idle→0, request→1, load→M). `app ls` shows a replicas column.
 
+### v0.5.3 — Reliability & isolation hardening *(current)*
+
+Close the sharp edges the scale-out and app→app work surfaced: no leaked VMs, no stale agents, and no port contention between publishing and internal networking.
+
+- [x] **No orphaned instances** — teardown destroys every instance an app owns (current + draining + incoming), a superseding update reaps the prior draining instance, and sleep frees in-flight roll instances. A rolling update's old VM is always reaped, even on delete / re-update / sleep mid-drain ([smoke_leaks.sh](../scripts/smoke_leaks.sh)).
+- [x] **Agent-fresh image cache** — converted OCI images are keyed by the injected agent's digest, so a daemon upgrade re-converts instead of booting a stale baked agent (the cause of `wake` failing on an image an older daemon cached).
+- [x] **Publish coexists with app→app** — the `<app>.internal` VIP and a published host port on the same number no longer clash (`SO_REUSEPORT` + a host-port registry that preserves one-owner-per-port).
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, and horizontal scale-out exist (v0.4.0–v0.5.2); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, and horizontal scale-out exist (v0.4.0–v0.5.3); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
