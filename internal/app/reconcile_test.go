@@ -824,3 +824,70 @@ func TestValidateSpecCanCall(t *testing.T) {
 		t.Errorf("valid can_call targets should pass: %v", err)
 	}
 }
+
+// crashInstance removes one instance without going through Destroy (a single
+// replica's VM dying underneath the daemon).
+func (f *fakeInstantiator) crashInstance(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.live, id)
+}
+
+func TestConvergeReplicas(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	c := ctx()
+
+	// min_scale=3 → converge to 3 instances (primary + 2 extras) in one pass.
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Sleep = &api.SleepPolicy{MinScale: 3}
+	mustCreate(t, m, spec, true)
+	m.reconcile(c)
+	if f.liveCount() != 3 {
+		t.Fatalf("min_scale=3: %d live, want 3", f.liveCount())
+	}
+	resp, _ := m.GetByName("web")
+	if resp.Status.Replicas != 3 || resp.Status.ReadyReplicas != 3 || len(resp.Status.Instances) != 3 {
+		t.Errorf("status = replicas:%d ready:%d instances:%d, want 3/3/3",
+			resp.Status.Replicas, resp.Status.ReadyReplicas, len(resp.Status.Instances))
+	}
+
+	// Kill one extra → the reconciler re-converges to 3.
+	primary := resp.Status.InstanceID
+	var victim string
+	for _, in := range resp.Status.Instances {
+		if in.InstanceID != primary {
+			victim = in.InstanceID
+			break
+		}
+	}
+	f.crashInstance(victim)
+	if f.liveCount() != 2 {
+		t.Fatalf("after crashing an extra: %d live, want 2", f.liveCount())
+	}
+	m.reconcile(c)
+	if f.liveCount() != 3 {
+		t.Fatalf("after re-converge: %d live, want 3", f.liveCount())
+	}
+
+	// Scale down to min_scale=1 → destroys the 2 extras.
+	spec2 := nginxSpec("web", wire.RestartAlways)
+	spec2.Sleep = &api.SleepPolicy{MinScale: 1}
+	if _, err := m.Update("web", spec2); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	m.reconcile(c)
+	if f.liveCount() != 1 {
+		t.Fatalf("after scale-down to min_scale=1: %d live, want 1", f.liveCount())
+	}
+
+	// A single-instance app never grows extras (N=1 path unchanged).
+	f2 := newFake()
+	m2, _ := newMgr(t, f2)
+	mustCreate(t, m2, nginxSpec("solo", wire.RestartAlways), true)
+	m2.reconcile(c)
+	m2.reconcile(c)
+	if f2.liveCount() != 1 {
+		t.Fatalf("single-instance app: %d live, want 1", f2.liveCount())
+	}
+}

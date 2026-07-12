@@ -75,7 +75,7 @@ func TestValidateSpecSleepPolicy(t *testing.T) {
 		{"scale-to-zero", &api.SleepPolicy{IdleTimeoutSec: 30, MinScale: 0}, true},
 		{"keep one warm", &api.SleepPolicy{IdleTimeoutSec: 0, MinScale: 1}, true},
 		{"negative idle", &api.SleepPolicy{IdleTimeoutSec: -1}, false},
-		{"min_scale too high", &api.SleepPolicy{MinScale: 2}, false},
+		{"multi-replica warm pool", &api.SleepPolicy{MinScale: 3}, true}, // v0.5.2: min_scale > 1 = N warm replicas
 		{"negative min_scale", &api.SleepPolicy{MinScale: -1}, false},
 	}
 	for _, tc := range cases {

@@ -124,6 +124,22 @@ type observed struct {
 	// on a live instance, then it is destroyed.
 	drainInstanceID string
 	drainUntil      time.Time
+
+	// This struct tracks only the PRIMARY instance and its single-instance state
+	// machines (self-heal, rolling update, sleep/wake) — unchanged by v0.5.2.
+	// Extra replicas (2..N) live in Manager.extras.
+}
+
+// replica is one non-primary ("extra") instance of a horizontally-scaled app.
+// Extras add capacity behind the proxy; they don't own the app's transition
+// state (rolling update, sleep/wake) — the primary does. Self-heal is by
+// replacement: a vanished or stale-generation extra is dropped and re-booted to
+// hold replicaTarget.
+type replica struct {
+	id         string
+	generation uint64
+	bootedAt   time.Time
+	health     string // healthy | unknown (probed as part of L4's traffic-based checks)
 }
 
 // Tuning. Backoff is exponential between restart attempts; a run that
@@ -175,6 +191,13 @@ type Manager struct {
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
 	obs         map[string]*observed
+	// extras holds an app's non-primary replicas (instances 2..N) for
+	// horizontal scale-out (v0.5.2), keyed by app id and guarded by obsMu. Kept
+	// SEPARATE from obs because the primary's state machine replaces its
+	// *observed wholesale (re-boot, roll, re-adopt) — nesting extras there would
+	// orphan them. Empty for a single-instance app, so the primary path is
+	// unchanged.
+	extras map[string][]*replica
 
 	// transitionMu guards transitions; each per-app mutex serializes that app's
 	// sleep/wake lifecycle transitions so Sleep and Wake are mutually exclusive
@@ -204,6 +227,7 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		idleInterval: defaultIdleInterval,
 		now:          time.Now,
 		obs:          make(map[string]*observed),
+		extras:       make(map[string][]*replica),
 		transitions:  make(map[string]*sync.Mutex),
 		trigger:      make(chan struct{}, 1),
 	}
@@ -711,6 +735,7 @@ func (m *Manager) reconcile(ctx context.Context) {
 				m.log.Warn("app reconcile: destroy", "app", appID, "instance", ob.instanceID, "err", err)
 			}
 		}
+		m.destroyExtras(ctx, appID) // tear down horizontally-scaled replicas too
 		m.obsMu.Lock()
 		if !stillExists {
 			delete(m.obs, appID) // app deleted → forget it
@@ -738,10 +763,114 @@ func desiredRec(recs []Record, id string) (Record, bool) {
 	return Record{}, false
 }
 
-// reconcileApp converges a single desired-running app: (re)boot subject to
+// reconcileApp converges one desired-running app: the primary instance (its full
+// single-instance state machine) plus, for a horizontally-scaled app, the extra
+// replicas that hold replicaTarget.
+func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
+	m.reconcilePrimary(ctx, rec, now)
+
+	// A slept, waking, or stopped app has no extras — a sleep frees the whole
+	// app's RAM, so extras are torn down and re-forked on wake (as scale-out
+	// arrives). Otherwise converge extras alongside the running primary.
+	m.obsMu.Lock()
+	phase := ""
+	if ob := m.obs[rec.ID]; ob != nil {
+		phase = ob.phase
+	}
+	m.obsMu.Unlock()
+	if phase == "asleep" || phase == "waking" || phase == "stopped" {
+		m.destroyExtras(ctx, rec.ID)
+		return
+	}
+	m.reconcileExtras(ctx, rec, now)
+}
+
+// replicaTarget is the desired number of instances for an app: the primary plus
+// any extras. min_scale is the warm-replica floor — 0 or 1 means a single
+// instance (min_scale 0 also opts into scale-to-zero, handled by the primary's
+// sleep path); min_scale N > 1 means N warm replicas.
+func replicaTarget(rec Record) int {
+	if !rec.DesiredRunning {
+		return 0
+	}
+	if sp := rec.Spec.Sleep; sp != nil && sp.MinScale > 1 {
+		return sp.MinScale
+	}
+	return 1
+}
+
+// reconcileExtras converges an app's extra replicas (instances 2..N) to
+// replicaTarget-1: it drops vanished or stale-generation extras, destroys any
+// surplus, and cold-boots the deficit. Warm forking from a golden snapshot and
+// per-replica health-based replacement land with later slices; here an extra
+// self-heals by replacement when its instance disappears.
+func (m *Manager) reconcileExtras(ctx context.Context, rec Record, now time.Time) {
+	m.obsMu.Lock()
+	ob := m.obs[rec.ID]
+	extras := m.extras[rec.ID]
+	m.obsMu.Unlock()
+	if ob == nil || ob.instanceID == "" {
+		return // primary not up yet; extras converge on a later pass
+	}
+	target := replicaTarget(rec) - 1
+	if target < 0 {
+		target = 0
+	}
+
+	// Keep the extras still alive at the current generation; destroy the rest.
+	alive := make([]*replica, 0, len(extras))
+	for _, r := range extras {
+		if r.generation != rec.Generation {
+			_ = m.inst.Destroy(ctx, r.id) // stale spec → replace at current generation
+			continue
+		}
+		if !m.inst.Exists(r.id) {
+			continue // vanished → drop; re-booted below if under target
+		}
+		alive = append(alive, r)
+	}
+	// Destroy surplus above target (a scale-down or a lowered min_scale).
+	for len(alive) > target {
+		last := alive[len(alive)-1]
+		_ = m.inst.Destroy(ctx, last.id)
+		alive = alive[:len(alive)-1]
+	}
+	// Cold-boot the deficit up to target.
+	for len(alive) < target {
+		id, err := m.inst.Create(ctx, rec.ID, rec.Spec)
+		if err != nil {
+			m.log.Error("app: boot extra replica", "app", rec.ID, "name", rec.Spec.Name, "err", err)
+			break // retry next pass
+		}
+		health := "healthy"
+		if hc := rec.Spec.Health; hc != nil && hc.Type != "" {
+			health = "unknown"
+		}
+		m.log.Info("app extra replica booted", "app", rec.ID, "name", rec.Spec.Name, "instance", id)
+		alive = append(alive, &replica{id: id, generation: rec.Generation, bootedAt: now, health: health})
+	}
+
+	m.obsMu.Lock()
+	m.extras[rec.ID] = alive
+	m.obsMu.Unlock()
+}
+
+// destroyExtras tears down and forgets an app's extra replicas (on sleep, stop,
+// or delete).
+func (m *Manager) destroyExtras(ctx context.Context, appID string) {
+	m.obsMu.Lock()
+	extras := m.extras[appID]
+	delete(m.extras, appID)
+	m.obsMu.Unlock()
+	for _, r := range extras {
+		_ = m.inst.Destroy(ctx, r.id)
+	}
+}
+
+// reconcilePrimary converges an app's primary instance: (re)boot subject to
 // backoff, detect death via Exists, and — when a health check is
 // configured — probe and restart on sustained failure.
-func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
+func (m *Manager) reconcilePrimary(ctx context.Context, rec Record, now time.Time) {
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
 	m.obsMu.Unlock()
@@ -1224,6 +1353,7 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 	}
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
+	extras := m.extras[rec.ID]
 	m.obsMu.Unlock()
 	if ob != nil {
 		phase := ob.phase
@@ -1240,6 +1370,22 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 			LastWakeLatencyMs:  ob.lastWakeLatency.Milliseconds(),
 			SleepCount:         ob.sleepCount,
 		}
+		// Endpoint set: the primary (when it has a live instance) plus any extras.
+		var insts []api.InstanceStatus
+		ready := 0
+		if ob.instanceID != "" {
+			insts = append(insts, api.InstanceStatus{InstanceID: ob.instanceID, Generation: ob.generation, Health: ob.health})
+			if phase == "running" {
+				ready++
+			}
+		}
+		for _, r := range extras {
+			insts = append(insts, api.InstanceStatus{InstanceID: r.id, Generation: r.generation, Health: r.health})
+			ready++
+		}
+		resp.Status.Instances = insts
+		resp.Status.ReadyReplicas = ready
+		resp.Status.Replicas = replicaTarget(rec)
 	}
 	return resp
 }
@@ -1275,10 +1421,10 @@ func validateSpec(spec api.AppSpec) error {
 		if sp.IdleTimeoutSec < 0 {
 			return fmt.Errorf("app: sleep idle_timeout_s must be >= 0, got %d", sp.IdleTimeoutSec)
 		}
-		// v0.5.0 sleeps a single instance; multi-instance warm pools (min_scale
-		// > 1) arrive with horizontal scale-out in v0.5.x.
-		if sp.MinScale < 0 || sp.MinScale > 1 {
-			return fmt.Errorf("app: sleep min_scale must be 0 or 1, got %d", sp.MinScale)
+		// min_scale is the warm-replica floor (v0.5.2): 0 opts into scale-to-zero,
+		// >=1 keeps that many instances always running. Negative is invalid.
+		if sp.MinScale < 0 {
+			return fmt.Errorf("app: sleep min_scale must be >= 0, got %d", sp.MinScale)
 		}
 	}
 	for _, target := range spec.CanCall {

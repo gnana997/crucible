@@ -171,6 +171,22 @@ type AppStatus struct {
 	// SleepCount is how many sleep cycles this app has been through since the
 	// daemon started.
 	SleepCount int `json:"sleep_count,omitempty"`
+
+	// Replicas is the desired number of instances (1 for a single-instance app;
+	// higher for a horizontally-scaled app, v0.5.2). ReadyReplicas is how many are
+	// currently up. Instances lists them — Instances[0] is the primary, whose id
+	// mirrors InstanceID above. Single-instance clients can keep reading the
+	// scalar fields; these describe the whole endpoint set.
+	Replicas      int              `json:"replicas,omitempty"`
+	ReadyReplicas int              `json:"ready_replicas,omitempty"`
+	Instances     []InstanceStatus `json:"instances,omitempty"`
+}
+
+// InstanceStatus is one instance in an app's endpoint set.
+type InstanceStatus struct {
+	InstanceID string `json:"instance_id"`
+	Generation uint64 `json:"generation,omitempty"`
+	Health     string `json:"health,omitempty"` // healthy | unhealthy | unknown
 }
 
 // CreateAppRequest is the body of POST /apps.
