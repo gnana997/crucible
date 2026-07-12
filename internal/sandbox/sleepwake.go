@@ -61,7 +61,16 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) error {
 		}
 	}
 
-	sleepDir := filepath.Join(s.Workdir, "sleep")
+	// Each sleep writes a FRESH snapshot dir, like fork. Reusing one fixed path
+	// works the first time but fails on every sleep after a wake: under jailer
+	// the prior run's snapshot files can't be reopened by the newly-jailed
+	// firecracker (EACCES on the backing file). A unique dir per cycle sidesteps
+	// that; the previous dir is removed once this snapshot lands.
+	snapID, err := NewSnapshotID()
+	if err != nil {
+		return err
+	}
+	sleepDir := filepath.Join(s.Workdir, "sleep-"+snapID)
 	if err := os.MkdirAll(sleepDir, 0o750); err != nil {
 		return fmt.Errorf("sleep: mkdir %s: %w", sleepDir, err)
 	}
@@ -69,11 +78,13 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) error {
 	memPath := filepath.Join(sleepDir, snapshotMemoryName)
 
 	if err := s.handle.Pause(ctx); err != nil {
+		_ = os.RemoveAll(sleepDir)
 		return fmt.Errorf("sleep: pause %s: %w", id, err)
 	}
 	if err := s.handle.Snapshot(ctx, statePath, memPath); err != nil {
 		// Best-effort: leave the guest running rather than half-slept.
 		_ = s.handle.Resume(ctx)
+		_ = os.RemoveAll(sleepDir)
 		return fmt.Errorf("sleep: snapshot %s: %w", id, err)
 	}
 	// Stop the VMM to free RAM. Deliberately NO Network.Teardown and NO workdir
@@ -93,8 +104,17 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) error {
 		st.netns = s.Network.NetnsPath
 	}
 	m.mu.Lock()
+	oldDir := s.snapDir
+	s.snapDir = sleepDir
 	s.asleep = st
 	m.mu.Unlock()
+
+	// The prior snapshot dir backed the VM we just shut down (its lazy-memory
+	// pager died with it), so it is now safe to reclaim — keeping exactly one
+	// snapshot per instance.
+	if oldDir != "" && oldDir != sleepDir {
+		_ = os.RemoveAll(oldDir)
+	}
 	return nil
 }
 

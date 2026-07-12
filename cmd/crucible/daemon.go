@@ -460,6 +460,7 @@ Required flags:
 	// desired state — this is how an app survives a daemon restart.
 	var appMgr *app.Manager
 	var appStore *app.Store
+	var activityTracker *ingress.ActivityTracker
 	if *appDB != "" {
 		as, aerr := app.Open(*appDB)
 		if aerr != nil {
@@ -468,6 +469,12 @@ Required flags:
 			appStore = as
 			appMgr = app.NewManager(as, srv.NewAppInstantiator(), logger)
 			srv.SetAppManager(appMgr)
+			// When the proxy runs, wire request-activity tracking BEFORE Start so
+			// the idle monitor launches and can auto-sleep idle scale-to-zero apps.
+			if *proxyListen != "" || *proxyTLSListen != "" {
+				activityTracker = ingress.NewActivityTracker()
+				appMgr.SetActivitySource(activityTracker)
+			}
 			if serr := appMgr.Start(context.Background()); serr != nil {
 				logger.Warn("app reconciler start failed", "err", serr)
 			} else {
@@ -489,7 +496,9 @@ Required flags:
 				HTTPListen: *proxyListen,
 				TLSListen:  *proxyTLSListen,
 				Logger:     logger,
-				Waker:      appMgr, // wake a slept app on the first request for it
+				Waker:      appMgr,          // wake a slept app on the first request for it
+				Activity:   activityTracker, // feed the idle monitor
+				OnWake:     mx.ObserveWakeLatency,
 			})
 			if perr := proxy.Start(); perr != nil {
 				logger.Error("ingress proxy start failed", "err", perr)

@@ -32,6 +32,14 @@ const (
 	chrootStatePath  = "/snap.state"
 	chrootMemPath    = "/snap.mem"
 
+	// chrootSnapOutState/Mem are where a NEW snapshot is written — kept distinct
+	// from the restore-SOURCE paths above. A restored (woken) VM has /snap.state
+	// staged read-only (0o444, the file it loaded from), so writing the new
+	// snapshot there would EACCES. Firecracker creates these fresh; Snapshot then
+	// moves them out to the caller's host paths.
+	chrootSnapOutState = "/out.state"
+	chrootSnapOutMem   = "/out.mem"
+
 	// chrootUffdSocketPath is where lazy (LazyMem) restores place the
 	// memfault handler's socket. The daemon binds it at the host path
 	// (jailer.HostPath) before jailer launches; firecracker — inside
@@ -575,14 +583,14 @@ func (h *jailerHandle) Wait() error {
 func (h *jailerHandle) Snapshot(ctx context.Context, statePath, memPath string) error {
 	if err := h.client.CreateSnapshot(ctx, fcapi.SnapshotCreate{
 		SnapshotType: fcapi.SnapshotTypeFull,
-		SnapshotPath: chrootStatePath,
-		MemPath:      chrootMemPath,
+		SnapshotPath: chrootSnapOutState,
+		MemPath:      chrootSnapOutMem,
 	}); err != nil {
 		return fmt.Errorf("runner: create snapshot: %w", err)
 	}
 
-	hostState := jailer.HostPath(h.jailerSpec, chrootStatePath)
-	hostMem := jailer.HostPath(h.jailerSpec, chrootMemPath)
+	hostState := jailer.HostPath(h.jailerSpec, chrootSnapOutState)
+	hostMem := jailer.HostPath(h.jailerSpec, chrootSnapOutMem)
 
 	if err := fsutil.Move(hostState, statePath); err != nil {
 		return fmt.Errorf("runner: move snapshot state out of chroot: %w", err)

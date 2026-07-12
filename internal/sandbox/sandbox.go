@@ -180,6 +180,12 @@ type Sandbox struct {
 	// surviving a daemon restart while asleep is a later item (C8).
 	asleep *sleepState
 
+	// snapDir is the on-disk directory of the latest sleep snapshot. It persists
+	// across a wake (the woken VM's lazy-memory pager reads its memory file) and
+	// is removed only when superseded by the next sleep — so exactly one
+	// snapshot is kept per instance. Under s.Workdir, so Delete cleans it.
+	snapDir string
+
 	// done is closed by Manager.Delete once this sandbox is removed
 	// from the map. Used by the lifetime-timeout goroutine to exit
 	// cleanly when the sandbox is deleted by other means. Callers

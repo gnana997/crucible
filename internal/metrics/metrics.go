@@ -24,6 +24,7 @@ type Metrics struct {
 	sandboxesCreated        prometheus.Counter
 	forkDuration            prometheus.Histogram
 	snapshotRestoreDuration prometheus.Histogram
+	wakeLatency             prometheus.Histogram
 }
 
 // New constructs a Metrics with its own registry (not the global default
@@ -46,8 +47,13 @@ func New() *Metrics {
 			Help:    "Wall-clock time for the runner to restore a VM from a snapshot.",
 			Buckets: prometheus.DefBuckets,
 		}),
+		wakeLatency: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "app_wake_latency_seconds",
+			Help:    "Proxy-observed time to wake a slept app on request (trigger → routable again).",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
-	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration)
+	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration, m.wakeLatency)
 	return m
 }
 
@@ -80,6 +86,16 @@ func (m *Metrics) ObserveForkDuration(d time.Duration) {
 		return
 	}
 	m.forkDuration.Observe(d.Seconds())
+}
+
+// ObserveWakeLatency records the proxy-observed time to wake a slept app on a
+// request (wake trigger → the app is routable again). This is the product's
+// headline scale-to-zero number.
+func (m *Metrics) ObserveWakeLatency(d time.Duration) {
+	if m == nil {
+		return
+	}
+	m.wakeLatency.Observe(d.Seconds())
 }
 
 // ObserveSnapshotRestore records the time spent in the runner's restore

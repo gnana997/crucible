@@ -37,6 +37,14 @@ type Config struct {
 	// the request is held until the app is running. Nil disables wake-on-request
 	// (a slept app then 503s).
 	Waker Waker
+
+	// Activity, when set, records per-app request activity (for the idle
+	// monitor that auto-sleeps idle apps). Nil disables activity tracking.
+	Activity *ActivityTracker
+
+	// OnWake, when set, is called with the proxy-observed wake latency each time
+	// a slept app is woken on request (for the wake-latency metric).
+	OnWake func(latency time.Duration)
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -49,12 +57,14 @@ type Proxy struct {
 	httpListen string
 	tlsListen  string
 
-	rp      *httputil.ReverseProxy
-	httpSrv *http.Server
-	tlsLn   net.Listener
-	tlsSem  chan struct{}    // bounds concurrent SNI-passthrough handlers
-	coord   *wakeCoordinator // nil when no Waker configured
-	wg      sync.WaitGroup
+	rp       *httputil.ReverseProxy
+	httpSrv  *http.Server
+	tlsLn    net.Listener
+	tlsSem   chan struct{}    // bounds concurrent SNI-passthrough handlers
+	coord    *wakeCoordinator // nil when no Waker configured
+	activity *ActivityTracker // nil when activity tracking disabled
+	onWake   func(time.Duration)
+	wg       sync.WaitGroup
 }
 
 // New builds a proxy from cfg. Call Start to bind and serve.
@@ -73,6 +83,8 @@ func New(cfg Config) *Proxy {
 	if cfg.Waker != nil {
 		p.coord = newWakeCoordinator(cfg.Waker, 0)
 	}
+	p.activity = cfg.Activity
+	p.onWake = cfg.OnWake
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Always set by ServeHTTP before this runs; comma-ok so a missing
@@ -111,6 +123,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if p.activity != nil {
+		name := p.resolver.AppName(r.Host)
+		p.activity.begin(name)
+		defer p.activity.end(name)
+	}
 	r = r.WithContext(context.WithValue(r.Context(), targetKey{}, tg))
 	p.rp.ServeHTTP(w, r)
 }
@@ -120,13 +137,19 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // and trusts the re-resolve: a successful wake → a running Target; a failed or
 // timed-out wake → the app is still asleep → ErrAsleep (→ 503 upstream); and the
 // "someone else already woke it" race resolves straight to a running Target.
+// On a successful wake it reports the observed latency via onWake.
 func (p *Proxy) wakeAndResolve(ctx context.Context, host string) (Target, error) {
 	name := p.resolver.AppName(host)
 	if name == "" {
 		return Target{}, ErrNoRoute
 	}
+	start := time.Now()
 	_ = p.coord.wake(ctx, name)
-	return p.resolver.Resolve(host)
+	tg, err := p.resolver.Resolve(host)
+	if err == nil && p.onWake != nil {
+		p.onWake(time.Since(start))
+	}
+	return tg, err
 }
 
 // Start binds the configured listeners and serves them in the background.
@@ -233,6 +256,11 @@ func (p *Proxy) handleSNI(conn net.Conn) {
 	defer func() { _ = up.Close() }()
 	if _, err := up.Write(hello); err != nil { // replay the buffered ClientHello
 		return
+	}
+	if p.activity != nil {
+		name := p.resolver.AppName(sni)
+		p.activity.begin(name)
+		defer p.activity.end(name)
 	}
 	pipe(conn, up)
 }

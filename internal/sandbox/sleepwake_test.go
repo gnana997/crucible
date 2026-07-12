@@ -34,8 +34,8 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	}
 	// The snapshot artifacts live under the sandbox's own workdir (kept, not
 	// removed) so wake can restore in place.
-	for _, name := range []string{snapshotStateName, snapshotMemoryName} {
-		if _, err := os.Stat(filepath.Join(s.Workdir, "sleep", name)); err != nil {
+	for _, p := range []string{s.asleep.statePath, s.asleep.memPath} {
+		if _, err := os.Stat(p); err != nil {
 			t.Errorf("sleep artifact missing: %v", err)
 		}
 	}
@@ -76,5 +76,54 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	// Waking an already-awake sandbox is an error.
 	if err := m.WakeInPlace(ctx, s.ID); err == nil || !strings.Contains(err.Error(), "not asleep") {
 		t.Fatalf("second wake err = %v, want a 'not asleep' error", err)
+	}
+}
+
+// TestSleepUsesFreshDirAndGCsPrevious guards the fix for the jailer-EACCES bug:
+// every sleep must write a FRESH snapshot dir (reusing one path fails on the
+// second sleep after a wake), and the previous dir is reclaimed so exactly one
+// snapshot is kept per instance.
+func TestSleepUsesFreshDirAndGCsPrevious(t *testing.T) {
+	m, _ := newTestManager(t)
+	ctx := context.Background()
+	s, err := m.Create(ctx, CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := m.SleepInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("sleep 1: %v", err)
+	}
+	dir1 := s.snapDir
+	if dir1 == "" {
+		t.Fatal("snapDir not set after first sleep")
+	}
+	if _, err := os.Stat(dir1); err != nil {
+		t.Fatalf("dir1 missing after sleep: %v", err)
+	}
+
+	// Wake keeps dir1 — the woken VM's lazy-memory pager reads its memory file.
+	if err := m.WakeInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if s.snapDir != dir1 {
+		t.Fatalf("wake changed snapDir to %q, want it kept at %q", s.snapDir, dir1)
+	}
+	if _, err := os.Stat(dir1); err != nil {
+		t.Fatalf("wake removed the live snapshot dir: %v", err)
+	}
+
+	// Second sleep → a FRESH dir, and dir1 is GC'd.
+	if err := m.SleepInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("sleep 2: %v", err)
+	}
+	if s.snapDir == dir1 {
+		t.Fatal("second sleep reused the same dir (the jailer-EACCES bug)")
+	}
+	if _, err := os.Stat(s.snapDir); err != nil {
+		t.Fatalf("dir2 missing after second sleep: %v", err)
+	}
+	if _, err := os.Stat(dir1); !os.IsNotExist(err) {
+		t.Fatalf("previous snapshot dir not GC'd (stat err=%v)", err)
 	}
 }

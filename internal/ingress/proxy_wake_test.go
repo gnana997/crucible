@@ -55,7 +55,7 @@ func (w *blockingWaker) Wake(context.Context, string) error {
 	return nil
 }
 
-func newWakeTestProxy(t *testing.T) (*Proxy, *wakingApps, *blockingWaker, func()) {
+func newWakeTestProxy(t *testing.T, onWake func(time.Duration)) (*Proxy, *wakingApps, *blockingWaker, func()) {
 	t.Helper()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("served"))
@@ -70,12 +70,12 @@ func newWakeTestProxy(t *testing.T) (*Proxy, *wakingApps, *blockingWaker, func()
 	inst := fakeInstances{ips: map[string]string{"sbx_1": host}}
 	resolver := NewResolver(apps, inst, "apps.local", 0) // ttl 0: no cache
 	waker := &blockingWaker{apps: apps, release: make(chan struct{})}
-	p := New(Config{Resolver: resolver, Waker: waker})
+	p := New(Config{Resolver: resolver, Waker: waker, OnWake: onWake})
 	return p, apps, waker, backend.Close
 }
 
 func TestProxyWakesAsleepAppAndForwards(t *testing.T) {
-	p, _, waker, closeBackend := newWakeTestProxy(t)
+	p, _, waker, closeBackend := newWakeTestProxy(t, nil)
 	defer closeBackend()
 
 	rec := httptest.NewRecorder()
@@ -102,10 +102,28 @@ func TestProxyWakesAsleepAppAndForwards(t *testing.T) {
 	}
 }
 
+// TestProxyReportsWakeLatency: a successful wake-on-request reports its latency
+// via OnWake (M2-7).
+func TestProxyReportsWakeLatency(t *testing.T) {
+	var observed int32
+	p, _, waker, closeBackend := newWakeTestProxy(t, func(time.Duration) { atomic.AddInt32(&observed, 1) })
+	defer closeBackend()
+	close(waker.release) // wake without blocking
+
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequest("GET", "http://web.apps.local/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", rec.Code)
+	}
+	if got := atomic.LoadInt32(&observed); got != 1 {
+		t.Fatalf("OnWake called %d times, want 1", got)
+	}
+}
+
 // TestProxyHerdCoalescesToOneWake — the money test: N concurrent requests to one
 // slept app trigger exactly one wake, and all are served.
 func TestProxyHerdCoalescesToOneWake(t *testing.T) {
-	p, _, waker, closeBackend := newWakeTestProxy(t)
+	p, _, waker, closeBackend := newWakeTestProxy(t, nil)
 	defer closeBackend()
 
 	const N = 50

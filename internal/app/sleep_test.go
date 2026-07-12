@@ -94,6 +94,79 @@ func TestAppSleepWakeLifecycle(t *testing.T) {
 	}
 }
 
+// fakeActivity is an ActivitySource backed by a static map, for idle-monitor tests.
+type fakeActivity map[string]activityRec
+
+type activityRec struct {
+	last     time.Time
+	inflight int
+}
+
+func (f fakeActivity) Activity(name string) (time.Time, int, bool) {
+	r, ok := f[name]
+	return r.last, r.inflight, ok
+}
+
+func sleepableSpec(name string, idleSec, minScale int) api.AppSpec {
+	s := nginxSpec(name, wire.RestartAlways)
+	s.Sleep = &api.SleepPolicy{IdleTimeoutSec: idleSec, MinScale: minScale}
+	return s
+}
+
+// TestIdleCheckSleepsIdleApp: a running, healthy scale-to-zero app with no
+// in-flight requests, idle past its timeout, is auto-slept.
+func TestIdleCheckSleepsIdleApp(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	mustCreate(t, m, sleepableSpec("web", 30, 0), true)
+	m.reconcile(ctx()) // boots → running/healthy
+
+	now := time.Unix(1_700_000_000, 0)
+	m.SetActivitySource(fakeActivity{"web": {last: now.Add(-60 * time.Second), inflight: 0}})
+
+	m.idleCheck(now)
+
+	if got, _ := m.GetByName("web"); got.Status == nil || got.Status.Phase != "asleep" {
+		t.Fatalf("idle app not slept: %v", got.Status)
+	}
+}
+
+// TestIdleCheckLeavesNonIdle covers every reason NOT to auto-sleep.
+func TestIdleCheckLeavesNonIdle(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		name string
+		spec func() api.AppSpec
+		act  fakeActivity
+	}{
+		{"recent activity", func() api.AppSpec { return sleepableSpec("web", 30, 0) },
+			fakeActivity{"web": {last: now.Add(-5 * time.Second)}}},
+		{"in-flight request", func() api.AppSpec { return sleepableSpec("web", 30, 0) },
+			fakeActivity{"web": {last: now.Add(-60 * time.Second), inflight: 1}}},
+		{"no sleep policy", func() api.AppSpec { return nginxSpec("web", wire.RestartAlways) },
+			fakeActivity{"web": {last: now.Add(-60 * time.Second)}}},
+		{"min_scale keeps one warm", func() api.AppSpec { return sleepableSpec("web", 30, 1) },
+			fakeActivity{"web": {last: now.Add(-60 * time.Second)}}},
+		{"never seen through proxy", func() api.AppSpec { return sleepableSpec("web", 30, 0) },
+			fakeActivity{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake()
+			m, _ := newMgr(t, f)
+			mustCreate(t, m, tc.spec(), true)
+			m.reconcile(ctx())
+			m.SetActivitySource(tc.act)
+
+			m.idleCheck(now)
+
+			if got, _ := m.GetByName("web"); got.Status == nil || got.Status.Phase != "running" {
+				t.Fatalf("app was slept but shouldn't be: %v", got.Status)
+			}
+		})
+	}
+}
+
 // TestSleepWakeMutuallyExclusive is the M2-3 correctness centerpiece: a wake
 // that arrives while a sleep is mid-flight must NOT interleave with it (which
 // would observe a half-slept instance). It blocks on the per-app transition

@@ -59,6 +59,13 @@ type Instantiator interface {
 	ImageHealth(ctx context.Context, spec api.AppSpec) (*api.HealthCheck, error)
 }
 
+// ActivitySource reports per-app request activity for the idle monitor: the last
+// time a request was seen and how many are in flight. ok is false for an app
+// never seen (so it is left alone). The ingress activity tracker satisfies it.
+type ActivitySource interface {
+	Activity(appName string) (last time.Time, inflight int, ok bool)
+}
+
 // observed is an app's runtime (never persisted) state, rebuilt from
 // scratch on Start: an empty observed map plus persisted desired state is
 // what drives re-creation after a daemon restart.
@@ -112,6 +119,7 @@ type observed struct {
 // at the capped backoff — the k8s CrashLoopBackOff shape).
 const (
 	defaultReconcileInterval = 3 * time.Second
+	defaultIdleInterval      = 5 * time.Second // idle-monitor scan cadence
 	baseBackoff              = 1 * time.Second
 	maxBackoff               = 60 * time.Second
 	crashLoopWindow          = 60 * time.Second
@@ -143,8 +151,13 @@ type Manager struct {
 	inst  Instantiator
 	log   *slog.Logger
 
-	interval time.Duration
-	now      func() time.Time // injectable clock (tests)
+	interval     time.Duration
+	idleInterval time.Duration
+	now          func() time.Time // injectable clock (tests)
+
+	// activity, when set, feeds the idle monitor (auto-sleep of idle
+	// scale-to-zero apps). Nil disables auto-sleep — manual sleep still works.
+	activity ActivitySource
 
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
@@ -171,16 +184,22 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		log = slog.Default()
 	}
 	return &Manager{
-		store:       store,
-		inst:        inst,
-		log:         log,
-		interval:    defaultReconcileInterval,
-		now:         time.Now,
-		obs:         make(map[string]*observed),
-		transitions: make(map[string]*sync.Mutex),
-		trigger:     make(chan struct{}, 1),
+		store:        store,
+		inst:         inst,
+		log:          log,
+		interval:     defaultReconcileInterval,
+		idleInterval: defaultIdleInterval,
+		now:          time.Now,
+		obs:          make(map[string]*observed),
+		transitions:  make(map[string]*sync.Mutex),
+		trigger:      make(chan struct{}, 1),
 	}
 }
+
+// SetActivitySource wires the request-activity source (the ingress proxy's
+// tracker) so the idle monitor can auto-sleep idle scale-to-zero apps. Call
+// before Start; nil leaves auto-sleep disabled.
+func (m *Manager) SetActivitySource(a ActivitySource) { m.activity = a }
 
 // transitionLock returns the per-app mutex that serializes sleep/wake
 // transitions for appID, creating it on first use.
@@ -478,6 +497,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.reconcile(ctx)
 	m.wg.Add(1)
 	go m.loop(loopCtx)
+	if m.activity != nil {
+		m.wg.Add(1)
+		go m.idleLoop(loopCtx)
+	}
 	return nil
 }
 
@@ -510,6 +533,68 @@ func (m *Manager) loop(ctx context.Context) {
 			m.reconcile(ctx)
 		case <-m.trigger:
 			m.reconcile(ctx)
+		}
+	}
+}
+
+// idleLoop scans for idle scale-to-zero apps to auto-sleep. Runs only when an
+// ActivitySource is wired.
+func (m *Manager) idleLoop(ctx context.Context) {
+	defer m.wg.Done()
+	t := time.NewTicker(m.idleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			m.idleCheck(m.now())
+		}
+	}
+}
+
+// idleCheck sleeps every scale-to-zero app (sleep.min_scale==0, idle_timeout>0)
+// that is running, not unhealthy, has zero in-flight requests, and has been idle
+// at least its idle_timeout. Proxy-only: an app never reached through the proxy
+// has no activity record and is left alone.
+//
+// Known v1 limitation: a request arriving between the zero-in-flight check and
+// the snapshot is not drained (it may see a brief 502/reset and retry, which
+// wakes the app). Request draining before sleep is a deliberate follow-up.
+func (m *Manager) idleCheck(now time.Time) {
+	if m.activity == nil {
+		return
+	}
+	recs, err := m.store.List()
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		sp := rec.Spec.Sleep
+		if !rec.DesiredRunning || sp == nil || sp.MinScale != 0 || sp.IdleTimeoutSec <= 0 {
+			continue
+		}
+		m.obsMu.Lock()
+		ob := m.obs[rec.ID]
+		var phase, health string
+		if ob != nil {
+			phase, health = ob.phase, ob.health
+		}
+		m.obsMu.Unlock()
+		if phase != "running" || health == "unhealthy" {
+			continue
+		}
+		last, inflight, ok := m.activity.Activity(rec.Spec.Name)
+		if !ok || inflight > 0 {
+			continue
+		}
+		if now.Sub(last) < time.Duration(sp.IdleTimeoutSec)*time.Second {
+			continue
+		}
+		if err := m.Sleep(context.Background(), rec.Spec.Name); err != nil {
+			m.log.Warn("idle sleep failed", "app", rec.Spec.Name, "err", err)
+		} else {
+			m.log.Info("app slept (idle)", "app", rec.Spec.Name, "idle_s", sp.IdleTimeoutSec)
 		}
 	}
 }

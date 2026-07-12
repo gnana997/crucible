@@ -71,7 +71,8 @@ func newAppWakeCmd(o *globalOpts) *cobra.Command {
 // builds an AppSpec from them, so the two commands can never drift.
 type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
-	vcpus, memory, port                           int
+	idleTimeout                                   string
+	vcpus, memory, port, minScale                 int
 	netAllow, publish, env, netAllowCIDR          []string
 	netFullEgress, publishAll                     bool
 }
@@ -93,6 +94,8 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVarP(&a.publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	f.BoolVarP(&a.publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
+	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (needs the ingress proxy)")
+	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
 }
 
 func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
@@ -145,7 +148,30 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		// Shell form (docker HEALTHCHECK CMD-SHELL): exit 0 = healthy.
 		spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", a.healthCmd}}
 	}
+	if cmd.Flags().Changed("idle-timeout") || cmd.Flags().Changed("min-scale") {
+		idleSec, err := parseIdleTimeout(a.idleTimeout)
+		if err != nil {
+			return api.AppSpec{}, err
+		}
+		spec.Sleep = &api.SleepPolicy{IdleTimeoutSec: idleSec, MinScale: a.minScale}
+	}
 	return spec, nil
+}
+
+// parseIdleTimeout turns a duration string ("30s", "5m") into whole seconds; ""
+// means zero (no idle timeout).
+func parseIdleTimeout(s string) (int, error) {
+	if s == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("--idle-timeout: %w", err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("--idle-timeout must be non-negative")
+	}
+	return int(d.Seconds()), nil
 }
 
 func newAppCreateCmd(o *globalOpts) *cobra.Command {
