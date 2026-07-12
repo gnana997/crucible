@@ -26,6 +26,7 @@ type fakeInstantiator struct {
 	probe       Health           // result Probe returns for live instances
 	imageHealth *api.HealthCheck // what ImageHealth returns (nil = image has none)
 	slept       map[string]bool  // instanceIDs currently asleep
+	onSleep     func()           // if set, called (outside f.mu) mid-Sleep — a test gate
 }
 
 func (f *fakeInstantiator) ImageHealth(_ context.Context, _ api.AppSpec) (*api.HealthCheck, error) {
@@ -85,13 +86,22 @@ func (f *fakeInstantiator) Destroy(_ context.Context, instanceID string) error {
 	return nil
 }
 
-// Sleep keeps the instance live (its record survives) but marks it asleep.
+// Sleep keeps the instance live (its record survives) but marks it asleep. If
+// onSleep is set it runs mid-flight (outside f.mu) so a test can hold the sleep
+// open and race a concurrent wake against it.
 func (f *fakeInstantiator) Sleep(_ context.Context, instanceID string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.live[instanceID]; !ok {
+	_, ok := f.live[instanceID]
+	hook := f.onSleep
+	f.mu.Unlock()
+	if !ok {
 		return errors.New("fake: no such instance")
 	}
+	if hook != nil {
+		hook()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.slept == nil {
 		f.slept = map[string]bool{}
 	}

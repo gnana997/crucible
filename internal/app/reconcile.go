@@ -150,6 +150,15 @@ type Manager struct {
 	obsMu       sync.Mutex
 	obs         map[string]*observed
 
+	// transitionMu guards transitions; each per-app mutex serializes that app's
+	// sleep/wake lifecycle transitions so Sleep and Wake are mutually exclusive
+	// (a wake can't interleave with an in-progress sleep, which would observe a
+	// half-slept instance). Held across the whole transition, not just the phase
+	// flip. Entries are never removed — a *sync.Mutex per app is negligible, and
+	// deleting one a concurrent caller may hold would break the guarantee.
+	transitionMu sync.Mutex
+	transitions  map[string]*sync.Mutex
+
 	trigger chan struct{}
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -162,14 +171,28 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		log = slog.Default()
 	}
 	return &Manager{
-		store:    store,
-		inst:     inst,
-		log:      log,
-		interval: defaultReconcileInterval,
-		now:      time.Now,
-		obs:      make(map[string]*observed),
-		trigger:  make(chan struct{}, 1),
+		store:       store,
+		inst:        inst,
+		log:         log,
+		interval:    defaultReconcileInterval,
+		now:         time.Now,
+		obs:         make(map[string]*observed),
+		transitions: make(map[string]*sync.Mutex),
+		trigger:     make(chan struct{}, 1),
 	}
+}
+
+// transitionLock returns the per-app mutex that serializes sleep/wake
+// transitions for appID, creating it on first use.
+func (m *Manager) transitionLock(appID string) *sync.Mutex {
+	m.transitionMu.Lock()
+	defer m.transitionMu.Unlock()
+	mu := m.transitions[appID]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		m.transitions[appID] = mu
+	}
+	return mu
 }
 
 // --- domain operations -------------------------------------------------
@@ -336,6 +359,12 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 		return ErrNotFound
 	}
 
+	// Serialize against a concurrent wake (and other sleeps) for the whole
+	// transition, so a wake can't start against a half-slept instance.
+	lk := m.transitionLock(rec.ID)
+	lk.Lock()
+	defer lk.Unlock()
+
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
 	if ob == nil || ob.instanceID == "" || ob.phase != "running" {
@@ -377,6 +406,12 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	if !found {
 		return ErrNotFound
 	}
+
+	// Serialize against a concurrent sleep (and other wakes) for the whole
+	// transition — a wake starting mid-sleep would observe a half-slept instance.
+	lk := m.transitionLock(rec.ID)
+	lk.Lock()
+	defer lk.Unlock()
 
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]

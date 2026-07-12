@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
@@ -90,6 +91,50 @@ func TestAppSleepWakeLifecycle(t *testing.T) {
 	// Sleep/Wake on an unknown app is ErrNotFound.
 	if err := m.Sleep(ctx(), "ghost"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Sleep(unknown) err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSleepWakeMutuallyExclusive is the M2-3 correctness centerpiece: a wake
+// that arrives while a sleep is mid-flight must NOT interleave with it (which
+// would observe a half-slept instance). It blocks on the per-app transition
+// lock until the sleep completes, then resolves against a coherent asleep state.
+func TestSleepWakeMutuallyExclusive(t *testing.T) {
+	f := newFake()
+	// Gate: block inside inst.Sleep until released, so the sleep holds the
+	// transition lock while we fire a concurrent wake.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	f.onSleep = func() { close(entered); <-release }
+	m, _ := newMgr(t, f)
+
+	mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(ctx())
+
+	sleepErr := make(chan error, 1)
+	go func() { sleepErr <- m.Sleep(ctx(), "web") }()
+	<-entered // sleep is now mid-flight, holding the transition lock
+
+	wakeErr := make(chan error, 1)
+	go func() { wakeErr <- m.Wake(ctx(), "web") }()
+
+	// The wake must block on the transition lock while the sleep is mid-flight.
+	select {
+	case e := <-wakeErr:
+		t.Fatalf("wake completed while sleep was mid-flight (err=%v) — not mutually exclusive", e)
+	case <-time.After(100 * time.Millisecond):
+		// good: wake is parked on the transition lock
+	}
+
+	// Let the sleep finish; the wake then runs against a coherent asleep state.
+	close(release)
+	if e := <-sleepErr; e != nil {
+		t.Fatalf("Sleep: %v", e)
+	}
+	if e := <-wakeErr; e != nil {
+		t.Fatalf("Wake after sleep completed: %v", e)
+	}
+	if got, _ := m.GetByName("web"); got.Status == nil || got.Status.Phase != "running" {
+		t.Fatalf("after serialized sleep+wake: phase=%v, want running", got.Status)
 	}
 }
 
