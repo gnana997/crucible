@@ -22,7 +22,7 @@ Durable apps are named workloads the daemon keeps a healthy instance of and re-c
 
 ## Create flags
 
-`--image` (required), `--pull`, `--restart always|on-failure|never`, `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr` (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`, `--disk`, `--stopped`, `--idle-timeout <dur>` (auto-sleep after this much idle time through the ingress proxy; `0`/unset = never), `--min-scale <n>` (`0` enables scale-to-zero; `≥1` keeps that many warm).
+`--image` (required), `--pull`, `--restart always|on-failure|never`, `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr` (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`, `--disk`, `--stopped`, `--idle-timeout <dur>` (auto-sleep after this much idle time through the ingress proxy; `0`/unset = never), `--min-scale <n>` (`0` enables scale-to-zero; `≥1` keeps that many warm), `--max-scale <n>` (ceiling for horizontal autoscaling; `>` the floor enables it), `--target-concurrency <n>` (autoscaler's in-flight target per instance).
 
 ## Operate flags
 

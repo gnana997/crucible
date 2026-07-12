@@ -104,18 +104,26 @@ An app sleeps when idle and wakes on the next request in under a second — same
 - [x] **Survives a daemon restart while asleep** — sleep captures a durable snapshot (journaled record + cloned rootfs), so a slept app is re-adopted on daemon start and the first post-restart request wakes a fresh instance from it.
 - [x] **Wake admission gate** — a wake is refused (`503`, app stays asleep) when host free memory is below `--wake-min-free-mib` (default 256), plus `snapshots_active` and an `app_wake_latency_seconds` histogram on `/metrics`.
 
-### v0.5.1 — App→app networking *(current)*
+### v0.5.1 — App→app networking
 
 Deploy your frontend and API as separate apps and let them talk — the first step from "run an app" to "deploy a system." Stateless service-to-service, so it doesn't wait on volumes.
 
 - [x] **Reach another app by name** — with the daemon's `--internal-networking`, an app calls another at `http://<app>.internal/`, routed **through the ingress proxy VIP** (the DNS anycast) to the callee's current instance. Because it goes through the proxy — not a direct guest-to-guest path — an internal call inherits **wake-on-request** (a scaled-to-zero callee wakes and serves) and leaves per-sandbox isolation intact (a guest still can't reach a peer's IP directly) ([apps.md](apps.md)).
 - [x] **Default-deny authorization** — `app create <app> --can-call <other>` declares the calls an app may make (empty = none). Enforced daemon-side: the proxy returns 403 on an un-granted call, and DNS answers `<app>.internal` only for granted callers (else NXDOMAIN — no discovery of apps you can't call). On the Go SDK (`AppSpec.CanCall`) and MCP; `app_internal_requests_total` on `/metrics`. Experimental, off by default.
 
+### v0.5.2 — Scale out *(current)*
+
+An app runs multiple replicas behind the proxy, load-balanced, and autoscales on request concurrency — each replica forked **warm** from a snapshot in milliseconds, not cold-booted. "k8s horizontal scaling, but the VM properties invert the tradeoffs."
+
+- [x] **Horizontal scaling** — `app create <app> --min-scale N` runs N warm replicas, each stamped by **forking a golden snapshot** of the healthy primary (lazy memory; clone-safe — a distinct machine-id and IP per replica). The reconciler self-heals the fleet: a dead replica is replaced ([apps.md](apps.md#horizontal-scale-out)).
+- [x] **Load balancing** — the proxy balances requests across an app's live instances with **power-of-two-choices least-request**, a slow-start ramp so a just-forked replica isn't slammed cold, and passive outlier ejection. External and app→app traffic both balance through the one path.
+- [x] **Autoscaling** — `--max-scale M --target-concurrency C` autoscales between the floor and M on concurrency: a fast window scales up on bursts, a slow window scales down when calm (stabilized against flapping). `min_scale=0` composes with scale-to-zero (idle→0, request→1, load→M). `app ls` shows a replicas column.
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, and app→app networking exist (v0.4.0–v0.5.1); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, and horizontal scale-out exist (v0.4.0–v0.5.2); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
@@ -130,14 +138,6 @@ The app model, its front door, zero-downtime updates, operate-by-name, private-r
 - • **`policy.yaml`.** A single versionable artifact that supersets scoped tokens — quotas, syscall rules, network allowlists, and mount policies.
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
 - • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
-
-### v0.5.2 — Scale out
-
-Same-app horizontal scaling — generalizing the 0→1 wake path into 0→N. (App→app networking already shipped in v0.5.1.)
-
-- • **Multiple instances behind the proxy.** Run N copies of an app with round-robin / least-connection load balancing. Fork stamps each warm instance from a snapshot, so scaling up is cheap — a better cold-scale story than copying a full VM.
-- • **Autoscaling.** Scale on request rate / concurrency between a `min` (which may be **0**, unifying with scale-to-zero) and a `max` — so autoscale-from-zero is just "scale 0→N" on top of the wake primitive that already ships.
-- • **Per-app egress allowlists for internal calls.** CIDR/port scoping on top of the `--can-call` grant, for tighter multi-service policies.
 
 ### v0.5.x — Observability
 

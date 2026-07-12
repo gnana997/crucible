@@ -24,11 +24,11 @@ crucible app ls
 
 ## What an app is
 
-An app is **desired state** the daemon converges toward. It owns at most one
-running **instance** at a time — an ordinary sandbox, booted from the app's
-image with its published ports, network policy, and entrypoint. The app's
-`name` is a stable handle; its instance id changes each time the instance is
-(re-)created.
+An app is **desired state** the daemon converges toward. It owns one or more
+running **instances** — ordinary sandboxes booted from the app's image with its
+published ports, network policy, and entrypoint (a single instance by default;
+[several when scaled out](#horizontal-scale-out)). The app's `name` is a stable
+handle; instance ids change each time an instance is (re-)created.
 
 Desired state is persisted in a small control-plane store (separate from the
 ephemeral sandbox registry), so it outlives the daemon.
@@ -116,7 +116,8 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 `--net-allow-cidr` (public IPv4 CIDR, repeatable), `--net-full-egress` (reach any
 public host), `--vcpus`, `--memory`, `--disk`, `--stopped` (create without
 starting an instance), `--idle-timeout <dur>` + `--min-scale <n>` (scale to zero
-— see below).
+— see below), `--max-scale <n>` + `--target-concurrency <n>` (horizontal
+autoscaling — see below).
 
 Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
 yours win); `-P` reads the ports the image declares, so `crucible app create web
@@ -214,6 +215,42 @@ app→app requests are counted by `app_internal_requests_total` on `/metrics`.
 > This is the **stateless** frontend→API tier. A shared *stateful* app (a
 > database) waits for volumes — until then, run the database's persistence
 > outside the app model.
+
+## Horizontal scale-out
+
+An app can run **multiple replicas** behind the proxy, load-balanced, and
+**autoscale** on request concurrency:
+
+```bash
+crucible app create web --image myapp --port 8080 --min-scale 3            # 3 warm replicas
+crucible app create web --image myapp --port 8080 --max-scale 8 --target-concurrency 20  # autoscale 1..8
+```
+
+- **`--min-scale N`** runs N warm replicas always. Each is stamped by **forking a
+  golden snapshot** of the healthy primary — lazy (`userfaultfd`) memory, so a
+  replica comes up warm (runtime loaded, caches primed) in milliseconds and its
+  resident memory is the working set, not the whole footprint. Unlike a fork for
+  exploration, every replica is clone-safe: a distinct machine-id, hostname, and
+  IP. The reconciler **self-heals** the fleet — a replica that dies is replaced.
+- **`--max-scale M`** (with **`--target-concurrency C`**, default conservative)
+  **autoscales** between the floor and M: the ingress proxy tracks per-app
+  in-flight concurrency, a **fast window scales up** on a burst and a **slow
+  window scales down** when calm (after a stabilization window, so it doesn't
+  flap). `--min-scale 0 --max-scale M` composes with [scale to zero](#scale-to-zero):
+  idle → sleep to 0, a request → wake to 1, load → up to M.
+
+**Load balancing.** The proxy spreads requests across an app's live instances
+with **power-of-two-choices least-request** selection, a **slow-start** ramp so a
+just-forked replica isn't slammed while its cache is cold, and **passive outlier
+ejection** — an instance that keeps failing is dropped from rotation and
+re-forked. External *and* [app→app](#app-to-app-networking) (`backend.internal`)
+traffic balance through the same path.
+
+**Constraints.** A multi-instance app must be **proxy-fronted** — a `--port` and
+no fixed host publish, since two instances can't co-bind the same host port. And
+it must be **stateless**: replicas don't share storage, so a shared database
+waits for volumes. `app ls` shows a `REPLICAS` (ready/desired) column; `app get`
+reports the full instance set.
 
 ## Status fields
 

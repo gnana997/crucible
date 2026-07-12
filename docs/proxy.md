@@ -7,9 +7,11 @@ description: "One daemon-owned listener that routes requests to many apps by nam
 
 A published port (`-p`) gives one app one host port. The **ingress proxy** is the
 front door for *many* apps on one host: a daemon-owned listener that routes
-inbound traffic to an app's **current instance** by name — so you address `web`,
-not `sbx_9f2ac1:8080`, and the route follows the app across self-heal and
-redeploys.
+inbound traffic to an app **by name** — so you address `web`, not
+`sbx_9f2ac1:8080`, and the route follows the app across self-heal and redeploys.
+When an app runs [multiple replicas](apps.md#horizontal-scale-out) the proxy
+**load-balances** across them (power-of-two-choices least-request); for a
+single-instance app it just routes to the one live instance.
 
 In the daemon it's **off by default**. Enable it with a listen address and a base
 domain:

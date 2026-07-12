@@ -12,8 +12,8 @@ import (
 // OCI image config plus docker-run-style overrides — Fly's fly.toml minus
 // the fleet fields.
 //
-// An app owns at most one running instance (a sandbox) at a time in
-// v0.4.0; multi-instance is a later release.
+// An app owns one or more running instances (sandboxes): a single instance by
+// default, or several when horizontally scaled out (min_scale/max_scale, v0.5.2).
 type AppSpec struct {
 	// Name is the app's stable, user-facing identity (unique per daemon).
 	// It becomes the routing hostname once name-based routing lands, so it

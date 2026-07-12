@@ -15,7 +15,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.5.1 — durable apps you deploy, reach, update, pull privately, scale to zero, and wire together (app→app by name). The core runtime
+**Status:** v0.5.2 — durable apps you deploy, reach, update, pull privately, scale to zero, wire together (app→app by name), and scale out (N load-balanced autoscaling replicas). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -39,8 +39,10 @@ the next request through the ingress proxy in under a second (same IP + identity
 clock stepped to now), and a slept app survives a daemon restart; **v0.5.1
 app→app networking** (`--internal-networking` + `app create --can-call <other>`)
 — apps reach each other by name at `<app>.internal` through the proxy VIP,
-default-deny, and a scaled-to-zero callee wakes on the internal call. See the
-ROADMAP for what's next.
+default-deny, and a scaled-to-zero callee wakes on the internal call; **v0.5.2
+scale out** (`app create --min-scale N --max-scale M`) — N warm replicas
+forked from a golden snapshot, P2C load-balanced by the proxy, autoscaling on
+request concurrency. See the ROADMAP for what's next.
 
 ## Working style
 
