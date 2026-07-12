@@ -91,9 +91,12 @@ func writeCreds(path string, creds []Cred) error {
 	if err != nil {
 		return err
 	}
-	// Write-then-rename; 0600 because this file holds usable secrets.
+	// Write-then-rename; 0600 because this file holds usable secrets. Remove the
+	// temp file on a failed write so a partial secret never lingers on disk
+	// (e.g. a mid-write ENOSPC) under an unexpected name.
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

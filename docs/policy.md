@@ -80,6 +80,7 @@ so the MCP server can mirror a policy by advertising only the tools it permits.
 | `fork` | `POST /snapshots/{id}/fork` | `fork` |
 | `delete` | `DELETE /sandboxes|snapshots/{id}` | `run`, `delete_sandbox`, `delete_snapshot` |
 | `read` | all `GET` | `list_sandboxes`, `inspect_sandbox`, `list_snapshots`, `list_profiles` |
+| `registry` | `POST`/`DELETE /registry/credentials` | *(none — operator action, no MCP tool)* |
 
 `run` creates → execs → deletes in one call, so it needs `create`+`exec`+`delete`
 — a token lacking any of those won't be offered `run`.

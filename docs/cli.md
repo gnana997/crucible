@@ -46,6 +46,7 @@ SBX=$(crucible sandbox create --profile python-3.12)
 | [Sandboxes and profiles](cli/sandboxes.md) | `sandbox create/ls/inspect/exec/rm`, `profile ls` |
 | [Snapshots and fork](cli/snapshots.md) | `snapshot create/ls/inspect/rm`, `fork` |
 | [Apps](cli/apps.md) | `app create/update/ls/get/rm/logs/exec/shell` |
+| [Private registries](cli/registry.md) | `registry login/ls/logout` |
 | [Daemon, tokens, and agents](cli/daemon.md) | `daemon`, `daemon token`, `policy`, `mcp serve`, `version` |
 
 ## Exit codes
