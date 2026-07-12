@@ -239,6 +239,18 @@ func (a appInstantiator) Destroy(ctx context.Context, instanceID string) error {
 	return err
 }
 
+// Sleep snapshots the instance and stops its VMM (scale-to-zero), keeping the
+// record + network so Wake can restore it in place.
+func (a appInstantiator) Sleep(ctx context.Context, instanceID string) error {
+	return a.s.cfg.Manager.SleepInPlace(ctx, instanceID)
+}
+
+// Wake restores a slept instance in place, reseeding its CRNG and stepping its
+// clock via the guest agent.
+func (a appInstantiator) Wake(ctx context.Context, instanceID string) error {
+	return a.s.cfg.Manager.WakeInPlace(ctx, instanceID)
+}
+
 // NewAppInstantiator returns the daemon's app.Instantiator. Exposed so the
 // process wiring (cmd/crucible) can construct the app manager.
 func (s *Server) NewAppInstantiator() app.Instantiator { return appInstantiator{s: s} }

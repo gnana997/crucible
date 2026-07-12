@@ -242,3 +242,25 @@ func (h *handlers) deleteApp(ctx context.Context, _ *mcp.CallToolRequest, in app
 	}
 	return nil, deletedOutput{Deleted: in.Name}, nil
 }
+
+func (h *handlers) sleepApp(ctx context.Context, _ *mcp.CallToolRequest, in appNameInput) (*mcp.CallToolResult, appOutput, error) {
+	if in.Name == "" {
+		return nil, appOutput{}, fmt.Errorf("name is required")
+	}
+	resp, err := h.cfg.Client.SleepApp(ctx, in.Name)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	return nil, toAppOutput(resp), nil
+}
+
+func (h *handlers) wakeApp(ctx context.Context, _ *mcp.CallToolRequest, in appNameInput) (*mcp.CallToolResult, appOutput, error) {
+	if in.Name == "" {
+		return nil, appOutput{}, fmt.Errorf("name is required")
+	}
+	resp, err := h.cfg.Client.WakeApp(ctx, in.Name)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	return nil, toAppOutput(resp), nil
+}

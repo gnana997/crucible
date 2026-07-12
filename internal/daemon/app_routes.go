@@ -210,6 +210,8 @@ func appErrStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, app.ErrNameTaken):
 		return http.StatusConflict
+	case errors.Is(err, app.ErrNotRunning), errors.Is(err, app.ErrNotAsleep):
+		return http.StatusConflict
 	default:
 		// validation (bad name/image/policy) is a 400; everything else 500.
 		if isValidationErr(err) {

@@ -82,6 +82,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("POST /apps/{name}/exec", s.handleAppExec)
 	mux.HandleFunc("GET /apps/{name}/exec", s.handleAppExecWS)
 	mux.HandleFunc("GET /apps/{name}/logs", s.handleAppLogs)
+	// Scale-to-zero (v0.5.0): sleep frees the instance's RAM, wake restores it.
+	mux.HandleFunc("POST /apps/{name}/sleep", s.handleSleepApp)
+	mux.HandleFunc("POST /apps/{name}/wake", s.handleWakeApp)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	// Private-registry credentials (v0.4.4): manage the creds used for image

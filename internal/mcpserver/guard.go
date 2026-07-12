@@ -137,6 +137,10 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpExec}
 	case "delete_app":
 		return []policy.Operation{policy.OpDelete}
+	case "app_sleep", "app_wake":
+		// Scale-to-zero lifecycle mutation of a running app (snapshot+stop,
+		// restore) — exec-grade, like create_app/update_app.
+		return []policy.Operation{policy.OpExec}
 	case "list_apps", "get_app":
 		return []policy.Operation{policy.OpRead}
 	case "exec", "app_exec":

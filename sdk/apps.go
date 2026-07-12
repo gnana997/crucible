@@ -60,6 +60,29 @@ func (c *Client) DeleteApp(ctx context.Context, name string) error {
 	return expectNoContent(resp)
 }
 
+// SleepApp snapshots the app's current instance and stops its VMM to free RAM
+// (scale-to-zero, POST /apps/{name}/sleep). The app stays addressable and wakes
+// on the next WakeApp. Errors 409 when the app has no running instance.
+func (c *Client) SleepApp(ctx context.Context, name string) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(name)+"/sleep", nil)
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
+// WakeApp restores a slept app's instance in place — same id, netns, and IP —
+// reseeding its RNG and stepping its clock (POST /apps/{name}/wake). The
+// returned status carries last_wake_latency_ms. Errors 409 when the app is not
+// asleep.
+func (c *Client) WakeApp(ctx context.Context, name string) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(name)+"/wake", nil)
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
 // App returns a handle for one app by name. Purely local until a call.
 func (c *Client) App(name string) App { return App{Name: name, c: c} }
 
@@ -78,6 +101,16 @@ func (a App) Get(ctx context.Context) (api.AppResponse, error) {
 // Delete removes the app.
 func (a App) Delete(ctx context.Context) error {
 	return a.c.DeleteApp(ctx, a.Name)
+}
+
+// Sleep snapshots the app and frees its RAM (scale-to-zero); see Client.SleepApp.
+func (a App) Sleep(ctx context.Context) (api.AppResponse, error) {
+	return a.c.SleepApp(ctx, a.Name)
+}
+
+// Wake restores a slept app in place; see Client.WakeApp.
+func (a App) Wake(ctx context.Context) (api.AppResponse, error) {
+	return a.c.WakeApp(ctx, a.Name)
 }
 
 // Exec runs a command in the app's current instance (POST /apps/{name}/exec);

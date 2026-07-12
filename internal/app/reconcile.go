@@ -45,6 +45,14 @@ type Instantiator interface {
 	// Destroy tears the instance down. Absent/already-gone is not an error.
 	Destroy(ctx context.Context, instanceID string) error
 
+	// Sleep snapshots the instance and stops its VMM to free RAM while KEEPING
+	// its record + network, so Wake can restore it in place (scale-to-zero).
+	Sleep(ctx context.Context, instanceID string) error
+
+	// Wake restores a slept instance in place — same id, netns, and IP —
+	// reseeding its CRNG and stepping its clock.
+	Wake(ctx context.Context, instanceID string) error
+
 	// ImageHealth returns the health check derived from the image's Docker
 	// HEALTHCHECK, or nil if the image declares none (or NONE). Used to seed an
 	// app's health when it declares none of its own.
@@ -302,6 +310,114 @@ func (m *Manager) DeleteByName(name string) error {
 		return ErrNotFound
 	}
 	return m.Delete(rec.ID)
+}
+
+// ErrNotRunning is returned by Sleep when the app has no running instance to
+// snapshot (it is stopped, pending, crash-looping, or already asleep).
+var ErrNotRunning = errors.New("app: no running instance to sleep")
+
+// ErrNotAsleep is returned by Wake when the app is not currently asleep.
+var ErrNotAsleep = errors.New("app: not asleep")
+
+// Sleep snapshots the app's current instance and stops its VMM to free RAM
+// (scale-to-zero), keeping the instance record + reserved network so Wake can
+// restore it in place. The app must have a running instance.
+//
+// The observed phase is flipped to "asleep" BEFORE the VMM stops, so a
+// concurrent reconcile pass leaves the instance alone (the reconcile guard
+// skips asleep/waking apps) rather than seeing the gone VMM as a crash and
+// cold-booting a replacement. A failed sleep reverts the phase to running.
+func (m *Manager) Sleep(ctx context.Context, name string) error {
+	rec, found, err := m.store.GetByName(name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+
+	m.obsMu.Lock()
+	ob := m.obs[rec.ID]
+	if ob == nil || ob.instanceID == "" || ob.phase != "running" {
+		m.obsMu.Unlock()
+		return fmt.Errorf("%w (phase %q)", ErrNotRunning, phaseOf(ob))
+	}
+	instanceID := ob.instanceID
+	ob.phase = "asleep" // claim the state before the VMM stops
+	m.obsMu.Unlock()
+
+	if err := m.inst.Sleep(ctx, instanceID); err != nil {
+		m.obsMu.Lock()
+		if o := m.obs[rec.ID]; o != nil && o.instanceID == instanceID {
+			o.phase = "running" // revert: still awake
+		}
+		m.obsMu.Unlock()
+		return fmt.Errorf("app: sleep %q: %w", name, err)
+	}
+
+	m.obsMu.Lock()
+	if o := m.obs[rec.ID]; o != nil {
+		o.sleepCount++
+	}
+	m.obsMu.Unlock()
+	m.log.Info("app slept", "app", rec.ID, "name", name, "instance", instanceID)
+	return nil
+}
+
+// Wake restores a slept app's instance in place — same id, netns, and IP —
+// reseeding its CRNG and stepping its clock. The app must be asleep. The
+// observed phase is "waking" while the restore runs (still skipped by the
+// reconciler), then "running" with the measured wake latency recorded. A failed
+// wake reverts to "asleep" (still slept, retryable).
+func (m *Manager) Wake(ctx context.Context, name string) error {
+	rec, found, err := m.store.GetByName(name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+
+	m.obsMu.Lock()
+	ob := m.obs[rec.ID]
+	if ob == nil || ob.phase != "asleep" {
+		m.obsMu.Unlock()
+		return fmt.Errorf("%w (phase %q)", ErrNotAsleep, phaseOf(ob))
+	}
+	instanceID := ob.instanceID
+	ob.phase = "waking"
+	m.obsMu.Unlock()
+
+	start := m.now()
+	werr := m.inst.Wake(ctx, instanceID)
+
+	m.obsMu.Lock()
+	if o := m.obs[rec.ID]; o != nil {
+		if werr != nil {
+			o.phase = "asleep" // revert: still slept, retryable
+			o.lastErr = werr.Error()
+		} else {
+			o.phase = "running"
+			o.lastWakeLatency = m.now().Sub(start)
+			o.lastErr = ""
+		}
+	}
+	m.obsMu.Unlock()
+
+	if werr != nil {
+		return fmt.Errorf("app: wake %q: %w", name, werr)
+	}
+	m.log.Info("app woke", "app", rec.ID, "name", name, "instance", instanceID)
+	return nil
+}
+
+// phaseOf returns an observed's phase, or "stopped" when there is no observed
+// state yet (the reconciler hasn't acted).
+func phaseOf(ob *observed) string {
+	if ob == nil || ob.phase == "" {
+		return "stopped"
+	}
+	return ob.phase
 }
 
 // List returns every app with observed status.

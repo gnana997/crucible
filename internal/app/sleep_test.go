@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/gnana997/crucible/sdk/api"
@@ -35,6 +36,60 @@ func TestValidateSpecSleepPolicy(t *testing.T) {
 				t.Fatal("validateSpec: expected error, got nil")
 			}
 		})
+	}
+}
+
+// TestAppSleepWakeLifecycle drives the full app-level Sleep/Wake state machine
+// against the fake instantiator: boot → sleep (phase asleep, counted) →
+// reconcile-leaves-alone → wake (phase running), plus the wrong-state errors.
+func TestAppSleepWakeLifecycle(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+
+	mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(ctx())
+	if got, _ := m.GetByName("web"); got.Status == nil || got.Status.Phase != "running" {
+		t.Fatalf("phase after boot = %v, want running", got.Status)
+	}
+
+	// Can't wake a running app.
+	if err := m.Wake(ctx(), "web"); !errors.Is(err, ErrNotAsleep) {
+		t.Fatalf("Wake(running) err = %v, want ErrNotAsleep", err)
+	}
+
+	// Sleep.
+	if err := m.Sleep(ctx(), "web"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	got, _ := m.GetByName("web")
+	if got.Status.Phase != "asleep" || got.Status.SleepCount != 1 {
+		t.Fatalf("after sleep: phase=%q sleep_count=%d, want asleep/1", got.Status.Phase, got.Status.SleepCount)
+	}
+
+	// The reconciler must leave the slept app alone (no cold boot).
+	before := f.createCount()
+	m.reconcile(ctx())
+	m.reconcile(ctx())
+	if f.createCount() != before {
+		t.Fatalf("reconcile cold-booted a slept app: creates %d→%d", before, f.createCount())
+	}
+
+	// Can't sleep an already-asleep app.
+	if err := m.Sleep(ctx(), "web"); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("Sleep(asleep) err = %v, want ErrNotRunning", err)
+	}
+
+	// Wake restores it.
+	if err := m.Wake(ctx(), "web"); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if got, _ := m.GetByName("web"); got.Status.Phase != "running" {
+		t.Fatalf("after wake: phase=%q, want running", got.Status.Phase)
+	}
+
+	// Sleep/Wake on an unknown app is ErrNotFound.
+	if err := m.Sleep(ctx(), "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Sleep(unknown) err = %v, want ErrNotFound", err)
 	}
 }
 

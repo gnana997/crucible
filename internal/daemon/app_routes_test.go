@@ -50,6 +50,8 @@ func (f *fakeInst) Create(_ context.Context, appID string, _ api.AppSpec) (strin
 }
 func (f *fakeInst) Exists(string) bool                    { return true }
 func (f *fakeInst) Destroy(context.Context, string) error { return nil }
+func (f *fakeInst) Sleep(context.Context, string) error   { return nil }
+func (f *fakeInst) Wake(context.Context, string) error    { return nil }
 func (f *fakeInst) Probe(context.Context, string, api.HealthCheck) app.Health {
 	return app.HealthPassing
 }

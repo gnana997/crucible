@@ -28,11 +28,43 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppListCmd(o),
 		newAppGetCmd(o),
 		newAppRmCmd(o),
+		newAppSleepCmd(o),
+		newAppWakeCmd(o),
 		newAppLogsCmd(o),
 		newAppExecCmd(o),
 		newAppShellCmd(o),
 	)
 	return cmd
+}
+
+func newAppSleepCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "sleep <name>",
+		Short: "Snapshot the app and free its RAM (scale-to-zero); it wakes on demand",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := o.client().SleepApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd.OutOrStdout(), resp)
+		},
+	}
+}
+
+func newAppWakeCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "wake <name>",
+		Short: "Restore a slept app in place (same IP), correcting its clock",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := o.client().WakeApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd.OutOrStdout(), resp)
+		},
+	}
 }
 
 // appSpecOpts holds the flags shared by `app create` and `app update` and

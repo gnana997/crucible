@@ -20,6 +20,8 @@ var routesExcludedFromSpec = map[string]string{
 	// (the product surface will be app-level sleep/wake).
 	"POST /sandboxes/{id}/sleep": "v0.5.0 scale-to-zero primitive; not yet public API",
 	"POST /sandboxes/{id}/wake":  "v0.5.0 scale-to-zero primitive; not yet public API",
+	"POST /apps/{name}/sleep":    "v0.5.0 scale-to-zero; not yet public API (under construction)",
+	"POST /apps/{name}/wake":     "v0.5.0 scale-to-zero; not yet public API (under construction)",
 }
 
 // TestOpenAPICoversAllRoutes is the drift guard for the reflection-based generator.
