@@ -65,6 +65,7 @@
             "concepts/network-model",
             "policy",
             "architecture",
+            "observability",
             "benchmarks"
           ]
         },

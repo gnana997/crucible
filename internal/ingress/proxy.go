@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/reuseport"
+	"github.com/gnana997/crucible/internal/telemetry"
 )
 
 const (
@@ -72,6 +74,12 @@ type Config struct {
 	// OnInternal, when set, is called once per authorized app→app request (for
 	// the internal-request metric).
 	OnInternal func()
+
+	// OnRequest, when set, is called once per routed request to a KNOWN app with
+	// the resolved app name, HTTP status class ("2xx"…"5xx"), latency, and whether
+	// it arrived on the internal (app→app) listener. Requests for unknown apps
+	// (404) are not reported, so metric label cardinality stays bounded.
+	OnRequest func(app, code string, latency time.Duration, internal bool)
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -96,6 +104,7 @@ type Proxy struct {
 	activity    *ActivityTracker // nil when activity tracking disabled
 	onWake      func(time.Duration)
 	onInternal  func()
+	onRequest   func(app, code string, latency time.Duration, internal bool)
 	wg          sync.WaitGroup
 }
 
@@ -121,6 +130,7 @@ func New(cfg Config) *Proxy {
 	p.activity = cfg.Activity
 	p.onWake = cfg.OnWake
 	p.onInternal = cfg.OnInternal
+	p.onRequest = cfg.OnRequest
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Always set by ServeHTTP before this runs; comma-ok so a missing
@@ -156,9 +166,28 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 	resolveSet, appName := p.resolver.ResolveSet, p.resolver.AppName
 	if internal {
 		resolveSet, appName = p.resolver.ResolveSetInternal, p.resolver.AppNameInternal
+	}
+	name := appName(r.Host)
+
+	// Per-app request metric (v0.5.4 O-M2): capture the final status + latency and
+	// report once on return, but ONLY for a KNOWN app — an unknown/unauthorized
+	// Host never counts, so label cardinality stays bounded to real apps. The
+	// wrapper delegates Flush/Hijack so streaming and websocket upgrades still work.
+	start := time.Now()
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	w = sw
+	known := false
+	defer func() {
+		if p.onRequest != nil && known && name != "" {
+			p.onRequest(name, telemetry.StatusClass(sw.status), time.Since(start), internal)
+		}
+	}()
+
+	if internal {
 		// Authorize BEFORE resolve/wake so an unauthorized call never wakes the
 		// callee. A denied or unknown caller gets 403; an out-of-zone host, 404.
-		if !p.authorizeInternal(w, r, appName(r.Host)) {
+		// Neither counts (known stays false) — the caller isn't a known target.
+		if !p.authorizeInternal(w, r, name) {
 			return
 		}
 		if p.onInternal != nil {
@@ -175,25 +204,66 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 		switch {
 		case errors.Is(err, ErrAsleep):
 			// Wake failed or timed out (or no waker configured): clean 503.
+			known = true
 			http.Error(w, "app is asleep", http.StatusServiceUnavailable)
 		case errors.Is(err, ErrNoInstance):
+			known = true
 			http.Error(w, "app has no ready instance", http.StatusBadGateway)
 		default:
+			// Unknown app: 404, uncounted (bounded cardinality).
 			http.Error(w, "no such app", http.StatusNotFound)
 		}
 		return
 	}
+	known = true
 	// Balance across the app's endpoint set (P2C least-request); release the
 	// in-flight count when the request completes.
 	tg, release := p.balancer.Pick(set)
 	defer release()
 	if p.activity != nil {
-		name := appName(r.Host)
 		p.activity.begin(name)
 		defer p.activity.end(name)
 	}
 	r = r.WithContext(context.WithValue(r.Context(), targetKey{}, tg))
 	p.rp.ServeHTTP(w, r)
+}
+
+// statusWriter wraps an http.ResponseWriter to capture the final status code for
+// the per-app request metric, while delegating Flush and Hijack so streaming
+// responses and websocket upgrades through the reverse proxy keep working.
+type statusWriter struct {
+	http.ResponseWriter
+	status  int
+	written bool
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if !s.written {
+		s.status = code
+		s.written = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if !s.written {
+		s.status = http.StatusOK
+		s.written = true
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
 }
 
 // authorizeInternal enforces app→app default-deny for an internal request. It

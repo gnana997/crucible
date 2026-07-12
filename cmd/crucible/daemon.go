@@ -582,6 +582,30 @@ Required flags:
 		}
 	}
 
+	// Per-app lifecycle metrics (v0.5.4 O-M2): pull-model, read from the app
+	// manager at scrape time so a deleted app simply stops being reported.
+	if appMgr != nil {
+		mx.SetAppStateSource(func() []metrics.AppState {
+			apps, lerr := appMgr.List()
+			if lerr != nil {
+				return nil
+			}
+			out := make([]metrics.AppState, 0, len(apps))
+			for _, a := range apps {
+				st := metrics.AppState{Name: a.Name}
+				if a.Status != nil {
+					st.Phase = a.Status.Phase
+					st.Replicas = a.Status.Replicas
+					st.ReadyReplicas = a.Status.ReadyReplicas
+					st.SleepCount = a.Status.SleepCount
+					st.LastWakeLatencyMs = a.Status.LastWakeLatencyMs
+				}
+				out = append(out, st)
+			}
+			return out
+		})
+	}
+
 	// Ingress proxy (v0.4.2): reach an app by name. Needs the app manager
 	// (name → current instance) and the sandbox manager (instance → guest IP).
 	var proxy *ingress.Proxy
@@ -617,6 +641,9 @@ Required flags:
 				Activity:       activityTracker, // feed the idle monitor
 				OnWake:         mx.ObserveWakeLatency,
 				OnInternal:     mx.IncInternalRequest,
+				OnRequest: func(app, code string, latency time.Duration, _ bool) {
+					mx.ObserveAppRequest(app, code, latency)
+				},
 			})
 			if perr := proxy.Start(); perr != nil {
 				logger.Error("ingress proxy start failed", "err", perr)
@@ -638,6 +665,29 @@ Required flags:
 		}
 		close(errCh)
 	}()
+
+	// GC the push-model per-app request series for deleted apps (the pull-model
+	// gauges self-GC). Cheap sweep off the app list; the pull gauges are unaffected.
+	if appMgr != nil {
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					live := map[string]struct{}{}
+					if apps, lerr := appMgr.List(); lerr == nil {
+						for _, a := range apps {
+							live[a.Name] = struct{}{}
+						}
+					}
+					mx.SyncApps(live)
+				}
+			}
+		}()
+	}
 
 	select {
 	case <-ctx.Done():

@@ -10,6 +10,7 @@ package metrics
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,14 @@ type Metrics struct {
 	snapshotRestoreDuration prometheus.Histogram
 	wakeLatency             prometheus.Histogram
 	internalRequests        prometheus.Counter
+
+	// Per-app request metrics (v0.5.4 O-M2). Push-model with an `app` (and
+	// `code` status-class) label; cardinality is bounded to real apps by the
+	// proxy (unknown Host headers are never counted) and GC'd via SyncApps.
+	appRequests        *prometheus.CounterVec
+	appRequestDuration *prometheus.HistogramVec
+	appMu              sync.Mutex
+	appSeen            map[string]struct{}
 }
 
 // New constructs a Metrics with its own registry (not the global default
@@ -57,8 +66,19 @@ func New() *Metrics {
 			Name: "app_internal_requests_total",
 			Help: "Total authorized app→app (<app>.internal) requests routed by the ingress proxy.",
 		}),
+		appRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "app_requests_total",
+			Help: "Requests the ingress proxy routed to an app, by HTTP status class.",
+		}, []string{"app", "code"}),
+		appRequestDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "app_request_duration_seconds",
+			Help:    "Ingress-proxy request latency per app (accept → response written).",
+			Buckets: prometheus.DefBuckets,
+		}, []string{"app"}),
+		appSeen: map[string]struct{}{},
 	}
-	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration, m.wakeLatency, m.internalRequests)
+	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration,
+		m.wakeLatency, m.internalRequests, m.appRequests, m.appRequestDuration)
 	return m
 }
 

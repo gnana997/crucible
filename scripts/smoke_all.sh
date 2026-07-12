@@ -53,6 +53,7 @@ SMOKES=(
   "kvm        smoke_app_scaleout.sh" # horizontal scale-out: autoscale + P2C balance + warm-fork (v0.5.2)
   "kvm        smoke_zerodowntime.sh" # zero-downtime rolling app update (v0.4.3)
   "kvm        smoke_leaks.sh"        # resource + data leaks: drain/rm/scale/sleep orphans + isolation
+  "kvm        smoke_observability.sh" # per-app Prometheus metrics off the proxy + daemon pprof (v0.5.4)
   "kvm        smoke_registry.sh"    # private-registry credentials (v0.4.4)
   "kvm        smoke_cp.sh"           # crucible cp push (files into a sandbox)
   "kvm        smoke_build_run.sh"    # crucible build + run + stop/rm + --rm
