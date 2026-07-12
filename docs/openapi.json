@@ -2154,6 +2154,12 @@
           "instance_id": {
             "type": "string"
           },
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstanceStatus"
+            }
+          },
           "last_error": {
             "type": "string"
           },
@@ -2163,6 +2169,12 @@
           },
           "phase": {
             "type": "string"
+          },
+          "ready_replicas": {
+            "type": "integer"
+          },
+          "replicas": {
+            "type": "integer"
           },
           "restarts": {
             "type": "integer"
@@ -2497,6 +2509,21 @@
           }
         }
       },
+      "InstanceStatus": {
+        "type": "object",
+        "properties": {
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "health": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string"
+          }
+        }
+      },
       "ListResponse": {
         "type": "object",
         "properties": {
@@ -2770,7 +2797,13 @@
           "idle_timeout_s": {
             "type": "integer"
           },
+          "max_scale": {
+            "type": "integer"
+          },
           "min_scale": {
+            "type": "integer"
+          },
+          "target_concurrency": {
             "type": "integer"
           }
         }

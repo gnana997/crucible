@@ -248,3 +248,44 @@ func TestResolveCacheInstanceGuard(t *testing.T) {
 		t.Errorf("within TTL after instance change = %+v, %v; want fresh 10.20.0.9 (no stale/crossover)", tg, err)
 	}
 }
+
+func TestResolveSetNegatives(t *testing.T) {
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
+	appOf := func(a api.AppResponse) fakeApps {
+		return fakeApps{apps: map[string]api.AppResponse{"web": a}}
+	}
+
+	// Unknown host / app → ErrNoRoute.
+	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{}}, inst, "apps.local", "", 0)
+	if _, err := r.ResolveSet("nope.apps.local"); !errors.Is(err, ErrNoRoute) {
+		t.Errorf("unknown → %v, want ErrNoRoute", err)
+	}
+
+	// Asleep → ErrAsleep (wakeable, not a hard error).
+	asleep := runningApp("web", 80, "sbx_1")
+	asleep.Status.Phase = "asleep"
+	if _, err := NewResolver(appOf(asleep), inst, "apps.local", "", 0).ResolveSet("web.apps.local"); !errors.Is(err, ErrAsleep) {
+		t.Errorf("asleep → %v, want ErrAsleep", err)
+	}
+
+	// Running but no live instance IP → ErrNoInstance.
+	noIP := runningApp("web", 80, "sbx_missing")
+	if _, err := NewResolver(appOf(noIP), inst, "apps.local", "", 0).ResolveSet("web.apps.local"); !errors.Is(err, ErrNoInstance) {
+		t.Errorf("no live IP → %v, want ErrNoInstance", err)
+	}
+
+	// Running but no target port → ErrNoRoute.
+	noPort := runningApp("web", 0, "sbx_1")
+	if _, err := NewResolver(appOf(noPort), inst, "apps.local", "", 0).ResolveSet("web.apps.local"); !errors.Is(err, ErrNoRoute) {
+		t.Errorf("no port → %v, want ErrNoRoute", err)
+	}
+
+	// Multi-instance running app → the whole live endpoint set.
+	multi := runningApp("web", 80, "sbx_1")
+	multi.Status.Instances = []api.InstanceStatus{{InstanceID: "sbx_1"}, {InstanceID: "sbx_2"}}
+	inst2 := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2", "sbx_2": "10.20.0.6"}}
+	set, err := NewResolver(appOf(multi), inst2, "apps.local", "", 0).ResolveSet("web.apps.local")
+	if err != nil || len(set) != 2 {
+		t.Errorf("multi-instance set = %v (%v); want 2 targets", set, err)
+	}
+}

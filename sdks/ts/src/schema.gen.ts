@@ -579,10 +579,13 @@ export interface components {
             health?: string;
             instance_generation?: number;
             instance_id?: string;
+            instances?: components["schemas"]["InstanceStatus"][];
             last_error?: string;
             /** Format: int64 */
             last_wake_latency_ms?: number;
             phase?: string;
+            ready_replicas?: number;
+            replicas?: number;
             restarts?: number;
             sleep_count?: number;
         };
@@ -692,6 +695,11 @@ export interface components {
             size_bytes?: number;
             source_ref?: string;
         };
+        InstanceStatus: {
+            generation?: number;
+            health?: string;
+            instance_id?: string;
+        };
         ListResponse: {
             sandboxes?: components["schemas"]["SandboxResponse"][] | null;
         };
@@ -778,7 +786,9 @@ export interface components {
         };
         SleepPolicy: {
             idle_timeout_s?: number;
+            max_scale?: number;
             min_scale?: number;
+            target_concurrency?: number;
         };
         SnapshotListResponse: {
             snapshots?: components["schemas"]["SnapshotResponse"][] | null;

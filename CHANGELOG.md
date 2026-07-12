@@ -6,6 +6,36 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.5.2] — 2026-07-13
+
+Scale out. An app runs multiple replicas behind the ingress proxy, load-balanced,
+and autoscales on request concurrency — each replica forked **warm** from a
+snapshot in milliseconds, not cold-booted.
+
+### Added
+
+- **Horizontal scaling.** `app create <app> --min-scale N` runs N warm replicas
+  behind the proxy. Each is stamped by **forking a golden snapshot** of the
+  healthy primary (lazy memory; clone-safe — a distinct machine-id and IP per
+  replica), so scaling up is cheap. The reconciler self-heals the fleet: a
+  replica that dies is replaced.
+- **Load balancing.** The proxy balances requests across an app's live instances
+  with **power-of-two-choices least-request** selection, a slow-start ramp so a
+  just-forked replica isn't slammed while its cache is cold, and passive outlier
+  ejection (a repeatedly-failing instance is dropped and re-forked). External and
+  app→app (`<app>.internal`) traffic both balance through the one path.
+- **Autoscaling.** `--max-scale M` (with `--target-concurrency C`) autoscales an
+  app between its floor and M on observed request concurrency: a fast window
+  scales **up** on bursts, a slow window scales **down** when calm (after a
+  stabilization window, so it doesn't flap). `min_scale=0` composes with
+  scale-to-zero — idle sleeps to 0, a request wakes to 1, and load scales 1→M.
+- **Surfacing.** `app ls` gains a `REPLICAS` column (ready/desired); `app get`
+  reports the full instance set (`replicas`, `ready_replicas`, `instances`).
+
+Horizontal scale-out is for **stateless** apps (a shared database still waits for
+volumes). A multi-instance app must be proxy-fronted (a `--port`, no fixed host
+publish — two instances can't co-bind a host port).
+
 ## [0.5.1] — 2026-07-12
 
 App→app service networking. Deploy your frontend and API as separate apps; the

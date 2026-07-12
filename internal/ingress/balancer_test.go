@@ -72,3 +72,33 @@ func TestBalancerSlowStartDeprioritizesFresh(t *testing.T) {
 		t.Errorf("slow-start: fresh b effLoad %d should exceed warm a effLoad %d", lb, la)
 	}
 }
+
+func TestBalancerFailOpenWhenAllEjected(t *testing.T) {
+	b := NewBalancer()
+	set := []Target{
+		{InstanceID: "a", GuestIP: "10.0.0.1", Port: 80},
+		{InstanceID: "b", GuestIP: "10.0.0.2", Port: 80},
+	}
+	b.Pick(set) // register both
+	for i := 0; i < balancerEjectFails; i++ {
+		b.Fail("a")
+		b.Fail("b")
+	}
+	// Both ejected → fail open: still returns one (better than dropping traffic).
+	tg, release := b.Pick(set)
+	if tg.InstanceID != "a" && tg.InstanceID != "b" {
+		t.Errorf("all-ejected fail-open picked %q, want a or b", tg.InstanceID)
+	}
+	release()
+}
+
+func TestBalancerFailUnknownIsNoop(t *testing.T) {
+	b := NewBalancer()
+	b.Fail("")      // empty id
+	b.Fail("ghost") // never registered
+	tg, release := b.Pick([]Target{{InstanceID: "a", GuestIP: "10.0.0.1", Port: 80}})
+	if tg.InstanceID != "a" {
+		t.Errorf("picked %q, want a", tg.InstanceID)
+	}
+	release()
+}

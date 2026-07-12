@@ -941,3 +941,125 @@ func TestExtrasForkFromGolden(t *testing.T) {
 		t.Errorf("expected 1 cold create (the primary), got %d", len(f.creates))
 	}
 }
+
+func TestAutoscale(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Now()}
+	m.now = clk.now
+
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Sleep = &api.SleepPolicy{MaxScale: 4, TargetConcurrency: 10}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx()) // primary running; scaleTarget floors at 1
+
+	// ~35 concurrent requests → ceil(35/10) = 4 replicas (capped at max_scale).
+	m.SetActivitySource(fakeActivity{"web": {inflight: 35}})
+	for i := 0; i < 12; i++ {
+		m.autoscaleCheck(clk.now())
+	}
+	if got := m.replicaTarget(rec); got != 4 {
+		t.Errorf("under load: replicaTarget = %d, want 4", got)
+	}
+
+	// Load drops to zero: the stabilization window blocks an immediate scale-down.
+	m.SetActivitySource(fakeActivity{"web": {inflight: 0}})
+	m.autoscaleCheck(clk.now())
+	if got := m.replicaTarget(rec); got != 4 {
+		t.Errorf("right after load drop: replicaTarget = %d, want 4 (stabilization holds)", got)
+	}
+
+	// Past the stabilization window, the slow EWMA decays and it scales to the floor.
+	clk.advance(2 * autoscaleDownStabilize)
+	for i := 0; i < 40; i++ {
+		m.autoscaleCheck(clk.now())
+	}
+	if got := m.replicaTarget(rec); got != 1 {
+		t.Errorf("after calm: replicaTarget = %d, want 1 (scaled to floor)", got)
+	}
+
+	// A non-autoscaling app (no max_scale) ignores concurrency: static min_scale.
+	f2 := newFake()
+	m2, _ := newMgr(t, f2)
+	rec2 := mustCreate(t, m2, sleepableSpec("solo", 0, 2), true) // min_scale 2, no max
+	if got := m2.replicaTarget(rec2); got != 2 {
+		t.Errorf("static app: replicaTarget = %d, want 2 (min_scale)", got)
+	}
+}
+
+// TestConvergeReplicasNegatives exercises the failure/teardown edges of the
+// extra-replica converge path.
+func TestConvergeReplicasNegatives(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+
+	// Boot the primary, then make all further boots (extra forks/creates) fail:
+	// the app keeps its primary and doesn't crash or thrash.
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Sleep = &api.SleepPolicy{MinScale: 3}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx()) // primary + tries to fork 2 extras
+	f.mu.Lock()
+	f.createErr = errors.New("boom") // fork/create now fails
+	f.mu.Unlock()
+	// Kill the extras; the reconciler tries and fails to replace them — no panic.
+	f.crash("forked")
+	m.reconcile(ctx())
+	if got := m.replicaTarget(rec); got != 3 {
+		t.Errorf("target should stay 3 despite boot failures, got %d", got)
+	}
+
+	// Recover: boots succeed again → re-converges to 3.
+	f.mu.Lock()
+	f.createErr = nil
+	f.mu.Unlock()
+	m.reconcile(ctx())
+	if f.liveCount() != 3 {
+		t.Errorf("after recovery: %d live, want 3", f.liveCount())
+	}
+
+	// Stop the app → all replicas (primary + extras) torn down.
+	if err := m.SetDesired(rec.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	m.reconcile(ctx())
+	if f.liveCount() != 0 {
+		t.Errorf("after stop: %d live, want 0", f.liveCount())
+	}
+}
+
+// TestAutoscaleNegatives covers the autoscaler's guards: capping at max, never
+// below the floor, ignoring a non-running app, and a nil activity source.
+func TestAutoscaleNegatives(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Sleep = &api.SleepPolicy{MinScale: 2, MaxScale: 4, TargetConcurrency: 1}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+
+	// Extreme concurrency is capped at max_scale, never higher.
+	m.SetActivitySource(fakeActivity{"web": {inflight: 1000}})
+	for i := 0; i < 15; i++ {
+		m.autoscaleCheck(m.now())
+	}
+	if got := m.replicaTarget(rec); got != 4 {
+		t.Errorf("under extreme load: target = %d, want 4 (capped at max_scale)", got)
+	}
+
+	// Zero load never drops below the floor (min_scale 2).
+	m.SetActivitySource(fakeActivity{"web": {inflight: 0}})
+	clk := &fakeClock{t: time.Now().Add(time.Hour)} // past any stabilization
+	m.now = clk.now
+	for i := 0; i < 50; i++ {
+		m.autoscaleCheck(clk.now())
+	}
+	if got := m.replicaTarget(rec); got != 2 {
+		t.Errorf("idle: target = %d, want 2 (min_scale floor)", got)
+	}
+
+	// A nil activity source is a no-op (no panic, no scaling).
+	m.activity = nil
+	m.autoscaleCheck(m.now())
+}

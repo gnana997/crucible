@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 
@@ -164,6 +165,25 @@ type goldenSnap struct {
 	generation uint64
 }
 
+// scaleState is an app's dual-window autoscaling estimator: a fast EWMA of
+// request concurrency drives scale-UP (react to bursts), a slow EWMA drives
+// scale-DOWN (resist flapping), and a stabilization window blocks a scale-down
+// right after a scale-up.
+type scaleState struct {
+	shortAvg    float64
+	longAvg     float64
+	target      int
+	lastScaleUp time.Time
+}
+
+// Autoscaling tuning.
+const (
+	autoscaleShortAlpha      = 0.6              // fast EWMA weight (scale up)
+	autoscaleLongAlpha       = 0.2              // slow EWMA weight (scale down)
+	autoscaleDownStabilize   = 60 * time.Second // don't scale down within this of a scale-up
+	defaultTargetConcurrency = 50               // in-flight requests per instance
+)
+
 // Tuning. Backoff is exponential between restart attempts; a run that
 // survives crashLoopWindow resets the failure count; crashLoopThreshold
 // consecutive fast failures flip the phase to crashlooping (still retried,
@@ -224,6 +244,11 @@ type Manager struct {
 	// forked warm from (v0.5.2). Keyed by app id, guarded by obsMu; re-captured on
 	// a generation change and GC'd on delete/stop.
 	golden map[string]*goldenSnap
+	// scaleTarget is the autoscaler's current desired replica count per app (the
+	// dynamic replicaTarget for an autoscaling app); scalers holds its dual-window
+	// concurrency state. Both guarded by obsMu.
+	scaleTarget map[string]int
+	scalers     map[string]*scaleState
 
 	// transitionMu guards transitions; each per-app mutex serializes that app's
 	// sleep/wake lifecycle transitions so Sleep and Wake are mutually exclusive
@@ -255,6 +280,8 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		obs:          make(map[string]*observed),
 		extras:       make(map[string][]*replica),
 		golden:       make(map[string]*goldenSnap),
+		scaleTarget:  make(map[string]int),
+		scalers:      make(map[string]*scaleState),
 		transitions:  make(map[string]*sync.Mutex),
 		trigger:      make(chan struct{}, 1),
 	}
@@ -674,6 +701,7 @@ func (m *Manager) idleLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			m.idleCheck(m.now())
+			m.autoscaleCheck(m.now())
 		}
 	}
 }
@@ -812,18 +840,133 @@ func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
 	m.reconcileExtras(ctx, rec, now)
 }
 
-// replicaTarget is the desired number of instances for an app: the primary plus
-// any extras. min_scale is the warm-replica floor — 0 or 1 means a single
-// instance (min_scale 0 also opts into scale-to-zero, handled by the primary's
-// sleep path); min_scale N > 1 means N warm replicas.
-func replicaTarget(rec Record) int {
+// replicaTarget is the desired number of instances for an app (primary + extras).
+// For an autoscaling app it's the autoscaler's current target (falling back to
+// the running floor before the first tick); otherwise the static floor from
+// min_scale.
+func (m *Manager) replicaTarget(rec Record) int {
 	if !rec.DesiredRunning {
 		return 0
 	}
-	if sp := rec.Spec.Sleep; sp != nil && sp.MinScale > 1 {
+	sp := rec.Spec.Sleep
+	if autoscaleEnabled(sp) {
+		m.obsMu.Lock()
+		t, ok := m.scaleTarget[rec.ID]
+		m.obsMu.Unlock()
+		if ok && t > 0 {
+			return t
+		}
+		return effectiveMin(sp)
+	}
+	if sp != nil && sp.MinScale > 1 {
 		return sp.MinScale
 	}
 	return 1
+}
+
+// autoscaleEnabled reports whether an app autoscales horizontally: max_scale
+// must leave room above the running floor.
+func autoscaleEnabled(sp *api.SleepPolicy) bool {
+	return sp != nil && sp.MaxScale > effectiveMin(sp)
+}
+
+// effectiveMin is the floor a RUNNING app holds: at least 1 (min_scale 0 drops
+// to 0 via the sleep path, not the replica floor).
+func effectiveMin(sp *api.SleepPolicy) int {
+	if sp != nil && sp.MinScale > 1 {
+		return sp.MinScale
+	}
+	return 1
+}
+
+func targetConcurrency(sp *api.SleepPolicy) int {
+	if sp != nil && sp.TargetConcurrency > 0 {
+		return sp.TargetConcurrency
+	}
+	return defaultTargetConcurrency
+}
+
+func ewma(prev, sample, alpha float64) float64 { return alpha*sample + (1-alpha)*prev }
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// autoscaleCheck recomputes each autoscaling app's desired replica count from
+// observed concurrency — a fast EWMA scales up on bursts, a slow EWMA scales
+// down when calm (after a stabilization window) — and nudges the reconciler on a
+// change. Runs on the idle-monitor tick.
+func (m *Manager) autoscaleCheck(now time.Time) {
+	if m.activity == nil {
+		return
+	}
+	recs, err := m.store.List()
+	if err != nil {
+		return
+	}
+	for _, rec := range recs {
+		sp := rec.Spec.Sleep
+		if !rec.DesiredRunning || !autoscaleEnabled(sp) {
+			continue
+		}
+		m.obsMu.Lock()
+		phase := ""
+		if ob := m.obs[rec.ID]; ob != nil {
+			phase = ob.phase
+		}
+		st := m.scalers[rec.ID]
+		if st == nil {
+			st = &scaleState{target: effectiveMin(sp)}
+			m.scalers[rec.ID] = st
+			m.scaleTarget[rec.ID] = st.target
+		}
+		prev := m.scaleTarget[rec.ID]
+		m.obsMu.Unlock()
+
+		// Only steer a running app; asleep/waking/pending don't autoscale (the
+		// wake path handles 0→1).
+		if phase != "running" {
+			continue
+		}
+		_, inflight, ok := m.activity.Activity(rec.Spec.Name)
+		if !ok {
+			inflight = 0
+		}
+		c := float64(inflight)
+		st.shortAvg = ewma(st.shortAvg, c, autoscaleShortAlpha)
+		st.longAvg = ewma(st.longAvg, c, autoscaleLongAlpha)
+
+		tc := float64(targetConcurrency(sp))
+		lo, hi := effectiveMin(sp), sp.MaxScale
+		up := clampInt(int(math.Ceil(st.shortAvg/tc)), lo, hi)
+		down := clampInt(int(math.Ceil(st.longAvg/tc)), lo, hi)
+
+		target := st.target
+		if target < lo {
+			target = lo
+		}
+		switch {
+		case up > target:
+			target, st.lastScaleUp = up, now // burst → scale up now
+		case down < target && now.Sub(st.lastScaleUp) >= autoscaleDownStabilize:
+			target = down // calm → scale down after stabilization
+		}
+		st.target = target
+
+		if target != prev {
+			m.obsMu.Lock()
+			m.scaleTarget[rec.ID] = target
+			m.obsMu.Unlock()
+			m.log.Info("app autoscaled", "app", rec.ID, "name", rec.Spec.Name, "replicas", target)
+			m.Trigger()
+		}
+	}
 }
 
 // reconcileExtras converges an app's extra replicas (instances 2..N) to
@@ -839,7 +982,7 @@ func (m *Manager) reconcileExtras(ctx context.Context, rec Record, now time.Time
 	if ob == nil || ob.instanceID == "" {
 		return // primary not up yet; extras converge on a later pass
 	}
-	target := replicaTarget(rec) - 1
+	target := m.replicaTarget(rec) - 1
 	if target < 0 {
 		target = 0
 	}
@@ -946,6 +1089,8 @@ func (m *Manager) destroyExtras(ctx context.Context, appID string) {
 	delete(m.extras, appID)
 	g := m.golden[appID]
 	delete(m.golden, appID)
+	delete(m.scaleTarget, appID)
+	delete(m.scalers, appID)
 	m.obsMu.Unlock()
 	for _, r := range extras {
 		_ = m.inst.Destroy(ctx, r.id)
@@ -1473,7 +1618,7 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 		}
 		resp.Status.Instances = insts
 		resp.Status.ReadyReplicas = ready
-		resp.Status.Replicas = replicaTarget(rec)
+		resp.Status.Replicas = m.replicaTarget(rec)
 	}
 	return resp
 }
@@ -1513,6 +1658,15 @@ func validateSpec(spec api.AppSpec) error {
 		// >=1 keeps that many instances always running. Negative is invalid.
 		if sp.MinScale < 0 {
 			return fmt.Errorf("app: sleep min_scale must be >= 0, got %d", sp.MinScale)
+		}
+		if sp.MaxScale < 0 {
+			return fmt.Errorf("app: sleep max_scale must be >= 0, got %d", sp.MaxScale)
+		}
+		if sp.MaxScale > 0 && sp.MaxScale < sp.MinScale {
+			return fmt.Errorf("app: sleep max_scale (%d) must be >= min_scale (%d)", sp.MaxScale, sp.MinScale)
+		}
+		if sp.TargetConcurrency < 0 {
+			return fmt.Errorf("app: sleep target_concurrency must be >= 0, got %d", sp.TargetConcurrency)
 		}
 	}
 	for _, target := range spec.CanCall {

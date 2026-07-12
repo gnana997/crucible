@@ -13,17 +13,6 @@ class AppExecReq(BaseModel):
     timeout_s: int | None = None
 
 
-class AppStatus(BaseModel):
-    health: str | None = None
-    instance_generation: conint(ge=0) | None = None
-    instance_id: str | None = None
-    last_error: str | None = None
-    last_wake_latency_ms: int | None = None
-    phase: str | None = None
-    restarts: int | None = None
-    sleep_count: int | None = None
-
-
 class ErrorResponse(BaseModel):
     error: str | None = None
 
@@ -67,6 +56,12 @@ class ImageResponse(BaseModel):
     exposed_ports: list[str] | None = None
     size_bytes: int | None = None
     source_ref: str | None = None
+
+
+class InstanceStatus(BaseModel):
+    generation: conint(ge=0) | None = None
+    health: str | None = None
+    instance_id: str | None = None
 
 
 class LogRecord(BaseModel):
@@ -157,7 +152,9 @@ class ServiceStopReq(BaseModel):
 
 class SleepPolicy(BaseModel):
     idle_timeout_s: int | None = None
+    max_scale: int | None = None
     min_scale: int | None = None
+    target_concurrency: int | None = None
 
 
 class SnapshotResponse(BaseModel):
@@ -209,29 +206,18 @@ class WireServiceSpec(BaseModel):
     user: str | None = None
 
 
-class AppResponse(BaseModel):
-    can_call: list[str] | None = None
-    created_at: AwareDatetime | None = None
-    desired_state: str | None = None
-    disk_bytes: int | None = None
-    env: dict[str, str] | None = None
-    generation: conint(ge=0) | None = None
-    health: HealthCheck | None = None
-    id: str | None = None
-    image: ImageRef | None = None
-    memory_mib: int | None = None
-    name: str | None = None
-    network: NetworkRequest | None = None
-    port: int | None = None
-    publish: list[PortMapping] | None = None
-    publish_all: bool | None = None
-    pull: str | None = None
-    restart: WireRestartPolicy | None = None
-    service: WireServiceSpec | None = None
-    sleep: SleepPolicy | None = None
-    status: AppStatus | None = None
-    updated_at: AwareDatetime | None = None
-    vcpus: int | None = None
+class AppStatus(BaseModel):
+    health: str | None = None
+    instance_generation: conint(ge=0) | None = None
+    instance_id: str | None = None
+    instances: list[InstanceStatus] | None = None
+    last_error: str | None = None
+    last_wake_latency_ms: int | None = None
+    phase: str | None = None
+    ready_replicas: int | None = None
+    replicas: int | None = None
+    restarts: int | None = None
+    sleep_count: int | None = None
 
 
 class ConfigureServiceReq(BaseModel):
@@ -352,6 +338,31 @@ class WireServiceStatus(BaseModel):
     started_at_unix_ms: int | None = None
     state: str | None = None
     uptime_ms: int | None = None
+
+
+class AppResponse(BaseModel):
+    can_call: list[str] | None = None
+    created_at: AwareDatetime | None = None
+    desired_state: str | None = None
+    disk_bytes: int | None = None
+    env: dict[str, str] | None = None
+    generation: conint(ge=0) | None = None
+    health: HealthCheck | None = None
+    id: str | None = None
+    image: ImageRef | None = None
+    memory_mib: int | None = None
+    name: str | None = None
+    network: NetworkRequest | None = None
+    port: int | None = None
+    publish: list[PortMapping] | None = None
+    publish_all: bool | None = None
+    pull: str | None = None
+    restart: WireRestartPolicy | None = None
+    service: WireServiceSpec | None = None
+    sleep: SleepPolicy | None = None
+    status: AppStatus | None = None
+    updated_at: AwareDatetime | None = None
+    vcpus: int | None = None
 
 
 class AppListResponse(BaseModel):

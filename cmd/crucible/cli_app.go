@@ -73,6 +73,7 @@ type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
 	idleTimeout                                   string
 	vcpus, memory, port, minScale                 int
+	maxScale, targetConcurrency                   int
 	netAllow, publish, env, netAllowCIDR, canCall []string
 	netFullEgress, publishAll                     bool
 }
@@ -96,6 +97,8 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
 	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (needs the ingress proxy)")
 	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
+	f.IntVar(&a.maxScale, "max-scale", 0, "maximum instances for horizontal autoscaling; >min-scale enables it (0 = fixed at min-scale)")
+	f.IntVar(&a.targetConcurrency, "target-concurrency", 0, "autoscaler target: in-flight requests per instance (0 = default)")
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
 }
 
@@ -150,12 +153,18 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		// Shell form (docker HEALTHCHECK CMD-SHELL): exit 0 = healthy.
 		spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", a.healthCmd}}
 	}
-	if cmd.Flags().Changed("idle-timeout") || cmd.Flags().Changed("min-scale") {
+	if cmd.Flags().Changed("idle-timeout") || cmd.Flags().Changed("min-scale") ||
+		cmd.Flags().Changed("max-scale") || cmd.Flags().Changed("target-concurrency") {
 		idleSec, err := parseIdleTimeout(a.idleTimeout)
 		if err != nil {
 			return api.AppSpec{}, err
 		}
-		spec.Sleep = &api.SleepPolicy{IdleTimeoutSec: idleSec, MinScale: a.minScale}
+		spec.Sleep = &api.SleepPolicy{
+			IdleTimeoutSec:    idleSec,
+			MinScale:          a.minScale,
+			MaxScale:          a.maxScale,
+			TargetConcurrency: a.targetConcurrency,
+		}
 	}
 	return spec, nil
 }
@@ -249,14 +258,15 @@ func newAppListCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), page.Items)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			_, _ = fmt.Fprintln(tw, "NAME\tDESIRED\tPHASE\tHEALTH\tRESTARTS\tINSTANCE")
+			_, _ = fmt.Fprintln(tw, "NAME\tDESIRED\tPHASE\tHEALTH\tREPLICAS\tRESTARTS\tINSTANCE")
 			for _, a := range page.Items {
-				phase, health, restarts, inst := "-", "-", 0, "-"
+				phase, health, restarts, inst, replicas := "-", "-", 0, "-", "-"
 				if a.Status != nil {
 					phase, health, restarts = orDash(a.Status.Phase), orDash(a.Status.Health), a.Status.Restarts
 					inst = orDash(a.Status.InstanceID)
+					replicas = fmt.Sprintf("%d/%d", a.Status.ReadyReplicas, a.Status.Replicas)
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\n", a.Name, a.DesiredState, phase, health, restarts, inst)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", a.Name, a.DesiredState, phase, health, replicas, restarts, inst)
 			}
 			return tw.Flush()
 		},

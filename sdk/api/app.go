@@ -89,6 +89,17 @@ type SleepPolicy struct {
 	// scale-to-zero — the instance may sleep to ~zero RAM. >=1 keeps at
 	// least one instance always running (sleep disabled in practice).
 	MinScale int `json:"min_scale"`
+
+	// MaxScale is the ceiling for horizontal autoscaling (v0.5.2). When it
+	// exceeds the running floor (max(MinScale,1)), the daemon autoscales the app
+	// between that floor and MaxScale on request concurrency. 0 (or <= the floor)
+	// disables autoscaling — the app stays at MinScale.
+	MaxScale int `json:"max_scale,omitempty"`
+
+	// TargetConcurrency is the desired in-flight requests per instance the
+	// autoscaler aims for (replicas ≈ ceil(observed concurrency / target)). Zero
+	// takes a conservative default.
+	TargetConcurrency int `json:"target_concurrency,omitempty"`
 }
 
 // HealthCheck configures daemon-side probing of an app's instance.
