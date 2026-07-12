@@ -1,13 +1,13 @@
-# cruciblehq.dev hero — one take, the whole story: boot nginx from an OCI
-# image with a published port, push content in with cp, snapshot the RUNNING
+# The fork/snapshot primitive — one take, the whole story: boot nginx from an
+# OCI image with a published port, push content in with cp, snapshot the RUNNING
 # server, fork it, diverge the fork's content, and show the two VMs serving
-# different answers without touching each other.
+# different answers without touching each other. Embedded in docs/fork.md.
 #
-# Render with: vhs demo/landing.tape   (needs a running daemon with
+# Render with: vhs demo/fork.tape   (needs a running daemon with
 # --image-dir; run `crucible run nginx:alpine` once first so the image is
 # cached and the recording shows warm boot speed — then `crucible rm` it)
-# Then: cp demo/landing.gif ../cruciblehq/public/demo/landing.gif
-Output demo/landing.gif
+# Then: cp demo/fork.gif ../cruciblehq/public/demo/fork.gif
+Output demo/fork.gif
 
 Set Shell "bash"
 Set FontSize 26
