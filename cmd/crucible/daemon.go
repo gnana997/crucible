@@ -39,6 +39,7 @@ import (
 	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/internal/telemetry"
 	"github.com/gnana997/crucible/internal/tokenstore"
 )
 
@@ -114,14 +115,20 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 
 	var (
-		addr         = fs.String("listen", "127.0.0.1:7878", "HTTP listen address")
-		fcBin        = fs.String("firecracker-bin", "", "path to the firecracker binary (required)")
-		kernel       = fs.String("kernel", "", "path to the guest kernel image — uncompressed vmlinux (required)")
-		rootfs       = fs.String("rootfs", "", "path to the guest root filesystem image (required; the default when a create request names no profile)")
-		rootfsDir    = fs.String("rootfs-dir", "", "directory of pre-baked <profile>.ext4 images; a create request's `profile` field selects one by basename (e.g. python-3.12.ext4 → profile \"python-3.12\")")
-		workBase     = fs.String("work-base", "/tmp/crucible/run", "directory where per-sandbox workdirs are created")
-		logFormat    = fs.String("log-format", "text", "log format: text|json")
-		logLevel     = fs.String("log-level", "info", "log level: debug|info|warn|error")
+		addr      = fs.String("listen", "127.0.0.1:7878", "HTTP listen address")
+		fcBin     = fs.String("firecracker-bin", "", "path to the firecracker binary (required)")
+		kernel    = fs.String("kernel", "", "path to the guest kernel image — uncompressed vmlinux (required)")
+		rootfs    = fs.String("rootfs", "", "path to the guest root filesystem image (required; the default when a create request names no profile)")
+		rootfsDir = fs.String("rootfs-dir", "", "directory of pre-baked <profile>.ext4 images; a create request's `profile` field selects one by basename (e.g. python-3.12.ext4 → profile \"python-3.12\")")
+		workBase  = fs.String("work-base", "/tmp/crucible/run", "directory where per-sandbox workdirs are created")
+		logFormat = fs.String("log-format", "text", "log format: text|json")
+		logLevel  = fs.String("log-level", "info", "log level: debug|info|warn|error")
+		// Observability (v0.5.4): telemetry identity + Go pprof. Exporters
+		// (Prometheus /metrics is always on; OTLP arrives in a later milestone)
+		// share this identity. OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES are
+		// honored when the flag is unset.
+		otelService  = fs.String("otel-service-name", "", "service.name for exported telemetry (default: $OTEL_SERVICE_NAME, else \"crucible\")")
+		pprofListen  = fs.String("pprof-listen", "", "serve Go net/http/pprof on this address for daemon profiling; empty = off. Exposes process memory — bind loopback (e.g. 127.0.0.1:6060) or protect the port")
 		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
 		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
 		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
@@ -434,6 +441,21 @@ Required flags:
 
 	mx := metrics.New()
 
+	// Telemetry seam (v0.5.4 O-M1): the daemon's exported-signal identity.
+	// Inert until an exporter is configured (Prometheus /metrics is separate and
+	// always on); OTLP export rides this in a later milestone.
+	tele := telemetry.New(telemetry.Config{ServiceName: *otelService, Logger: logger})
+
+	// Go pprof (v0.5.4 J9 slice): off unless --pprof-listen is set.
+	var pprofSrv *http.Server
+	if *pprofListen != "" {
+		if !telemetry.IsLoopbackAddr(*pprofListen) {
+			logger.Warn("pprof listening on a non-loopback address — it exposes process memory; protect the port", "addr", *pprofListen)
+		}
+		pprofSrv = telemetry.StartPprof(*pprofListen, func(err error) { logger.Error("pprof server failed", "err", err) })
+		logger.Info("pprof enabled", "addr", *pprofListen)
+	}
+
 	mgrCfg := sandbox.ManagerConfig{
 		Runner:            r,
 		WorkBase:          *workBase,
@@ -635,6 +657,10 @@ Required flags:
 	if err := srv.Shutdown(drainCtx); err != nil {
 		logger.Warn("http shutdown did not complete cleanly", "err", err)
 	}
+	if pprofSrv != nil {
+		_ = pprofSrv.Shutdown(drainCtx)
+	}
+	_ = tele.Shutdown(drainCtx)
 	// Stop accepting new proxied traffic before the reconciler and sandbox
 	// drain tear instances down.
 	if proxy != nil {
