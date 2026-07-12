@@ -7,10 +7,11 @@
 # the systemd-managed daemon at 127.0.0.1:7878 — through the full user journey:
 # run/shell/exec, egress deny, logs, snapshot+fork, --disk, stop/rm, build,
 # durable apps (v0.4), the MCP server, the full v0.4.1 surface (app --env, exec
-# health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P), and the
+# health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P), the
 # v0.4.2 surface (app update, image-HEALTHCHECK seeding, and — opt-in — the
-# ingress proxy). It answers one question: "will someone who installs the
-# release hit a wall?"
+# ingress proxy), and the v0.4.3 surface (operate an app by name — app exec /
+# app logs — plus, through the proxy, a zero-downtime rolling update). It answers
+# one question: "will someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -393,6 +394,12 @@ else:
     print("app tools: create/get/list/delete round-trip ok")
     print("MCP-APPS-OK")
 
+# v0.4.3: the operate-an-app-by-name tools must be advertised in the catalog.
+if {"app_exec","app_logs"}.issubset(tools):
+    print("MCP-APPOPS-OK")
+else:
+    print("MCP-APPOPS-SKIP (app_exec/app_logs not advertised)")
+
 p.stdin.close()
 try: p.wait(timeout=10)
 except Exception: p.kill()
@@ -409,6 +416,11 @@ PY
     pass "MCP app tools: create/get/list/delete round-trip"
   elif [[ "$MCP_OUT" == *"MCP-APPS-SKIP"* ]]; then
     skip "MCP app tools not advertised (pre-v0.4 daemon)"
+  fi
+  if [[ "$MCP_OUT" == *"MCP-APPOPS-OK"* ]]; then
+    pass "MCP v0.4.3: app_exec/app_logs advertised in the catalog"
+  elif [[ "$MCP_OUT" == *"MCP-APPOPS-SKIP"* ]]; then
+    skip "MCP app_exec/app_logs not advertised (pre-v0.4.3 daemon)"
   fi
 fi
 
@@ -564,9 +576,66 @@ else
       || fail "proxy did not route $PXAPP.$PDOM via $PROXY_ADDR (is --proxy-listen/--proxy-domain set?)"
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 -H "Host: nope.$PDOM" "http://$PROXY_ADDR/" 2>/dev/null)"
     [[ "$code" == "404" ]] && pass "proxy: unknown host → 404" || fail "proxy unknown host → $code, want 404"
+    # v0.4.3: a rolling `app update` flips to a new instance while the app stays
+    # reachable BY NAME through the proxy (zero-downtime; the drop-free assertion
+    # is scripts/smoke_zerodowntime.sh — here we confirm it flips + stays routed).
+    PXINST1="$(curl -s "$BASE_URL/apps/$PXAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+    if [[ "$(cli app update "$PXAPP" --image "$IMAGE" --port 80 --restart always --memory 320 2>/dev/null)" == "$PXAPP" ]]; then
+      ROLLED=0; PXINST2=""
+      for _ in $(seq 1 90); do
+        PXINST2="$(curl -s "$BASE_URL/apps/$PXAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+        body="$(curl -s --max-time 3 -H "Host: $PXAPP.$PDOM" "http://$PROXY_ADDR/" 2>/dev/null || true)"
+        if [[ "$PXINST2" == sbx_* && "$PXINST2" != "$PXINST1" ]] && [[ "$body" == *"html"* || "$body" == *"nginx"* ]]; then
+          ROLLED=1; break
+        fi
+        sleep 1
+      done
+      [[ "$ROLLED" -eq 1 ]] && pass "rolling update flipped ($PXINST1 → $PXINST2), still reachable by name" \
+        || fail "rolling update did not flip + stay reachable by name ($PXINST1 → ${PXINST2:-none})"
+    else
+      skip "app update on the proxy app failed (pre-v0.4.3 daemon?)"
+    fi
     cli app rm "$PXAPP" >/dev/null 2>&1
   else
     skip "proxy: app create with --port failed (pre-v0.4.2 daemon?)"
+  fi
+fi
+
+# ---- 17 v0.4.3: operate an app BY NAME — exec + logs (redeploy-safe) ---------
+echo "== 17 operate an app by name: app exec + app logs (v0.4.3)"
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  OAPP="crucible-smoke-ops"
+  cli app rm "$OAPP" >/dev/null 2>&1 || true
+  # No published port: exec/logs by name go over vsock, not the network, so this
+  # exercises the name→current-instance resolution without touching a host port.
+  if [[ "$(cli app create "$OAPP" --image "$IMAGE" --restart always --memory 256 2>/dev/null)" == "$OAPP" ]]; then
+    track_app "$OAPP"
+    OINST=""
+    for _ in {1..30}; do
+      OINST="$(curl -s "$BASE_URL/apps/$OAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+      [[ "$OINST" == sbx_* ]] && break
+      sleep 1
+    done
+    if [[ "$OINST" != sbx_* ]]; then
+      skip "app never got an instance for the by-name ops test"
+    else
+      EX="$(cli app exec "$OAPP" -- /bin/sh -c 'echo OPS-EXEC-OK' 2>/dev/null)"
+      if [[ "$EX" == *OPS-EXEC-OK* ]]; then
+        pass "app exec <name> resolved to the current instance and ran"
+        if cli app logs "$OAPP" 2>/dev/null | grep -q 'OPS-EXEC-OK'; then
+          pass "app logs <name> shows the exec activity"
+        else
+          fail "app logs <name> did not show the exec activity"
+        fi
+      else
+        skip "app exec by name unsupported (pre-v0.4.3 daemon?): ${EX:-empty}"
+      fi
+    fi
+    cli app rm "$OAPP" >/dev/null 2>&1
+  else
+    skip "app create for the by-name ops test failed"
   fi
 fi
 
