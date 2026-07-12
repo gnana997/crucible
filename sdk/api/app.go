@@ -64,6 +64,25 @@ type AppSpec struct {
 	// Health is the daemon-side health check; nil means "process alive is
 	// healthy". An instance failing health past its threshold is restarted.
 	Health *HealthCheck `json:"health,omitempty"`
+
+	// Sleep configures scale-to-zero. Nil disables it (today's always-on
+	// behavior). When set, an idle instance is snapshotted and its VMM
+	// stopped — freeing RAM while keeping the app instantly addressable —
+	// then restored in place on the next request (wake).
+	Sleep *SleepPolicy `json:"sleep,omitempty"`
+}
+
+// SleepPolicy configures an app's scale-to-zero behavior.
+type SleepPolicy struct {
+	// IdleTimeoutSec sleeps the instance after this many seconds with no
+	// activity. Zero disables automatic idle-sleep; manual sleep/wake still
+	// works. (Idle detection consumes this; the manual path does not.)
+	IdleTimeoutSec int `json:"idle_timeout_s,omitempty"`
+
+	// MinScale is the minimum number of warm instances. 0 enables
+	// scale-to-zero — the instance may sleep to ~zero RAM. >=1 keeps at
+	// least one instance always running (sleep disabled in practice).
+	MinScale int `json:"min_scale"`
 }
 
 // HealthCheck configures daemon-side probing of an app's instance.
@@ -124,7 +143,8 @@ type AppStatus struct {
 	// failed update (the old instance still serves the previous generation).
 	InstanceGeneration uint64 `json:"instance_generation,omitempty"`
 
-	// Phase is one of: pending, running, unhealthy, crashlooping, stopped.
+	// Phase is one of: pending, running, unhealthy, crashlooping, stopped,
+	// asleep (snapshotted, VMM stopped, ~0 RAM), waking (restore in progress).
 	Phase string `json:"phase"`
 
 	// Health is healthy | unhealthy | unknown (unknown when no probe or
@@ -136,6 +156,15 @@ type AppStatus struct {
 
 	// LastError is the most recent reconcile/boot failure, if any.
 	LastError string `json:"last_error,omitempty"`
+
+	// LastWakeLatencyMs is the most recent wake duration in milliseconds
+	// (from the wake trigger to the instance serving again). Zero until the
+	// app has woken at least once.
+	LastWakeLatencyMs int64 `json:"last_wake_latency_ms,omitempty"`
+
+	// SleepCount is how many sleep cycles this app has been through since the
+	// daemon started.
+	SleepCount int `json:"sleep_count,omitempty"`
 }
 
 // CreateAppRequest is the body of POST /apps.

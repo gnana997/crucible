@@ -58,7 +58,14 @@ type observed struct {
 	instanceID string
 	generation uint64    // spec generation this instance was booted from
 	bootedAt   time.Time // when the current/last instance booted
-	phase      string    // pending | running | unhealthy | crashlooping | stopped
+	phase      string    // pending | running | unhealthy | crashlooping | stopped | asleep | waking
+
+	// Scale-to-zero bookkeeping, set by the Sleep/Wake path (not the
+	// reconciler, which treats asleep/waking as a steady state it must not
+	// disturb). While phase is "asleep" the instance's VMM is stopped but the
+	// sandbox record + snapshot are kept.
+	sleepCount      int
+	lastWakeLatency time.Duration
 
 	// Self-heal bookkeeping.
 	restarts            int
@@ -428,6 +435,16 @@ func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
 	m.obsMu.Unlock()
+
+	// A slept (or mid-wake) app is a steady desired state: its instance is
+	// intentionally gone (snapshotted, VMM stopped) or being restored. The
+	// reconciler must not boot over it, probe it, or count it as a failure —
+	// only an explicit Wake transitions it back to running. This guard has to
+	// come before the boot/redeploy logic below, which would otherwise treat
+	// the missing instance as a crash and cold-boot a replacement.
+	if ob != nil && (ob.phase == "asleep" || ob.phase == "waking") {
+		return
+	}
 
 	// Reap a superseded (draining) instance once its drain window has elapsed.
 	if ob != nil && ob.drainInstanceID != "" && !now.Before(ob.drainUntil) {
@@ -889,6 +906,8 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 			Health:             ob.health,
 			Restarts:           ob.restarts,
 			LastError:          ob.lastErr,
+			LastWakeLatencyMs:  ob.lastWakeLatency.Milliseconds(),
+			SleepCount:         ob.sleepCount,
 		}
 	}
 	return resp
@@ -919,6 +938,16 @@ func validateSpec(spec api.AppSpec) error {
 			}
 		default:
 			return fmt.Errorf("app: unknown health check type %q", hc.Type)
+		}
+	}
+	if sp := spec.Sleep; sp != nil {
+		if sp.IdleTimeoutSec < 0 {
+			return fmt.Errorf("app: sleep idle_timeout_s must be >= 0, got %d", sp.IdleTimeoutSec)
+		}
+		// v0.5.0 sleeps a single instance; multi-instance warm pools (min_scale
+		// > 1) arrive with horizontal scale-out in v0.5.x.
+		if sp.MinScale < 0 || sp.MinScale > 1 {
+			return fmt.Errorf("app: sleep min_scale must be 0 or 1, got %d", sp.MinScale)
 		}
 	}
 	return nil

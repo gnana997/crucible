@@ -61,6 +61,9 @@ func (s *Server) routes() *http.ServeMux {
 	// Config.LogStore is nil.
 	mux.HandleFunc("GET /sandboxes/{id}/logs", s.handleSandboxLogs)
 	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
+	// SPIKE (v0.5.0 B3/B4): in-place sleep/wake de-risk. Experimental.
+	mux.HandleFunc("POST /sandboxes/{id}/sleep", s.handleSpikeSleep)
+	mux.HandleFunc("POST /sandboxes/{id}/wake", s.handleSpikeWake)
 	mux.HandleFunc("GET /snapshots", s.handleListSnapshots)
 	mux.HandleFunc("GET /snapshots/{id}", s.handleGetSnapshot)
 	mux.HandleFunc("DELETE /snapshots/{id}", s.handleDeleteSnapshot)
