@@ -56,6 +56,26 @@
       "pages": [
         "README",
         {
+          "group": "Core concepts",
+          "pages": [
+            "fork",
+            "profiles",
+            "network",
+            "concepts/network-model",
+            "policy",
+            "architecture",
+            "benchmarks"
+          ]
+        },
+        {
+          "group": "Apps",
+          "pages": [
+            "apps",
+            "proxy",
+            "registry"
+          ]
+        },
+        {
           "group": "CLI",
           "pages": [
             "cli",
@@ -64,26 +84,15 @@
             "cli/sandboxes",
             "cli/snapshots",
             "cli/apps",
+            "cli/registry",
             "cli/daemon"
           ]
         },
-        "apps",
-        "tui",
-        "profiles",
-        "policy",
-        "network",
         {
-          "group": "Reference",
+          "group": "Interfaces",
           "pages": [
-            "api",
-            "api/create-sandbox",
-            "api/exec",
-            "api/files",
-            "api/fork",
-            "mcp",
-            "architecture",
-            "concepts/network-model",
-            "benchmarks"
+            "tui",
+            "mcp"
           ]
         },
         {
@@ -93,6 +102,16 @@
             "roadmap"
           ]
         }
+      ]
+    },
+    {
+      "tab": "API",
+      "pages": [
+        "api",
+        "api/create-sandbox",
+        "api/exec",
+        "api/files",
+        "api/fork"
       ]
     },
     {
