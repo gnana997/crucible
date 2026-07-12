@@ -51,7 +51,7 @@ func TestStorePullConvertAndDedup(t *testing.T) {
 	pushImage(t, ref, img)
 
 	s, dir := newTestStore(t)
-	rec, err := s.Pull(t.Context(), ref)
+	rec, err := s.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStorePullConvertAndDedup(t *testing.T) {
 	}
 
 	// Second pull dedupes: same record, no second artifact dir.
-	rec2, err := s.Pull(t.Context(), ref)
+	rec2, err := s.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("second Pull: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 	pushImage(t, ref, img)
 
 	s, dir := newTestStore(t)
-	rec, err := s.Pull(t.Context(), ref)
+	rec, err := s.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestStoreGetResolution(t *testing.T) {
 	pushImage(t, ref, img)
 
 	s, _ := newTestStore(t)
-	rec, err := s.Pull(t.Context(), ref)
+	rec, err := s.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestStoreDelete(t *testing.T) {
 	pushImage(t, ref, img)
 
 	s, _ := newTestStore(t)
-	rec, err := s.Pull(t.Context(), ref)
+	rec, err := s.Pull(t.Context(), ref, nil)
 	if err != nil {
 		t.Fatalf("Pull: %v", err)
 	}

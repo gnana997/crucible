@@ -2286,6 +2286,9 @@
           "pull": {
             "type": "string"
           },
+          "registry_auth": {
+            "$ref": "#/components/schemas/RegistryAuth"
+          },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
           },
@@ -2633,6 +2636,20 @@
         "type": "object",
         "properties": {
           "ref": {
+            "type": "string"
+          },
+          "registry_auth": {
+            "$ref": "#/components/schemas/RegistryAuth"
+          }
+        }
+      },
+      "RegistryAuth": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         }

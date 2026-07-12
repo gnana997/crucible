@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/go-containerregistry/pkg/authn"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -171,9 +172,16 @@ func loadRecord(dir string) (*ImageRecord, error) {
 	return &rec, nil
 }
 
-// Pull fetches and converts a registry image, deduping on digest.
-func (s *Store) Pull(ctx context.Context, ref string) (*ImageRecord, error) {
-	acq, err := Pull(ctx, ref, s.pullOpts...)
+// Pull fetches and converts a registry image, deduping on digest. A non-nil
+// auth is a one-shot credential for this pull only (never stored), taking
+// precedence over the store's keychain.
+func (s *Store) Pull(ctx context.Context, ref string, auth *PullAuth) (*ImageRecord, error) {
+	opts := s.pullOpts
+	if auth != nil {
+		opts = append(append([]PullOption{}, s.pullOpts...),
+			WithAuth(authn.FromConfig(authn.AuthConfig{Username: auth.Username, Password: auth.Secret})))
+	}
+	acq, err := Pull(ctx, ref, opts...)
 	if err != nil {
 		return nil, err
 	}

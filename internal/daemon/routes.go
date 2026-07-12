@@ -262,16 +262,16 @@ func validatePull(p string) (string, error) {
 // miss, "always" re-pulls unconditionally, "never" never touches the
 // network. Get's not-found/ambiguous errors and any pull/convert
 // failure propagate for resolveImage to map to a status code.
-func (s *Server) acquireImage(ctx context.Context, ref, pull string) (*oci.ImageRecord, error) {
+func (s *Server) acquireImage(ctx context.Context, ref, pull string, auth *oci.PullAuth) (*oci.ImageRecord, error) {
 	switch pull {
 	case pullAlways:
-		return s.cfg.Images.Pull(ctx, ref)
+		return s.cfg.Images.Pull(ctx, ref, auth)
 	case pullNever:
 		return s.cfg.Images.Get(ref)
 	default: // pullMissing (and the empty value, normalized by validatePull)
 		rec, err := s.cfg.Images.Get(ref)
 		if errors.Is(err, oci.ErrImageNotFound) {
-			return s.cfg.Images.Pull(ctx, ref)
+			return s.cfg.Images.Pull(ctx, ref, auth)
 		}
 		return rec, err
 	}
@@ -285,7 +285,7 @@ func (s *Server) acquireImage(ctx context.Context, ref, pull string) (*oci.Image
 // unset for the caller to fill. Shared by handleCreateSandbox and the app
 // instantiator so an app boots through the exact same path a `create` does.
 func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRequest, pull string) (sandbox.CreateConfig, *imageErr) {
-	imgRec, imgBootArgs, ierr := s.resolveImage(ctx, req.Image, pull)
+	imgRec, imgBootArgs, ierr := s.resolveImage(ctx, req.Image, pull, toPullAuth(req.RegistryAuth))
 	if ierr != nil {
 		return sandbox.CreateConfig{}, ierr
 	}
@@ -367,7 +367,7 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 // `create --image nginx:alpine` Just Works like `docker run`. No image
 // → (nil, "", nil). A path override is still unimplemented. Exactly one
 // of Path/OCI must be set.
-func (s *Server) resolveImage(ctx context.Context, ref *api.ImageRef, pull string) (rec *oci.ImageRecord, bootArgs string, ierr *imageErr) {
+func (s *Server) resolveImage(ctx context.Context, ref *api.ImageRef, pull string, auth *oci.PullAuth) (rec *oci.ImageRecord, bootArgs string, ierr *imageErr) {
 	if ref == nil {
 		return nil, "", nil
 	}
@@ -385,7 +385,7 @@ func (s *Server) resolveImage(ctx context.Context, ref *api.ImageRef, pull strin
 	if s.cfg.Images == nil {
 		return nil, "", &imageErr{http.StatusNotImplemented, errors.New("image support is not enabled on this daemon (set --image-dir)")}
 	}
-	rec, err := s.acquireImage(ctx, ref.OCI, pull)
+	rec, err := s.acquireImage(ctx, ref.OCI, pull, auth)
 	if err != nil {
 		switch {
 		case errors.Is(err, oci.ErrImageNotFound):

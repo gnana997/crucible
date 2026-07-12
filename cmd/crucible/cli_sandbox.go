@@ -39,6 +39,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		netFullEgress          bool
 		publish                []string
 		publishAll             bool
+		registryAuth           string
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -60,6 +61,11 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 				}
 				req.Image = &api.ImageRef{OCI: ref}
 				req.Pull = effPull
+				ra, err := parseRegistryAuth(registryAuth)
+				if err != nil {
+					return err
+				}
+				req.RegistryAuth = ra
 			}
 			req.Network = buildNetworkRequest(netAllow, netAllowCIDR, netFullEgress)
 			for _, p := range publish {
@@ -87,6 +93,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile (e.g. python-3.12)")
 	cmd.Flags().StringVar(&image, "image", "", "boot from an image: a converted digest/ref, a local docker tag (auto-imported), or a registry ref (auto-pulled)")
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing (default), always, or never")
+	cmd.Flags().StringVar(&registryAuth, "registry-auth", "", "one-shot USER:SECRET to pull a private image (never stored; env CRUCIBLE_REGISTRY_AUTH; prefer `registry login`)")
 	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G or 512M (default: template headroom)")
 	cmd.Flags().StringSliceVar(&netAllow, "net-allow", nil, "allowlisted hostname (repeatable); enables networking")
 	cmd.Flags().StringArrayVar(&netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")

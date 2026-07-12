@@ -31,3 +31,13 @@ type RegistryCredential struct {
 type RegistryCredentialListResponse struct {
 	Registries []RegistryCredential `json:"registries"`
 }
+
+// RegistryAuth is a one-shot credential for pulling a single image reference
+// (the run/create `--registry-auth` path). Unlike a stored credential it is used
+// for that pull only and never persisted; the registry is implied by the ref,
+// and it takes precedence over any stored credential for that pull. Prefer
+// `crucible registry login` for anything durable (an app re-pulls without it).
+type RegistryAuth struct {
+	Username string `json:"username,omitempty"`
+	Secret   string `json:"secret"`
+}

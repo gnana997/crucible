@@ -41,12 +41,26 @@ type PullOption func(*pullConfig)
 type pullConfig struct {
 	nameOpts []name.Option
 	keychain authn.Keychain
+	auth     authn.Authenticator
+}
+
+// PullAuth is a one-shot credential for a single pull (the per-request
+// `--registry-auth` path): the registry is implied by the ref being pulled.
+type PullAuth struct {
+	Username string
+	Secret   string
 }
 
 // WithInsecureRegistry allows plain-HTTP registries. Used by tests
 // against in-process registries; also the knob for LAN registries.
 func WithInsecureRegistry() PullOption {
 	return func(c *pullConfig) { c.nameOpts = append(c.nameOpts, name.Insecure) }
+}
+
+// WithAuth pins a single authenticator for this pull, taking precedence over any
+// keychain — the per-request private-registry path.
+func WithAuth(a authn.Authenticator) PullOption {
+	return func(c *pullConfig) { c.auth = a }
 }
 
 // WithKeychain resolves per-registry credentials at pull time (the private-
@@ -72,8 +86,13 @@ func Pull(ctx context.Context, ref string, opts ...PullOption) (*Acquired, error
 		return nil, fmt.Errorf("oci: parse reference %q: %w", ref, err)
 	}
 
+	// Precedence: an explicit per-request authenticator > the store keychain >
+	// anonymous. So a one-shot --registry-auth overrides a stored credential.
 	authOpt := remote.WithAuth(authn.Anonymous)
-	if cfg.keychain != nil {
+	switch {
+	case cfg.auth != nil:
+		authOpt = remote.WithAuth(cfg.auth)
+	case cfg.keychain != nil:
 		authOpt = remote.WithAuthFromKeychain(cfg.keychain)
 	}
 	img, err := remote.Image(parsed,

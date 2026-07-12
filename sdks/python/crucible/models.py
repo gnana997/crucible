@@ -116,8 +116,9 @@ class ProfilesResponse(BaseModel):
     profiles: list[str] | None = None
 
 
-class PullImageRequest(BaseModel):
-    ref: str | None = None
+class RegistryAuth(BaseModel):
+    secret: str | None = None
+    username: str | None = None
 
 
 class RegistryCredential(BaseModel):
@@ -264,6 +265,7 @@ class CreateSandboxRequest(BaseModel):
     publish: list[PortMapping] | None = None
     publish_all: bool | None = None
     pull: str | None = None
+    registry_auth: RegistryAuth | None = None
     service: WireServiceSpec | None = None
     timeout_s: int | None = None
     vcpus: int | None = None
@@ -284,6 +286,11 @@ class ImageListResponse(BaseModel):
 
 class ListResponse(BaseModel):
     sandboxes: list[SandboxResponse] | None = None
+
+
+class PullImageRequest(BaseModel):
+    ref: str | None = None
+    registry_auth: RegistryAuth | None = None
 
 
 class SnapshotListResponse(BaseModel):

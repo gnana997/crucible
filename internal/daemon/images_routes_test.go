@@ -48,6 +48,7 @@ type fakeImageStore struct {
 	pullErr    error
 	pullRootfs string // RootfsPath stamped on a pulled record (create needs it)
 	lastPull   string
+	lastAuth   *oci.PullAuth // captures the per-request credential passed to Pull
 	imported   []byte
 }
 
@@ -55,10 +56,11 @@ func newFakeImageStore() *fakeImageStore {
 	return &fakeImageStore{images: map[string]*oci.ImageRecord{}}
 }
 
-func (f *fakeImageStore) Pull(_ context.Context, ref string) (*oci.ImageRecord, error) {
+func (f *fakeImageStore) Pull(_ context.Context, ref string, auth *oci.PullAuth) (*oci.ImageRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastPull = ref
+	f.lastAuth = auth
 	if f.pullErr != nil {
 		return nil, f.pullErr
 	}
@@ -137,6 +139,31 @@ func newImageTestServer(t *testing.T, store ImageStore) *httptest.Server {
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts
+}
+
+// TestImagePullPassesPerRequestAuth: a POST /images with registry_auth threads
+// the one-shot credential to Pull; without it, Pull gets nil (store fallback).
+func TestImagePullPassesPerRequestAuth(t *testing.T) {
+	store := newFakeImageStore()
+	ts := newImageTestServer(t, store)
+
+	resp := serviceReq(t, http.MethodPost, ts.URL+"/images",
+		`{"ref":"ghcr.io/org/private:1","registry_auth":{"username":"alice","secret":"tok"}}`)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("pull = %d", resp.StatusCode)
+	}
+	if store.lastAuth == nil || store.lastAuth.Username != "alice" || store.lastAuth.Secret != "tok" {
+		t.Fatalf("per-request auth not passed to Pull: %+v", store.lastAuth)
+	}
+
+	store2 := newFakeImageStore()
+	ts2 := newImageTestServer(t, store2)
+	r2 := serviceReq(t, http.MethodPost, ts2.URL+"/images", `{"ref":"nginx:latest"}`)
+	_ = r2.Body.Close()
+	if store2.lastAuth != nil {
+		t.Errorf("no-auth pull passed %+v to Pull, want nil", store2.lastAuth)
+	}
 }
 
 func TestImageRoutesPullAndList(t *testing.T) {

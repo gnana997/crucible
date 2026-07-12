@@ -625,6 +625,7 @@ export interface components {
             publish?: components["schemas"]["PortMapping"][];
             publish_all?: boolean;
             pull?: string;
+            registry_auth?: components["schemas"]["RegistryAuth"];
             service?: components["schemas"]["WireServiceSpec"];
             timeout_s?: number;
             vcpus?: number;
@@ -733,6 +734,11 @@ export interface components {
         };
         PullImageRequest: {
             ref?: string;
+            registry_auth?: components["schemas"]["RegistryAuth"];
+        };
+        RegistryAuth: {
+            secret?: string;
+            username?: string;
         };
         RegistryCredential: {
             /** Format: date-time */

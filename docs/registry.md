@@ -16,6 +16,13 @@ credential, no human in the loop. This is the case the local-docker workaround
 (`docker login` + `docker pull`, then boot the local copy) can't cover — a
 headless or remote daemon re-pulling on its own has no docker to lean on.
 
+For a **one-off** pull that shouldn't be stored (CI, a throwaway `run`), skip
+`login` and pass the credential inline: `run`/`sandbox create` take
+`--registry-auth USER:SECRET` (or the `CRUCIBLE_REGISTRY_AUTH` env var), used for
+that pull only and never persisted. It takes precedence over any stored
+credential for that registry. It does **not** apply to `app create` — an app
+re-pulls on restart with no request present, so a durable app needs `login`.
+
 ```bash
 echo "$TOKEN" | crucible registry login ghcr.io -u my-user --password-stdin
 crucible run ghcr.io/my-user/private-app:latest        # now authenticates

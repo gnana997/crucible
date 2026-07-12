@@ -9,7 +9,33 @@ import (
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
+
+	"github.com/gnana997/crucible/sdk/api"
 )
+
+// parseRegistryAuth builds a one-shot pull credential from a "USER:SECRET"
+// value (`--registry-auth`), falling back to the CRUCIBLE_REGISTRY_AUTH env var.
+// Empty (and no env) yields nil — the daemon uses its stored credentials. Use
+// ":SECRET" for a token-only registry. The secret keeps any colons after the
+// first. This is for one-off/CI pulls and is never stored; prefer `registry
+// login` for anything durable (an app re-pulls without it).
+func parseRegistryAuth(flag string) (*api.RegistryAuth, error) {
+	v := flag
+	if v == "" {
+		v = os.Getenv("CRUCIBLE_REGISTRY_AUTH")
+	}
+	if v == "" {
+		return nil, nil
+	}
+	user, secret, ok := strings.Cut(v, ":")
+	if !ok {
+		return nil, fmt.Errorf("--registry-auth must be USER:SECRET (use :SECRET for a token-only registry)")
+	}
+	if secret == "" {
+		return nil, fmt.Errorf("--registry-auth: empty secret")
+	}
+	return &api.RegistryAuth{Username: user, Secret: secret}, nil
+}
 
 // newRegistryCmd is the `crucible registry` command group: manage the
 // credentials the daemon uses to pull private images. Credentials live on the

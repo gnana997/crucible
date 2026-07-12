@@ -18,11 +18,20 @@ import (
 // tests hermetic — no real mkfs — and the daemon oblivious to the
 // conversion machinery.
 type ImageStore interface {
-	Pull(ctx context.Context, ref string) (*oci.ImageRecord, error)
+	Pull(ctx context.Context, ref string, auth *oci.PullAuth) (*oci.ImageRecord, error)
 	Import(ctx context.Context, r io.Reader, tag string) (*oci.ImageRecord, error)
 	List() []*oci.ImageRecord
 	Get(ref string) (*oci.ImageRecord, error)
 	Delete(ref string) error
+}
+
+// toPullAuth converts an API one-shot credential to the oci pull auth used for a
+// single pull. Nil in, nil out (fall back to the store keychain / anonymous).
+func toPullAuth(a *api.RegistryAuth) *oci.PullAuth {
+	if a == nil {
+		return nil
+	}
+	return &oci.PullAuth{Username: a.Username, Secret: a.Secret}
 }
 
 // maxImportBody bounds a streamed docker-save upload. Large but finite;
@@ -79,7 +88,7 @@ func (s *Server) handlePullImage(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	rec, err := s.cfg.Images.Pull(r.Context(), req.Ref)
+	rec, err := s.cfg.Images.Pull(r.Context(), req.Ref, toPullAuth(req.RegistryAuth))
 	if err != nil {
 		s.imageError(w, err)
 		return

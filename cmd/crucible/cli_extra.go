@@ -145,6 +145,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 		pull                   string
 		disk                   string
 		keep, rm               bool
+		registryAuth           string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [flags] <image>   |   run [flags] -- <command>...",
@@ -182,6 +183,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 					netAllow: netAllow, netAllowCIDR: netAllowCIDR, netFullEgress: netFullEgress,
 					publish: publish, publishAll: publishAll,
 					pull: pull, rm: rm, diskBytes: diskBytes,
+					registryAuth: registryAuth,
 				})
 			}
 			return runCommand(cmd, o, args, runCommandOpts{
@@ -202,6 +204,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
 	cmd.Flags().StringVar(&pull, "pull", "", "image pull policy: missing|always|never (image mode)")
 	cmd.Flags().StringVar(&disk, "disk", "", "grow the writable rootfs to this size, e.g. 2G (image mode)")
+	cmd.Flags().StringVar(&registryAuth, "registry-auth", "", "one-shot USER:SECRET to pull a private image (never stored; env CRUCIBLE_REGISTRY_AUTH; prefer `registry login`)")
 	cmd.Flags().BoolVar(&rm, "rm", false, "tail logs in the foreground and remove the sandbox on detach (image mode)")
 	// command mode
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile, e.g. python-3.12 (command mode)")
@@ -252,6 +255,7 @@ type runImageOpts struct {
 	pull                   string
 	diskBytes              int64
 	rm                     bool
+	registryAuth           string
 }
 
 // runImage is the docker-parity path: acquire the image (local Docker or the
@@ -267,9 +271,14 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 	if err != nil {
 		return err
 	}
+	regAuth, err := parseRegistryAuth(opts.registryAuth)
+	if err != nil {
+		return err
+	}
 	req := api.CreateSandboxRequest{
 		VCPUs: opts.vcpus, MemoryMiB: opts.memory, TimeoutSec: opts.timeout,
 		Image: &api.ImageRef{OCI: ref}, Pull: effPull, DiskBytes: opts.diskBytes,
+		RegistryAuth: regAuth,
 	}
 	req.Network = buildNetworkRequest(opts.netAllow, opts.netAllowCIDR, opts.netFullEgress)
 	for _, p := range opts.publish {

@@ -99,7 +99,9 @@ func (a appInstantiator) ImageHealth(ctx context.Context, spec api.AppSpec) (*ap
 	if spec.Image == nil || spec.Image.OCI == "" {
 		return nil, nil
 	}
-	rec, _, ierr := a.s.resolveImage(ctx, spec.Image, pullMissing)
+	// Apps use the persistent credential store (they re-pull on restart with no
+	// request present), so no per-request auth here.
+	rec, _, ierr := a.s.resolveImage(ctx, spec.Image, pullMissing, nil)
 	if ierr != nil {
 		return nil, ierr.err
 	}

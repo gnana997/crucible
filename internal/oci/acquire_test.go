@@ -164,6 +164,27 @@ func TestPullWithKeychainBasicAuth(t *testing.T) {
 	}
 }
 
+// TestPullPerRequestAuthOverridesKeychain: a one-shot WithAuth wins over a
+// (wrong) store keychain — the per-request --registry-auth precedence.
+func TestPullPerRequestAuthOverridesKeychain(t *testing.T) {
+	const user, pass = "alice", "s3cret-token"
+	reg := newAuthedRegistry(t, user, pass)
+	ref := reg + "/team/private:latest"
+	img := craftImage(t, "linux", "amd64", v1.Config{})
+	pushImageAuth(t, ref, img, basicKeychain{user, pass})
+
+	got, err := Pull(t.Context(), ref,
+		WithInsecureRegistry(),
+		WithKeychain(basicKeychain{user, "wrong-stored-secret"}),                     // store cred is wrong
+		WithAuth(authn.FromConfig(authn.AuthConfig{Username: user, Password: pass}))) // per-request wins
+	if err != nil {
+		t.Fatalf("per-request auth did not override the keychain: %v", err)
+	}
+	if got.Digest != mustDigest(t, img) {
+		t.Errorf("digest = %s, want %s", got.Digest, mustDigest(t, img))
+	}
+}
+
 func mustDigest(t *testing.T, img v1.Image) string {
 	t.Helper()
 	d, err := img.Digest()

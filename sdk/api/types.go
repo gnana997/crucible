@@ -78,6 +78,12 @@ type CreateSandboxRequest struct {
 	// Image is unset.
 	Pull string `json:"pull,omitempty"`
 
+	// RegistryAuth is an optional one-shot credential for pulling Image from
+	// a private registry (never stored). Overrides any stored credential for
+	// that registry, for this pull only. Ignored when the image is resolved
+	// from the store (no pull) or side-loaded from local docker.
+	RegistryAuth *RegistryAuth `json:"registry_auth,omitempty"`
+
 	// DiskBytes, when > 0, grows this sandbox's writable rootfs to at
 	// least this many bytes. The daemon grows the per-sandbox clone
 	// (truncate + resize2fs) after cloning the template — the cached
@@ -242,6 +248,10 @@ type PullImageRequest struct {
 	// Ref is the image reference to pull (e.g. "nginx:latest",
 	// "ghcr.io/org/app:v1"). Required.
 	Ref string `json:"ref"`
+
+	// RegistryAuth is an optional one-shot credential for this pull only
+	// (never stored). Overrides any stored credential for the ref's registry.
+	RegistryAuth *RegistryAuth `json:"registry_auth,omitempty"`
 }
 
 // ImageResponse describes one converted image in the store.
