@@ -196,6 +196,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/registry/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List registry credentials
+         * @description Lists stored registry credentials as host + username only — never the secret.
+         */
+        get: operations["listRegistryCredentials"];
+        put?: never;
+        /**
+         * Store a private-registry credential
+         * @description Adds or replaces the credential used to pull from a private registry (`crucible registry login`). The secret is write-only — it is never returned by any endpoint. 501 when no credential store is configured.
+         */
+        post: operations["registryLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/registry/credentials/{host}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a registry credential
+         * @description Deletes the stored credential for a registry host (`crucible registry logout`).
+         */
+        delete: operations["registryLogout"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sandboxes": {
         parameters: {
             query?: never;
@@ -689,6 +733,20 @@ export interface components {
         };
         PullImageRequest: {
             ref?: string;
+        };
+        RegistryCredential: {
+            /** Format: date-time */
+            created_at?: string;
+            host?: string;
+            username?: string;
+        };
+        RegistryCredentialListResponse: {
+            registries?: components["schemas"]["RegistryCredential"][] | null;
+        };
+        RegistryCredentialRequest: {
+            host?: string;
+            secret?: string;
+            username?: string;
         };
         SandboxResponse: {
             /** Format: date-time */
@@ -1459,6 +1517,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProfilesResponse"];
+                };
+            };
+        };
+    };
+    listRegistryCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryCredentialListResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    registryLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RegistryCredentialRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    registryLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Registry host, e.g. ghcr.io or index.docker.io. */
+                host: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

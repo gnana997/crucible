@@ -36,6 +36,7 @@ import (
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/policy"
+	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
@@ -135,6 +136,9 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// (like --log-dir) so the sandbox reconcile sweep can't reap it.
 		// Enables the /apps routes + reconcile loop; empty disables apps.
 		appDB = fs.String("app-db", "/var/lib/crucible/apps.db", "bbolt file for durable apps; enables /apps + the reconcile loop when set (must be outside --work-base)")
+
+		// Private-registry credentials (v0.4.4): pull authenticated images.
+		registryStore = fs.String("registry-store", "/var/lib/crucible/registry.json", "credential store for private-registry pulls (`crucible registry login`); enables /registry/credentials. Empty disables it (pulls stay anonymous).")
 
 		// Ingress proxy (v0.4.2): route inbound traffic to an app by name.
 		proxyListen    = fs.String("proxy-listen", "", "ingress proxy HTTP listen address (e.g. :80): routes by Host header to an app's current instance. Requires --app-db. Empty disables the HTTP proxy.")
@@ -402,10 +406,18 @@ Required flags:
 	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
 
 	// OCI image store (optional). Enabled by --image-dir; the injected
+	// Private-registry credential store (optional). Empty path disables it —
+	// pulls stay anonymous. Built before the image store so its keychain can be
+	// wired into pulls.
+	var regStore *registryauth.Store
+	if *registryStore != "" {
+		regStore = registryauth.Open(*registryStore)
+	}
+
 	// agent comes from --agent-bin or the embedded copy.
 	var imageStore daemon.ImageStore
 	if *imageDir != "" {
-		store, serr := buildImageStore(context.Background(), *imageDir, *workBase, *agentBin, logger)
+		store, serr := buildImageStore(context.Background(), *imageDir, *workBase, *agentBin, regStore, logger)
 		if serr != nil {
 			_, _ = fmt.Fprintf(stderr, "error: --image-dir: %v\n", serr)
 			return 2
@@ -427,15 +439,16 @@ Required flags:
 	}
 
 	srv, err := daemon.New(daemon.Config{
-		Manager:    mgr,
-		Addr:       *addr,
-		Logger:     logger,
-		Metrics:    mx,
-		TokenStore: tokens,
-		TLSCert:    *tlsCert,
-		TLSKey:     *tlsKey,
-		Images:     imageStore,
-		LogStore:   logStore,
+		Manager:       mgr,
+		Addr:          *addr,
+		Logger:        logger,
+		Metrics:       mx,
+		TokenStore:    tokens,
+		TLSCert:       *tlsCert,
+		TLSKey:        *tlsKey,
+		Images:        imageStore,
+		LogStore:      logStore,
+		RegistryStore: regStore,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)
@@ -544,7 +557,7 @@ Required flags:
 // inject (--agent-bin, else the embedded copy), probe the host mkfs for
 // tarball support, and open the content-addressed cache. imageDir must
 // not sit inside workBase — the sandbox reconcile sweep would reap it.
-func buildImageStore(ctx context.Context, imageDir, workBase, agentBin string, logger *slog.Logger) (*oci.Store, error) {
+func buildImageStore(ctx context.Context, imageDir, workBase, agentBin string, regStore *registryauth.Store, logger *slog.Logger) (*oci.Store, error) {
 	absImg, err := filepath.Abs(imageDir)
 	if err != nil {
 		return nil, err
@@ -568,7 +581,13 @@ func buildImageStore(ctx context.Context, imageDir, workBase, agentBin string, l
 	} else {
 		logger.Warn("mkfs.ext4 lacks tarball support; using staging mode for image conversion (upgrade e2fsprogs to >=1.47.1 for the faster, more isolated path)")
 	}
-	return oci.New(oci.StoreConfig{Dir: absImg, Agent: agent, Mode: mode, Logger: logger})
+	// Feed private-registry credentials to pulls when a store is configured;
+	// unknown registries fall back to anonymous, so public pulls are unaffected.
+	var pullOpts []oci.PullOption
+	if regStore != nil {
+		pullOpts = append(pullOpts, oci.WithKeychain(regStore.Keychain()))
+	}
+	return oci.New(oci.StoreConfig{Dir: absImg, Agent: agent, Mode: mode, PullOptions: pullOpts, Logger: logger})
 }
 
 // resolveAgentBinary loads the agent to inject into images: the

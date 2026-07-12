@@ -120,6 +120,22 @@ class PullImageRequest(BaseModel):
     ref: str | None = None
 
 
+class RegistryCredential(BaseModel):
+    created_at: AwareDatetime | None = None
+    host: str | None = None
+    username: str | None = None
+
+
+class RegistryCredentialListResponse(BaseModel):
+    registries: list[RegistryCredential] | None = None
+
+
+class RegistryCredentialRequest(BaseModel):
+    host: str | None = None
+    secret: str | None = None
+    username: str | None = None
+
+
 class SandboxResponse(BaseModel):
     created_at: AwareDatetime | None = None
     id: str | None = None

@@ -44,6 +44,9 @@ type idParam struct {
 type appNameParam struct {
 	Name string `path:"name" description:"App name (a DNS label, e.g. web)."`
 }
+type regHostParam struct {
+	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
+}
 
 // updateAppReq is PUT /apps/{name}: the {name} path param plus the AppSpec body.
 type updateAppReq struct {
@@ -243,6 +246,18 @@ func buildReflector() *openapi3.Reflector {
 		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
 
 	// --- sandboxes ---
+	// --- registry credentials (v0.4.4) ---
+	jsonOp(http.MethodPost, "/registry/credentials", "registryLogin", "registry", "Store a private-registry credential",
+		"Adds or replaces the credential used to pull from a private registry (`crucible registry login`). The "+
+			"secret is write-only — it is never returned by any endpoint. 501 when no credential store is configured.",
+		api.RegistryCredentialRequest{}, nil, http.StatusCreated, http.StatusBadRequest, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/registry/credentials", "listRegistryCredentials", "registry", "List registry credentials",
+		"Lists stored registry credentials as host + username only — never the secret.",
+		nil, api.RegistryCredentialListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/registry/credentials/{host}", "registryLogout", "registry", "Remove a registry credential",
+		"Deletes the stored credential for a registry host (`crucible registry logout`).",
+		regHostParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
+
 	jsonOp(http.MethodPost, "/sandboxes", "createSandbox", "sandboxes", "Create a sandbox",
 		"Boots a Firecracker microVM. All fields are optional; an empty body uses the daemon "+
 			"defaults. `image` boots from a converted OCI image (pulled on demand — see the images "+

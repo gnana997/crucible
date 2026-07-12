@@ -31,6 +31,7 @@ import (
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/logstore"
 	"github.com/gnana997/crucible/internal/metrics"
+	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
 )
@@ -99,6 +100,12 @@ type Config struct {
 	// the daemon reconciles into running instances (v0.4 durability).
 	// Nil makes those routes answer 501.
 	AppManager *app.Manager
+
+	// RegistryStore, when non-nil, enables the /registry/credentials routes
+	// (manage private-registry pull credentials) and feeds those credentials
+	// to image pulls. Nil makes those routes answer 501 and pulls stay
+	// anonymous.
+	RegistryStore *registryauth.Store
 }
 
 const (

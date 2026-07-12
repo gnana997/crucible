@@ -28,7 +28,7 @@
 #   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, and a guest kernel — opt-in, checksum-verified
 #   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
 #   --no-proxy          (daemon) don't enable the ingress proxy (reach apps by name) by default
-#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --network-egress-iface / proxy flags to an existing config
+#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --registry-store / --network-egress-iface / proxy flags to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
 #   --token-name NAME   (daemon) name for --connect-token's key (default: remote-client)
 #   --version TAG       release tag (default: latest; download mode)
@@ -596,9 +596,10 @@ seed_proxy_flags() {
 apply_config_flags() {
     local cfg="$1" changed=0
     local egress; egress="$(ip -4 route show default 2>/dev/null | awk '/default/ {print $5; exit}')"
-    add_cfg_flag "$cfg" "--image-dir" "$STATEDIR/images" && changed=1
-    add_cfg_flag "$cfg" "--log-dir"   "$STATEDIR/logs"   && changed=1
-    add_cfg_flag "$cfg" "--app-db"    "$STATEDIR/apps.db" && changed=1
+    add_cfg_flag "$cfg" "--image-dir"      "$STATEDIR/images" && changed=1
+    add_cfg_flag "$cfg" "--log-dir"        "$STATEDIR/logs"   && changed=1
+    add_cfg_flag "$cfg" "--app-db"         "$STATEDIR/apps.db" && changed=1
+    add_cfg_flag "$cfg" "--registry-store" "$STATEDIR/registry.json" && changed=1
     [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && { add_cfg_flag "$cfg" "--network-egress-iface" "$egress" && changed=1; }
     seed_proxy_flags "$cfg" && changed=1
     return $changed

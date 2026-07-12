@@ -80,6 +80,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /apps/{name}/logs", s.handleAppLogs)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
+	// Private-registry credentials (v0.4.4): manage the creds used for image
+	// pulls. The secret is write-only; GET/DELETE never return it.
+	mux.HandleFunc("POST /registry/credentials", s.handleRegistryLogin)
+	mux.HandleFunc("GET /registry/credentials", s.handleRegistryList)
+	mux.HandleFunc("DELETE /registry/credentials/{host}", s.handleRegistryLogout)
+
 	mux.HandleFunc("POST /images", s.handlePullImage)
 	mux.HandleFunc("POST /images/import", s.handleImportImage)
 	mux.HandleFunc("GET /images", s.handleListImages)

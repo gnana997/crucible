@@ -801,6 +801,127 @@
         }
       }
     },
+    "/registry/credentials": {
+      "get": {
+        "tags": [
+          "registry"
+        ],
+        "summary": "List registry credentials",
+        "description": "Lists stored registry credentials as host + username only — never the secret.",
+        "operationId": "listRegistryCredentials",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryCredentialListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "registry"
+        ],
+        "summary": "Store a private-registry credential",
+        "description": "Adds or replaces the credential used to pull from a private registry (`crucible registry login`). The secret is write-only — it is never returned by any endpoint. 501 when no credential store is configured.",
+        "operationId": "registryLogin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistryCredentialRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/registry/credentials/{host}": {
+      "delete": {
+        "tags": [
+          "registry"
+        ],
+        "summary": "Remove a registry credential",
+        "description": "Deletes the stored credential for a registry host (`crucible registry logout`).",
+        "operationId": "registryLogout",
+        "parameters": [
+          {
+            "name": "host",
+            "in": "path",
+            "description": "Registry host, e.g. ghcr.io or index.docker.io.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Registry host, e.g. ghcr.io or index.docker.io."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes": {
       "get": {
         "tags": [
@@ -2512,6 +2633,47 @@
         "type": "object",
         "properties": {
           "ref": {
+            "type": "string"
+          }
+        }
+      },
+      "RegistryCredential": {
+        "type": "object",
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "host": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "RegistryCredentialListResponse": {
+        "type": "object",
+        "properties": {
+          "registries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryCredential"
+            },
+            "nullable": true
+          }
+        }
+      },
+      "RegistryCredentialRequest": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "secret": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         }

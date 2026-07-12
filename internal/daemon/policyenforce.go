@@ -64,6 +64,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		}
 		return policy.OpRead, true
 	case http.MethodDelete:
+		// Removing a registry credential is credential management, not a
+		// resource delete — gate it like adding one.
+		if strings.HasPrefix(path, "/registry/credentials") {
+			return policy.OpRegistry, true
+		}
 		return policy.OpDelete, true
 	case http.MethodPut:
 		// PUT /sandboxes/{id}/service configures what runs in the guest —
@@ -83,6 +88,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// Creating an app configures an entrypoint the daemon runs — exec-grade.
 		case path == "/apps":
 			return policy.OpExec, true
+		// Storing a registry credential is credential management.
+		case path == "/registry/credentials":
+			return policy.OpRegistry, true
 		// Image pull/import provision a bootable rootfs — create-grade.
 		case path == "/images" || path == "/images/import":
 			return policy.OpCreate, true
