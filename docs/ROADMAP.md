@@ -69,7 +69,7 @@ The minimal usable thing: boot a sandbox, run a command inside it, get a structu
 Turn a durable app from *survivable* into *deployable*: real config and real egress, across `app create`, `run`, and `sandbox create`.
 
 - [x] **App env** — `-e/--env KEY=VALUE` delivered to the entrypoint (image `ENV` < your `--env`).
-- [x] **Real egress (A6)** — `--net-full-egress` (reach any public host) and `--net-allow-cidr 203.0.113.0/24` (public IP literals) for a workload you deploy yourself. **Public-hosts-only, no exceptions** — metadata/link-local/RFC1918/CGNAT/reserved are always dropped (the nft guard is unit-tested to agree with the DNS-layer SSRF filter), gated by a `net_full_egress` scoped-token grant.
+- [x] **Real egress** — `--net-full-egress` (reach any public host) and `--net-allow-cidr 203.0.113.0/24` (public IP literals) for a workload you deploy yourself. **Public-hosts-only, no exceptions** — metadata/link-local/RFC1918/CGNAT/reserved are always dropped (the nft guard is unit-tested to agree with the DNS-layer SSRF filter), gated by a `net_full_egress` scoped-token grant.
 - [x] **Exec health checks** — `--health-cmd '<command>'` runs a command in the guest (exit 0 = healthy), joining http/tcp.
 - [x] **Publish declared ports** — `-P/--publish-all` publishes every port the image `EXPOSE`s (guest N → host N).
 
@@ -124,12 +124,21 @@ The app model, its front door, zero-downtime updates, operate-by-name, private-r
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
 - • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
 
-### v0.5.x — Observability and debugging
+### v0.5.x — Scale out & observability
 
-The scale-to-zero fast-follow: turn the per-exec records into first-class, exportable telemetry.
+The scale-to-zero fast-follow, in two parts: first generalize the wake path from 0→1 into 0→N, then make the savings and behavior visible.
 
-- • **OpenTelemetry export.** Every lifecycle event, exec, and snapshot as OTel spans with stable semantic conventions; OTLP to Jaeger / Tempo / Datadog / Honeycomb / Grafana.
-- • **Prometheus histograms.** Proper latency histograms on the `/metrics` endpoint, plus reference Grafana dashboards as code.
+**Scale out** — the other half of the headline:
+
+- • **Multiple instances behind the proxy.** Run N copies of an app with round-robin / least-connection load balancing. Fork stamps each warm instance from a snapshot, so scaling up is cheap — a better cold-scale story than copying a full VM.
+- • **Autoscaling.** Scale on request rate / concurrency between a `min` (which may be **0**, unifying with scale-to-zero) and a `max` — so autoscale-from-zero is just "scale 0→N" on top of the wake primitive that already ships.
+- • **Private inter-app networking.** An `app.internal` DNS zone so one app can reach another (a service → its database app) over the existing DNS proxy, plus per-app egress allowlists (CIDR/port) for real multi-service deployments.
+
+**Observability** — first-class, exportable telemetry (v0.5.0 ships only the wake-latency / sleep-count slice):
+
+- • **Per-app request metrics.** RPS, latency percentiles, and error rates per app on `/metrics`, plus reference Grafana dashboards as code.
+- • **OpenTelemetry export.** Every lifecycle event, exec, snapshot, and sleep/wake as OTel spans with stable semantic conventions; OTLP to Jaeger / Tempo / Datadog / Honeycomb / Grafana.
+- • **Metering.** vCPU-seconds and RAM-GiB-hours that count slept time at ~0 — the economic proof that scale-to-zero actually saves.
 - • **Syscall tracing.** Optional per-sandbox syscall log via ptrace or eBPF — expensive to enable, valuable when you need to know exactly what an agent's code did.
 - • **Filesystem diff.** `crucible fs diff sbx_…` shows every file created, modified, or deleted vs. the starting rootfs.
 - • **Record and replay.** Capture a full execution trace (stdin/stdout, env, filesystem writes, network bytes) and replay it deterministically in a new sandbox.
