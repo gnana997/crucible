@@ -44,10 +44,13 @@ type InstanceLookup interface {
 	GuestIP(instanceID string) (string, bool)
 }
 
-// Target is a resolved upstream: the guest IP and port to dial.
+// Target is a resolved upstream: one instance's guest IP and port to dial.
+// InstanceID identifies the instance so the load balancer can key per-instance
+// state (in-flight count, ejection) — zero for a single-instance resolve.
 type Target struct {
-	GuestIP string
-	Port    int
+	InstanceID string
+	GuestIP    string
+	Port       int
 }
 
 // Resolver maps a request hostname → the current instance of the named app.
@@ -139,6 +142,58 @@ func (r *Resolver) Resolve(host string) (Target, error) {
 // handler (which knows the calling guest), not here.
 func (r *Resolver) ResolveInternal(host string) (Target, error) {
 	return r.resolve(r.AppNameInternal(host))
+}
+
+// ResolveSet maps an external request host to the app's full endpoint set — the
+// live guest IP:port of every running instance (primary + replicas) — for the
+// load balancer to pick from. Same phase semantics as Resolve (ErrAsleep for a
+// slept/waking app, ErrNoInstance when nothing is ready). Not cached: it reads
+// the app's own instances, so there's no cross-tenant /30-reuse window.
+func (r *Resolver) ResolveSet(host string) ([]Target, error) {
+	return r.resolveSet(r.AppName(host))
+}
+
+// ResolveSetInternal is ResolveSet for an app→app host in the internal zone.
+func (r *Resolver) ResolveSetInternal(host string) ([]Target, error) {
+	return r.resolveSet(r.AppNameInternal(host))
+}
+
+func (r *Resolver) resolveSet(name string) ([]Target, error) {
+	if name == "" {
+		return nil, ErrNoRoute
+	}
+	resp, err := r.apps.GetByName(name)
+	if err != nil {
+		return nil, ErrNoRoute
+	}
+	if resp.Status == nil {
+		return nil, ErrNoInstance
+	}
+	switch resp.Status.Phase {
+	case "asleep", "waking":
+		return nil, ErrAsleep
+	case "running":
+		// routable
+	default:
+		return nil, ErrNoInstance
+	}
+	port := resp.Port
+	if port == 0 {
+		port = firstPublishGuestPort(resp.Publish)
+	}
+	if port <= 0 {
+		return nil, ErrNoRoute
+	}
+	set := make([]Target, 0, len(resp.Status.Instances))
+	for _, in := range resp.Status.Instances {
+		if ip, live := r.instances.GuestIP(in.InstanceID); live && ip != "" {
+			set = append(set, Target{InstanceID: in.InstanceID, GuestIP: ip, Port: port})
+		}
+	}
+	if len(set) == 0 {
+		return nil, ErrNoInstance // running but no live instance IP yet
+	}
+	return set, nil
 }
 
 // resolve maps an already-extracted app name to its current instance target.

@@ -33,6 +33,9 @@ func runningApp(name string, port int, instance string, publish ...api.PortMappi
 	r.Port = port
 	r.Publish = publish
 	r.Status = &api.AppStatus{InstanceID: instance, Phase: "running"}
+	if instance != "" {
+		r.Status.Instances = []api.InstanceStatus{{InstanceID: instance}}
+	}
 	return r
 }
 

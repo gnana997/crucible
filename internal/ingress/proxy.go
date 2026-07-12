@@ -84,6 +84,7 @@ type Proxy struct {
 	internalListen string
 
 	authz       CallerAuthorizer // app→app authorization; nil = deny internal
+	balancer    *Balancer        // picks an instance from an app's endpoint set
 	rp          *httputil.ReverseProxy
 	httpSrv     *http.Server
 	internalSrv *http.Server
@@ -109,6 +110,7 @@ func New(cfg Config) *Proxy {
 		tlsListen:      cfg.TLSListen,
 		internalListen: cfg.InternalListen,
 		authz:          cfg.InternalAuthz,
+		balancer:       NewBalancer(),
 		tlsSem:         make(chan struct{}, maxTLSConns),
 	}
 	if cfg.Waker != nil {
@@ -127,6 +129,11 @@ func New(cfg Config) *Proxy {
 			pr.SetXForwarded()
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// Feed passive outlier detection: a dial/upstream failure counts
+			// against the instance we picked, ejecting it after repeated failures.
+			if tg, ok := r.Context().Value(targetKey{}).(Target); ok {
+				p.balancer.Fail(tg.InstanceID)
+			}
 			p.log.Warn("ingress: upstream error", "host", r.Host, "err", err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
@@ -144,9 +151,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the external proxy domain; the two share the ReverseProxy, wake path, and
 // activity tracking. Unknown host → 404; app with no ready instance → 502.
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
-	resolve, appName := p.resolver.Resolve, p.resolver.AppName
+	resolveSet, appName := p.resolver.ResolveSet, p.resolver.AppName
 	if internal {
-		resolve, appName = p.resolver.ResolveInternal, p.resolver.AppNameInternal
+		resolveSet, appName = p.resolver.ResolveSetInternal, p.resolver.AppNameInternal
 		// Authorize BEFORE resolve/wake so an unauthorized call never wakes the
 		// callee. A denied or unknown caller gets 403; an out-of-zone host, 404.
 		if !p.authorizeInternal(w, r, appName(r.Host)) {
@@ -156,11 +163,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 			p.onInternal()
 		}
 	}
-	tg, err := resolve(r.Host)
+	set, err := resolveSet(r.Host)
 	if errors.Is(err, ErrAsleep) && p.coord != nil {
 		// Slept app: wake it (coalesced across a herd) and re-resolve, holding
 		// this request in the blocked goroutine until it is running.
-		tg, err = p.wakeAndResolve(r.Context(), r.Host, internal)
+		set, err = p.wakeAndResolve(r.Context(), r.Host, internal)
 	}
 	if err != nil {
 		switch {
@@ -174,6 +181,10 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 		}
 		return
 	}
+	// Balance across the app's endpoint set (P2C least-request); release the
+	// in-flight count when the request completes.
+	tg, release := p.balancer.Pick(set)
+	defer release()
 	if p.activity != nil {
 		name := appName(r.Host)
 		p.activity.begin(name)
@@ -215,22 +226,22 @@ func (p *Proxy) authorizeInternal(w http.ResponseWriter, r *http.Request, target
 // timed-out wake → the app is still asleep → ErrAsleep (→ 503 upstream); and the
 // "someone else already woke it" race resolves straight to a running Target.
 // On a successful wake it reports the observed latency via onWake.
-func (p *Proxy) wakeAndResolve(ctx context.Context, host string, internal bool) (Target, error) {
-	resolve, appName := p.resolver.Resolve, p.resolver.AppName
+func (p *Proxy) wakeAndResolve(ctx context.Context, host string, internal bool) ([]Target, error) {
+	resolveSet, appName := p.resolver.ResolveSet, p.resolver.AppName
 	if internal {
-		resolve, appName = p.resolver.ResolveInternal, p.resolver.AppNameInternal
+		resolveSet, appName = p.resolver.ResolveSetInternal, p.resolver.AppNameInternal
 	}
 	name := appName(host)
 	if name == "" {
-		return Target{}, ErrNoRoute
+		return nil, ErrNoRoute
 	}
 	start := time.Now()
 	_ = p.coord.wake(ctx, name)
-	tg, err := resolve(host)
+	set, err := resolveSet(host)
 	if err == nil && p.onWake != nil {
 		p.onWake(time.Since(start))
 	}
-	return tg, err
+	return set, err
 }
 
 // Start binds the configured listeners and serves them in the background.
@@ -348,20 +359,23 @@ func (p *Proxy) handleSNI(conn net.Conn) {
 		p.log.Debug("ingress: sni peek", "err", err)
 		return
 	}
-	tg, err := p.resolver.Resolve(sni)
+	set, err := p.resolver.ResolveSet(sni)
 	if errors.Is(err, ErrAsleep) && p.coord != nil {
 		// Raw TCP has no request context; bound the wake so a stuck restore
 		// can't pin this connection (and its tlsSem slot) indefinitely.
 		wctx, cancel := context.WithTimeout(context.Background(), defaultWakeTimeout)
-		tg, err = p.wakeAndResolve(wctx, sni, false)
+		set, err = p.wakeAndResolve(wctx, sni, false)
 		cancel()
 	}
 	if err != nil {
 		p.log.Debug("ingress: sni no route", "sni", sni, "err", err)
 		return
 	}
+	tg, release := p.balancer.Pick(set)
+	defer release()
 	up, err := net.DialTimeout("tcp", net.JoinHostPort(tg.GuestIP, strconv.Itoa(tg.Port)), dialTimeout)
 	if err != nil {
+		p.balancer.Fail(tg.InstanceID)
 		p.log.Warn("ingress: sni upstream dial", "sni", sni, "err", err)
 		return
 	}

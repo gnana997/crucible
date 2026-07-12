@@ -32,6 +32,9 @@ func (a *wakingApps) GetByName(name string) (api.AppResponse, error) {
 	r.Name = name
 	r.Port = a.port
 	r.Status = &api.AppStatus{InstanceID: a.instance, Phase: a.phase}
+	if a.instance != "" {
+		r.Status.Instances = []api.InstanceStatus{{InstanceID: a.instance}}
+	}
 	return r, nil
 }
 func (a *wakingApps) wakeToRunning() {
