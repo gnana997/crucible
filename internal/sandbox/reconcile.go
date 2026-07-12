@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 )
@@ -126,14 +127,33 @@ func (m *Manager) snapshotFromRecord(r snapshotRecord) *Snapshot {
 		StaticNetwork: r.StaticNetwork,
 		CreatedAt:     r.CreatedAt,
 	}
-	if len(r.NetworkPatterns) > 0 && m.cfg.ReloadAllowlist != nil {
+	// Reconstruct the network intent whenever the source was networked — a
+	// default-deny sandbox is networked with ZERO patterns, so keying on the
+	// Networked flag (not pattern count) is what lets a slept, proxy-fronted app
+	// (empty allowlist) wake from a restart-adopted snapshot with a working NIC.
+	if r.Networked && m.cfg.ReloadAllowlist != nil {
 		al, err := m.cfg.ReloadAllowlist(r.NetworkPatterns)
 		if err != nil {
 			slog.Default().Warn("rebuild snapshot allowlist failed; networked forks from it will need the allowlist re-specified",
 				"component", "sandbox", "id", r.ID, "err", err)
 		} else {
-			snap.Network = &NetworkConfig{Allowlist: al}
+			snap.Network = &NetworkConfig{Allowlist: al, FullEgress: r.FullEgress, CIDRs: parseCIDRs(r.NetworkCIDRs)}
 		}
 	}
 	return snap
+}
+
+// parseCIDRs turns persisted CIDR strings back into prefixes, dropping any that
+// no longer parse (forward-compatible; a bad entry shouldn't fail re-adoption).
+func parseCIDRs(ss []string) []netip.Prefix {
+	if len(ss) == 0 {
+		return nil
+	}
+	out := make([]netip.Prefix, 0, len(ss))
+	for _, s := range ss {
+		if p, err := netip.ParsePrefix(s); err == nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }

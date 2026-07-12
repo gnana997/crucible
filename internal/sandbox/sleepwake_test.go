@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,7 +27,7 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	}
 
 	// --- Sleep -------------------------------------------------------------
-	if err := m.SleepInPlace(ctx, s.ID); err != nil {
+	if _, err := m.SleepInPlace(ctx, s.ID); err != nil {
 		t.Fatalf("SleepInPlace: %v", err)
 	}
 	if s.asleep == nil {
@@ -79,11 +80,12 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSleepUsesFreshDirAndGCsPrevious guards the fix for the jailer-EACCES bug:
-// every sleep must write a FRESH snapshot dir (reusing one path fails on the
-// second sleep after a wake), and the previous dir is reclaimed so exactly one
-// snapshot is kept per instance.
-func TestSleepUsesFreshDirAndGCsPrevious(t *testing.T) {
+// TestSleepRegistersDurableSnapshotAndGCs covers S8's durability model: each
+// sleep registers a DURABLE snapshot (so a slept app survives a daemon restart
+// via re-adoption); an in-place wake KEEPS that snapshot (it backs the woken
+// VM's lazy memory); the next sleep supersedes and GCs it; and Delete reclaims
+// the backing snapshot. Exactly one snapshot is kept per instance.
+func TestSleepRegistersDurableSnapshotAndGCs(t *testing.T) {
 	m, _ := newTestManager(t)
 	ctx := context.Background()
 	s, err := m.Create(ctx, CreateConfig{})
@@ -91,39 +93,52 @@ func TestSleepUsesFreshDirAndGCsPrevious(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := m.SleepInPlace(ctx, s.ID); err != nil {
+	// Sleep → a durable, registered snapshot with real files.
+	if _, err := m.SleepInPlace(ctx, s.ID); err != nil {
 		t.Fatalf("sleep 1: %v", err)
 	}
-	dir1 := s.snapDir
-	if dir1 == "" {
-		t.Fatal("snapDir not set after first sleep")
+	snap1 := s.memSnapshotID
+	if snap1 == "" {
+		t.Fatal("memSnapshotID not set after sleep")
 	}
-	if _, err := os.Stat(dir1); err != nil {
-		t.Fatalf("dir1 missing after sleep: %v", err)
+	if _, err := m.GetSnapshot(snap1); err != nil {
+		t.Fatalf("sleep snapshot not registered: %v", err)
+	}
+	if _, err := os.Stat(s.asleep.statePath); err != nil {
+		t.Fatalf("snapshot state file missing: %v", err)
 	}
 
-	// Wake keeps dir1 — the woken VM's lazy-memory pager reads its memory file.
+	// Wake KEEPS the snapshot — the woken VM's uffd pager reads its memory file.
 	if err := m.WakeInPlace(ctx, s.ID); err != nil {
 		t.Fatalf("wake: %v", err)
 	}
-	if s.snapDir != dir1 {
-		t.Fatalf("wake changed snapDir to %q, want it kept at %q", s.snapDir, dir1)
+	if s.memSnapshotID != snap1 {
+		t.Fatalf("wake changed memSnapshotID to %q, want it kept at %q", s.memSnapshotID, snap1)
 	}
-	if _, err := os.Stat(dir1); err != nil {
-		t.Fatalf("wake removed the live snapshot dir: %v", err)
+	if _, err := m.GetSnapshot(snap1); err != nil {
+		t.Fatalf("wake deleted the backing snapshot: %v", err)
 	}
 
-	// Second sleep → a FRESH dir, and dir1 is GC'd.
-	if err := m.SleepInPlace(ctx, s.ID); err != nil {
+	// Second sleep → a fresh snapshot; the first is GC'd.
+	if _, err := m.SleepInPlace(ctx, s.ID); err != nil {
 		t.Fatalf("sleep 2: %v", err)
 	}
-	if s.snapDir == dir1 {
-		t.Fatal("second sleep reused the same dir (the jailer-EACCES bug)")
+	snap2 := s.memSnapshotID
+	if snap2 == snap1 {
+		t.Fatal("second sleep reused the snapshot id")
 	}
-	if _, err := os.Stat(s.snapDir); err != nil {
-		t.Fatalf("dir2 missing after second sleep: %v", err)
+	if _, err := m.GetSnapshot(snap2); err != nil {
+		t.Fatalf("second snapshot missing: %v", err)
 	}
-	if _, err := os.Stat(dir1); !os.IsNotExist(err) {
-		t.Fatalf("previous snapshot dir not GC'd (stat err=%v)", err)
+	if _, err := m.GetSnapshot(snap1); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("previous snapshot not GC'd (err=%v)", err)
+	}
+
+	// Delete reclaims the backing snapshot (separate dir under WorkBase).
+	if err := m.Delete(ctx, s.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, err := m.GetSnapshot(snap2); !errors.Is(err, ErrSnapshotNotFound) {
+		t.Fatalf("Delete did not GC the backing snapshot (err=%v)", err)
 	}
 }

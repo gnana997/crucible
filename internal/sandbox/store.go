@@ -84,6 +84,15 @@ type snapshotRecord struct {
 	CreatedAt       time.Time `json:"created_at"`
 	NetworkPatterns []string  `json:"network_patterns,omitempty"`
 	StaticNetwork   bool      `json:"static_network,omitempty"`
+
+	// Networked records whether the snapshot's source had a network at all,
+	// independent of NetworkPatterns — a default-deny sandbox is networked but
+	// has zero patterns, so re-adoption must key network reconstruction on this
+	// flag, not on pattern count. FullEgress/NetworkCIDRs carry the rest of the
+	// egress policy so a restart-adopted snapshot re-provisions the same network.
+	Networked    bool     `json:"networked,omitempty"`
+	FullEgress   bool     `json:"full_egress,omitempty"`
+	NetworkCIDRs []string `json:"network_cidrs,omitempty"`
 }
 
 // store is an append-only JSON-lines journal with a fsync per write.
@@ -333,8 +342,15 @@ func snapshotRecordOf(snap *Snapshot) snapshotRecord {
 		CreatedAt:     snap.CreatedAt,
 		StaticNetwork: snap.StaticNetwork,
 	}
-	if snap.Network != nil && snap.Network.Allowlist != nil {
-		r.NetworkPatterns = snap.Network.Allowlist.Patterns()
+	if snap.Network != nil {
+		r.Networked = true
+		r.FullEgress = snap.Network.FullEgress
+		if snap.Network.Allowlist != nil {
+			r.NetworkPatterns = snap.Network.Allowlist.Patterns()
+		}
+		for _, c := range snap.Network.CIDRs {
+			r.NetworkCIDRs = append(r.NetworkCIDRs, c.String())
+		}
 	}
 	return r
 }

@@ -32,6 +32,12 @@ type Record struct {
 	// detect a change that needs a redeploy.
 	Generation uint64 `json:"generation"`
 
+	// AsleepSnapshotID, when non-empty, means the app is asleep (scale-to-zero):
+	// its instance's VMM is stopped and this durable snapshot holds its warm
+	// state. Persisted so a daemon restart re-adopts the app as asleep (and wakes
+	// it from this snapshot) instead of cold-booting. Cleared on wake.
+	AsleepSnapshotID string `json:"asleep_snapshot_id,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

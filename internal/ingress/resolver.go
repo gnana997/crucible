@@ -133,15 +133,22 @@ func (r *Resolver) Resolve(host string) (Target, error) {
 	if err != nil {
 		return Target{}, ErrNoRoute // unknown app (or store error) → no route
 	}
-	if resp.Status == nil || resp.Status.InstanceID == "" {
+	if resp.Status == nil {
 		return Target{}, ErrNoInstance
 	}
+	// Phase is authoritative first: an asleep/waking app is wakeable even with no
+	// instance id — after a daemon restart it is re-adopted asleep with no live
+	// instance, and the wake creates a fresh one. Only "running" needs an
+	// instance to route to.
 	switch resp.Status.Phase {
-	case "running":
-		// routable — fall through
 	case "asleep", "waking":
 		return Target{}, ErrAsleep // wakeable: the proxy triggers a wake
+	case "running":
+		// routable — fall through to the instance lookup
 	default: // pending, crashlooping, stopped
+		return Target{}, ErrNoInstance
+	}
+	if resp.Status.InstanceID == "" {
 		return Target{}, ErrNoInstance
 	}
 	ip, ok := r.instances.GuestIP(resp.Status.InstanceID)

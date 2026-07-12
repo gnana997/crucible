@@ -124,6 +124,15 @@ func TestResolveAsleep(t *testing.T) {
 			t.Errorf("phase %q err = %v, want ErrNoInstance", phase, err)
 		}
 	}
+
+	// S8: a re-adopted asleep app (after a daemon restart) has NO instance id but
+	// is still wakeable → ErrAsleep, not ErrNoInstance.
+	reAdopted := phased("asleep")
+	reAdopted.Status.InstanceID = ""
+	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": reAdopted}}, inst, "apps.local", 0)
+	if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrAsleep) {
+		t.Errorf("re-adopted asleep (no instance id) err = %v, want ErrAsleep", err)
+	}
 }
 
 func TestResolvePortFallback(t *testing.T) {

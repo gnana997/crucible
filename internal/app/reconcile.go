@@ -46,12 +46,25 @@ type Instantiator interface {
 	Destroy(ctx context.Context, instanceID string) error
 
 	// Sleep snapshots the instance and stops its VMM to free RAM while KEEPING
-	// its record + network, so Wake can restore it in place (scale-to-zero).
-	Sleep(ctx context.Context, instanceID string) error
+	// its record + network, so Wake can restore it in place (scale-to-zero). It
+	// returns the id of the durable snapshot captured, which the caller persists
+	// so the slept app survives a daemon restart (re-adopted + woken from it).
+	Sleep(ctx context.Context, instanceID string) (snapshotID string, err error)
 
 	// Wake restores a slept instance in place — same id, netns, and IP —
 	// reseeding its CRNG and stepping its clock.
 	Wake(ctx context.Context, instanceID string) error
+
+	// WakeFromSnapshot restores a slept app's durable snapshot into a FRESH
+	// instance (used after a daemon restart, when the original in-place instance
+	// is gone), returning the new instance id. Identity is preserved (reseed +
+	// clock only); the network is fresh (new IP; the proxy resolves by name).
+	WakeFromSnapshot(ctx context.Context, snapshotID string, spec api.AppSpec) (instanceID string, err error)
+
+	// SnapshotExists reports whether the durable snapshot still exists (its files
+	// survived a restart and it was re-adopted). Used to decide whether a
+	// persisted-asleep app can be re-adopted vs. cold-booted.
+	SnapshotExists(snapshotID string) bool
 
 	// ImageHealth returns the health check derived from the image's Docker
 	// HEALTHCHECK, or nil if the image declares none (or NONE). Used to seed an
@@ -394,7 +407,8 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 	ob.phase = "asleep" // claim the state before the VMM stops
 	m.obsMu.Unlock()
 
-	if err := m.inst.Sleep(ctx, instanceID); err != nil {
+	snapID, err := m.inst.Sleep(ctx, instanceID)
+	if err != nil {
 		m.obsMu.Lock()
 		if o := m.obs[rec.ID]; o != nil && o.instanceID == instanceID {
 			o.phase = "running" // revert: still awake
@@ -403,12 +417,24 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 		return fmt.Errorf("app: sleep %q: %w", name, err)
 	}
 
+	// Persist the asleep marker so a daemon restart re-adopts this app as asleep
+	// (and wakes it from snapID) rather than cold-booting. Non-fatal: the
+	// in-memory phase is already asleep; the worst case on a persist failure is a
+	// cold boot after a restart.
+	if cur, found, gerr := m.store.Get(rec.ID); gerr == nil && found {
+		cur.AsleepSnapshotID = snapID
+		cur.UpdatedAt = m.now().UTC()
+		if perr := m.store.Put(cur); perr != nil {
+			m.log.Warn("persist asleep state failed", "app", rec.ID, "err", perr)
+		}
+	}
+
 	m.obsMu.Lock()
 	if o := m.obs[rec.ID]; o != nil {
 		o.sleepCount++
 	}
 	m.obsMu.Unlock()
-	m.log.Info("app slept", "app", rec.ID, "name", name, "instance", instanceID)
+	m.log.Info("app slept", "app", rec.ID, "name", name, "instance", instanceID, "snapshot", snapID)
 	return nil
 }
 
@@ -443,7 +469,19 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	m.obsMu.Unlock()
 
 	start := m.now()
-	werr := m.inst.Wake(ctx, instanceID)
+	newInstanceID := instanceID
+	var werr error
+	switch {
+	case instanceID != "" && m.inst.Exists(instanceID):
+		// Same daemon lifetime: the slept instance is still live — restore in place.
+		werr = m.inst.Wake(ctx, instanceID)
+	case rec.AsleepSnapshotID != "":
+		// After a restart the slept instance is gone; fork a fresh one from the
+		// durable snapshot (new IP; the proxy resolves by name).
+		newInstanceID, werr = m.inst.WakeFromSnapshot(ctx, rec.AsleepSnapshotID, rec.Spec)
+	default:
+		werr = fmt.Errorf("no live instance and no durable snapshot to wake from")
+	}
 
 	m.obsMu.Lock()
 	if o := m.obs[rec.ID]; o != nil {
@@ -452,6 +490,9 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 			o.lastErr = werr.Error()
 		} else {
 			o.phase = "running"
+			o.instanceID = newInstanceID
+			o.generation = rec.Generation
+			o.health = "healthy" // fresh restore; a configured probe re-evaluates
 			o.lastWakeLatency = m.now().Sub(start)
 			o.lastErr = ""
 		}
@@ -459,7 +500,17 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	m.obsMu.Unlock()
 
 	if werr != nil {
+		m.log.Warn("app wake failed", "app", rec.ID, "name", name, "err", werr)
 		return fmt.Errorf("app: wake %q: %w", name, werr)
+	}
+	instanceID = newInstanceID
+	// Clear the persisted asleep marker now that the app is running again.
+	if cur, found, gerr := m.store.Get(rec.ID); gerr == nil && found && cur.AsleepSnapshotID != "" {
+		cur.AsleepSnapshotID = ""
+		cur.UpdatedAt = m.now().UTC()
+		if perr := m.store.Put(cur); perr != nil {
+			m.log.Warn("clear asleep state failed", "app", rec.ID, "err", perr)
+		}
 	}
 	m.log.Info("app woke", "app", rec.ID, "name", name, "instance", instanceID)
 	return nil
@@ -671,6 +722,27 @@ func (m *Manager) reconcileApp(ctx context.Context, rec Record, now time.Time) {
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
 	m.obsMu.Unlock()
+
+	// Re-adopt a persisted-asleep app after a daemon restart (obs was rebuilt
+	// empty): if its durable snapshot survived, register it as asleep so the next
+	// request wakes it (fork-from-snapshot) instead of cold-booting — the free
+	// durability that beats today's "no running VM survives a restart". If the
+	// snapshot is gone, clear the stale marker and fall through to a cold boot.
+	if ob == nil && rec.AsleepSnapshotID != "" {
+		if m.inst.SnapshotExists(rec.AsleepSnapshotID) {
+			m.obsMu.Lock()
+			m.obs[rec.ID] = &observed{phase: "asleep", generation: rec.Generation, health: "healthy"}
+			m.obsMu.Unlock()
+			m.log.Info("re-adopted asleep app", "app", rec.ID, "name", rec.Spec.Name, "snapshot", rec.AsleepSnapshotID)
+			return
+		}
+		if cur, found, gerr := m.store.Get(rec.ID); gerr == nil && found {
+			cur.AsleepSnapshotID = ""
+			cur.UpdatedAt = m.now().UTC()
+			_ = m.store.Put(cur)
+		}
+		m.log.Warn("asleep app snapshot missing; cold-booting", "app", rec.ID, "name", rec.Spec.Name)
+	}
 
 	// A slept (or mid-wake) app is a steady desired state: its instance is
 	// intentionally gone (snapshotted, VMM stopped) or being restored. The

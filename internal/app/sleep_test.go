@@ -2,12 +2,63 @@ package app
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
+
+// TestAppSleepSurvivesRestart is S8: a slept app survives a daemon restart. A
+// new Manager over the SAME store re-adopts the app as asleep (not cold-boot),
+// and a wake restores it from the durable snapshot into a fresh instance.
+func TestAppSleepSurvivesRestart(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "apps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// Boot + sleep under the first Manager.
+	f1 := newFake()
+	m1 := NewManager(store, f1, quietLog())
+	if _, err := m1.Create(sleepableSpec("web", 30, 0), true); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	m1.reconcile(ctx())
+	if err := m1.Sleep(ctx(), "web"); err != nil {
+		t.Fatalf("sleep: %v", err)
+	}
+	if rec, found, _ := store.GetByName("web"); !found || rec.AsleepSnapshotID == "" {
+		t.Fatalf("AsleepSnapshotID not persisted: %+v", rec)
+	}
+
+	// "Restart": a fresh Manager over the same store, with empty observed state
+	// and a fresh instantiator (the old live instances were reaped).
+	f2 := newFake()
+	m2 := NewManager(store, f2, quietLog())
+	m2.reconcile(ctx())
+
+	if got, _ := m2.GetByName("web"); got.Status == nil || got.Status.Phase != "asleep" {
+		t.Fatalf("app not re-adopted as asleep after restart: %v", got.Status)
+	}
+	if f2.createCount() != 0 {
+		t.Fatalf("cold-booted instead of re-adopting the slept app: creates=%d", f2.createCount())
+	}
+
+	// A wake restores from the durable snapshot into a fresh instance.
+	if err := m2.Wake(ctx(), "web"); err != nil {
+		t.Fatalf("wake after restart: %v", err)
+	}
+	got, _ := m2.GetByName("web")
+	if got.Status == nil || got.Status.Phase != "running" || got.Status.InstanceID == "" {
+		t.Fatalf("not running with a fresh instance after wake: %v", got.Status)
+	}
+	if rec, _, _ := store.GetByName("web"); rec.AsleepSnapshotID != "" {
+		t.Fatalf("AsleepSnapshotID not cleared after wake: %q", rec.AsleepSnapshotID)
+	}
+}
 
 func TestValidateSpecSleepPolicy(t *testing.T) {
 	base := func(sp *api.SleepPolicy) api.AppSpec {

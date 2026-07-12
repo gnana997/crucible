@@ -24,7 +24,7 @@ func (s *Server) handleSleepSandbox(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Time{})
 
-	if err := s.cfg.Manager.SleepInPlace(r.Context(), id); err != nil {
+	if _, err := s.cfg.Manager.SleepInPlace(r.Context(), id); err != nil {
 		if errors.Is(err, sandbox.ErrNotFound) {
 			writeError(w, http.StatusNotFound, err)
 			return

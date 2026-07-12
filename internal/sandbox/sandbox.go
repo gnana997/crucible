@@ -180,11 +180,14 @@ type Sandbox struct {
 	// surviving a daemon restart while asleep is a later item (C8).
 	asleep *sleepState
 
-	// snapDir is the on-disk directory of the latest sleep snapshot. It persists
-	// across a wake (the woken VM's lazy-memory pager reads its memory file) and
-	// is removed only when superseded by the next sleep — so exactly one
-	// snapshot is kept per instance. Under s.Workdir, so Delete cleans it.
-	snapDir string
+	// memSnapshotID is the id of the DURABLE snapshot backing this instance's
+	// memory: set when the sandbox is slept (a real, journaled snapshot under
+	// WorkBase, so a slept app survives a daemon restart via re-adoption), and
+	// KEPT across an in-place wake because the woken VM's lazy-memory (uffd)
+	// pager serves from that snapshot's memory file for its whole life. GC'd only
+	// once superseded — by the next sleep (after the VMM, and its pager, is
+	// stopped) or by Delete — so exactly one snapshot is kept per instance.
+	memSnapshotID string
 
 	// done is closed by Manager.Delete once this sandbox is removed
 	// from the map. Used by the lifetime-timeout goroutine to exit
@@ -1070,6 +1073,16 @@ func (m *Manager) CountByToken(tokenID string) int {
 // the HTTP server first.
 func (m *Manager) Shutdown(ctx context.Context) {
 	for _, s := range m.List() {
+		// A slept sandbox has no live VMM to drain, and its durable snapshot must
+		// survive so the app is re-adopted (and woken from it) on the next start.
+		// Delete would GC that snapshot — so leave slept sandboxes alone; their
+		// orphan workdir/netns are cleaned by the startup reaps, snapshot kept.
+		m.mu.RLock()
+		asleep := s.asleep != nil
+		m.mu.RUnlock()
+		if asleep {
+			continue
+		}
 		_ = m.Delete(ctx, s.ID)
 	}
 	if m.store != nil {
@@ -1341,7 +1354,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			sb, err := m.forkOne(ctx, snap, tokenID, publish)
+			sb, err := m.forkOne(ctx, snap, tokenID, publish, false)
 			results[idx] = forkResult{sb: sb, err: err}
 		}(i)
 	}
@@ -1378,7 +1391,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 
 // forkOne creates a single fork. Split out so Fork's all-or-nothing
 // loop stays readable.
-func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, publish []PortMapping) (*Sandbox, error) {
+func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, publish []PortMapping, wake bool) (*Sandbox, error) {
 	// Bound the restore to guest memory, for the same reason Snapshot does:
 	// LoadSnapshot carries no fcapi wall-clock cap and r.Context() no
 	// deadline, so a wedged firecracker must not hang this goroutine. Forks
@@ -1495,7 +1508,15 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		_ = handle.Shutdown(context.Background())
 		return nil, fmt.Errorf("fork %s: no agent channel for clone-safety refresh", id)
 	}
-	if err := m.refreshIdentity(ctx, s.execClient, id); err != nil {
+	// Fork rotates identity (fresh machine-id/hostname) + reseeds RNG. Wake (a
+	// restart-recovery restore of a slept app) instead PRESERVES identity —
+	// reseed RNG + step the clock only — matching in-place wake's contract.
+	if wake {
+		if err := m.wakeRefresh(ctx, s.execClient); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("wake refresh: %w", err)
+		}
+	} else if err := m.refreshIdentity(ctx, s.execClient, id); err != nil {
 		_ = handle.Shutdown(context.Background())
 		return nil, fmt.Errorf("identity refresh: %w", err)
 	}
@@ -1543,6 +1564,13 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		s.Published = publish
 	}
 
+	// A wake-from-snapshot is the sole consumer of its (sleep) snapshot, whose
+	// memory file backs this instance's lazy memory. Own it so the next sleep or
+	// Delete GCs it. Regular forks share the snapshot and never own it.
+	if wake {
+		s.memSnapshotID = snap.ID
+	}
+
 	m.registerSandbox(s)
 
 	m.cfg.Metrics.IncSandboxCreated()
@@ -1550,6 +1578,18 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 
 	success = true
 	return s, nil
+}
+
+// WakeFromSnapshot restores a durable sleep snapshot into a FRESH instance with
+// wake semantics (reseed RNG + step clock, identity preserved) and a fresh
+// network. Used to wake a slept app after a daemon restart, when its original
+// in-place instance is gone; the returned sandbox is the app's new instance.
+func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publish []PortMapping) (*Sandbox, error) {
+	snap, err := m.GetSnapshot(snapshotID)
+	if err != nil {
+		return nil, err
+	}
+	return m.forkOne(ctx, snap, "", publish, true)
 }
 
 // staticNetConfig builds the network config the daemon pushes to an
@@ -1637,6 +1677,7 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	delete(m.sandboxes, id)
+	memSnap := s.memSnapshotID // durable sleep snapshot backing this instance, if any
 	m.mu.Unlock()
 
 	// Durably drop the record so a crash after this point doesn't leave
@@ -1659,6 +1700,13 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 
 	shutdownErr := s.handle.Shutdown(ctx)
+
+	// The VMM (and, for a woken instance, its uffd pager) is now stopped, so the
+	// durable sleep snapshot backing its memory is free to reclaim. Separate dir
+	// under WorkBase, so the workdir removal below wouldn't reach it.
+	if memSnap != "" {
+		_ = m.DeleteSnapshot(context.Background(), memSnap)
+	}
 
 	// Tear down the network whether or not Shutdown cleanly exited —
 	// leaving netns/nft/DHCP state behind on a failed shutdown would

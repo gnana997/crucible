@@ -240,8 +240,9 @@ func (a appInstantiator) Destroy(ctx context.Context, instanceID string) error {
 }
 
 // Sleep snapshots the instance and stops its VMM (scale-to-zero), keeping the
-// record + network so Wake can restore it in place.
-func (a appInstantiator) Sleep(ctx context.Context, instanceID string) error {
+// record + network so Wake can restore it in place. Returns the durable
+// snapshot id captured.
+func (a appInstantiator) Sleep(ctx context.Context, instanceID string) (string, error) {
 	return a.s.cfg.Manager.SleepInPlace(ctx, instanceID)
 }
 
@@ -249,6 +250,28 @@ func (a appInstantiator) Sleep(ctx context.Context, instanceID string) error {
 // clock via the guest agent.
 func (a appInstantiator) Wake(ctx context.Context, instanceID string) error {
 	return a.s.cfg.Manager.WakeInPlace(ctx, instanceID)
+}
+
+// SnapshotExists reports whether the durable snapshot still exists (re-adopted
+// after a restart if its files survived).
+func (a appInstantiator) SnapshotExists(snapshotID string) bool {
+	_, err := a.s.cfg.Manager.GetSnapshot(snapshotID)
+	return err == nil
+}
+
+// WakeFromSnapshot restores the durable sleep snapshot into a fresh instance
+// (post-restart wake), returning the new sandbox id. Publish mappings come from
+// the app spec, mirroring create.
+func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string, spec api.AppSpec) (string, error) {
+	publish, err := validatePublish(spec.Publish)
+	if err != nil {
+		return "", err
+	}
+	sb, err := a.s.cfg.Manager.WakeFromSnapshot(ctx, snapshotID, publish)
+	if err != nil {
+		return "", err
+	}
+	return sb.ID, nil
 }
 
 // NewAppInstantiator returns the daemon's app.Instantiator. Exposed so the

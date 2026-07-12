@@ -23,11 +23,15 @@ import (
 
 	"github.com/gnana997/crucible/internal/agentapi"
 	"github.com/gnana997/crucible/internal/agentwire"
+	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/runner"
 )
 
-// sleepState holds the snapshot artifacts captured when a sandbox is put to
-// sleep in place, consumed to wake it.
+// sleepState holds what an in-place (same-lifetime) wake needs to restore a
+// slept sandbox: the durable snapshot's state+mem files, the LIVE rootfs (so
+// writes made before sleep persist across the wake), the reserved netns, and
+// sizing. A wake after a daemon restart instead forks from the durable snapshot
+// (fresh netns, the snapshot's own frozen rootfs), so it needs none of this.
 type sleepState struct {
 	statePath  string
 	memPath    string
@@ -46,10 +50,13 @@ type sleepState struct {
 // still run — before Pause — so the frozen rootfs copy is clean rather than
 // merely crash-consistent. Quiesce is advisory (a journaling fs recovers from a
 // crash-consistent image), so a sync failure is logged, never fatal.
-func (m *Manager) SleepInPlace(ctx context.Context, id string) error {
+// It returns the id of the durable snapshot it captured, which the app control
+// plane persists so the slept app can be re-adopted (and woken from it) after a
+// daemon restart.
+func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 	s, err := m.Get(id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(s.MemoryMiB))
 	defer cancel()
@@ -61,61 +68,97 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) error {
 		}
 	}
 
-	// Each sleep writes a FRESH snapshot dir, like fork. Reusing one fixed path
-	// works the first time but fails on every sleep after a wake: under jailer
-	// the prior run's snapshot files can't be reopened by the newly-jailed
-	// firecracker (EACCES on the backing file). A unique dir per cycle sidesteps
-	// that; the previous dir is removed once this snapshot lands.
+	// Capture a DURABLE snapshot (WorkBase/<snapID>, journaled + rootfs cloned),
+	// exactly like Manager.Snapshot — so a slept app survives a daemon restart:
+	// the existing snapshot re-adoption resurrects it, and a post-restart wake
+	// forks a fresh instance from it. A fresh dir per sleep is also what avoids
+	// the jailer EACCES on re-snapshotting a woken VM (the runner writes to a
+	// distinct chroot path; the host dir is fresh here too).
 	snapID, err := NewSnapshotID()
 	if err != nil {
-		return err
+		return "", err
 	}
-	sleepDir := filepath.Join(s.Workdir, "sleep-"+snapID)
-	if err := os.MkdirAll(sleepDir, 0o750); err != nil {
-		return fmt.Errorf("sleep: mkdir %s: %w", sleepDir, err)
+	snapDir := filepath.Join(m.cfg.WorkBase, snapID)
+	if err := os.MkdirAll(snapDir, 0o750); err != nil {
+		return "", fmt.Errorf("sleep: create snapshot dir: %w", err)
 	}
-	statePath := filepath.Join(sleepDir, snapshotStateName)
-	memPath := filepath.Join(sleepDir, snapshotMemoryName)
+	liveRootfs := filepath.Join(s.Workdir, perSandboxRootfsName)
+	snapRootfs := filepath.Join(snapDir, snapshotRootfsName)
+	snapState := filepath.Join(snapDir, snapshotStateName)
+	snapMem := filepath.Join(snapDir, snapshotMemoryName)
 
 	if err := s.handle.Pause(ctx); err != nil {
-		_ = os.RemoveAll(sleepDir)
-		return fmt.Errorf("sleep: pause %s: %w", id, err)
+		_ = os.RemoveAll(snapDir)
+		return "", fmt.Errorf("sleep: pause %s: %w", id, err)
 	}
-	if err := s.handle.Snapshot(ctx, statePath, memPath); err != nil {
-		// Best-effort: leave the guest running rather than half-slept.
+	if err := fsutil.Clone(liveRootfs, snapRootfs); err != nil {
+		_ = s.handle.Resume(ctx) // stay running rather than half-slept
+		_ = os.RemoveAll(snapDir)
+		return "", fmt.Errorf("sleep: clone rootfs into snapshot: %w", err)
+	}
+	if err := s.handle.Snapshot(ctx, snapState, snapMem); err != nil {
 		_ = s.handle.Resume(ctx)
-		_ = os.RemoveAll(sleepDir)
-		return fmt.Errorf("sleep: snapshot %s: %w", id, err)
+		_ = os.RemoveAll(snapDir)
+		return "", fmt.Errorf("sleep: snapshot %s: %w", id, err)
 	}
 	// Stop the VMM to free RAM. Deliberately NO Network.Teardown and NO workdir
-	// removal — that identity must survive for the wake.
+	// removal — that identity must survive for an in-lifetime wake-in-place.
 	if err := s.handle.Shutdown(ctx); err != nil {
-		return fmt.Errorf("sleep: stop vmm %s: %w", id, err)
+		_ = os.RemoveAll(snapDir)
+		return "", fmt.Errorf("sleep: stop vmm %s: %w", id, err)
+	}
+
+	snap := &Snapshot{
+		ID:            snapID,
+		SourceID:      s.ID,
+		VCPUs:         s.VCPUs,
+		MemoryMiB:     s.MemoryMiB,
+		Dir:           snapDir,
+		StatePath:     snapState,
+		MemPath:       snapMem,
+		RootfsPath:    snapRootfs,
+		StaticNetwork: s.StaticNetwork,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if s.Network != nil && s.Network.Allowlist != nil {
+		snap.Network = &NetworkConfig{
+			Allowlist:  s.Network.Allowlist,
+			FullEgress: s.Network.FullEgress,
+			CIDRs:      s.Network.CIDRs,
+		}
 	}
 
 	st := &sleepState{
-		statePath:  statePath,
-		memPath:    memPath,
-		rootfsPath: filepath.Join(s.Workdir, perSandboxRootfsName),
+		statePath:  snapState,
+		memPath:    snapMem,
+		rootfsPath: liveRootfs, // in-place wake restores against the LIVE rootfs
 		vcpus:      s.VCPUs,
 		memMiB:     s.MemoryMiB,
 	}
 	if s.Network != nil {
 		st.netns = s.Network.NetnsPath
 	}
+
 	m.mu.Lock()
-	oldDir := s.snapDir
-	s.snapDir = sleepDir
+	m.snapshots[snapID] = snap
+	oldSnapID := s.memSnapshotID
+	s.memSnapshotID = snapID
 	s.asleep = st
 	m.mu.Unlock()
 
-	// The prior snapshot dir backed the VM we just shut down (its lazy-memory
-	// pager died with it), so it is now safe to reclaim — keeping exactly one
-	// snapshot per instance.
-	if oldDir != "" && oldDir != sleepDir {
-		_ = os.RemoveAll(oldDir)
+	if m.store != nil {
+		if err := m.store.putSnapshot(snapshotRecordOf(snap)); err != nil {
+			slog.Default().Warn("persist sleep snapshot record failed", "component", "sandbox", "id", snapID, "err", err)
+		}
 	}
-	return nil
+
+	// Keep exactly one snapshot per instance: the previous one's memory file
+	// backed the VM we just shut down, so its uffd pager is now dead and the
+	// snapshot is safe to drop.
+	if oldSnapID != "" && oldSnapID != snapID {
+		_ = m.DeleteSnapshot(context.Background(), oldSnapID)
+	}
+	return snapID, nil
 }
 
 // WakeInPlace restores a slept sandbox into its ORIGINAL identity: same id,
@@ -182,6 +225,9 @@ func (m *Manager) WakeInPlace(ctx context.Context, id string) error {
 	s.VSockPath = vsockPath
 	s.execClient = c
 	s.asleep = nil
+	// KEEP s.memSnapshotID: the woken VM restored with LazyMem, so its uffd pager
+	// serves from that snapshot's memory file for the VM's whole life. It's GC'd
+	// on the next sleep (once this VMM, and its pager, are stopped) or by Delete.
 	m.mu.Unlock()
 	return nil
 }

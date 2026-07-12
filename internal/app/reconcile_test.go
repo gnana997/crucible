@@ -89,13 +89,15 @@ func (f *fakeInstantiator) Destroy(_ context.Context, instanceID string) error {
 // Sleep keeps the instance live (its record survives) but marks it asleep. If
 // onSleep is set it runs mid-flight (outside f.mu) so a test can hold the sleep
 // open and race a concurrent wake against it.
-func (f *fakeInstantiator) Sleep(_ context.Context, instanceID string) error {
+func (f *fakeInstantiator) SnapshotExists(string) bool { return true }
+
+func (f *fakeInstantiator) Sleep(_ context.Context, instanceID string) (string, error) {
 	f.mu.Lock()
 	_, ok := f.live[instanceID]
 	hook := f.onSleep
 	f.mu.Unlock()
 	if !ok {
-		return errors.New("fake: no such instance")
+		return "", errors.New("fake: no such instance")
 	}
 	if hook != nil {
 		hook()
@@ -106,7 +108,7 @@ func (f *fakeInstantiator) Sleep(_ context.Context, instanceID string) error {
 		f.slept = map[string]bool{}
 	}
 	f.slept[instanceID] = true
-	return nil
+	return "snap_" + instanceID, nil
 }
 
 func (f *fakeInstantiator) Wake(_ context.Context, instanceID string) error {
@@ -117,6 +119,15 @@ func (f *fakeInstantiator) Wake(_ context.Context, instanceID string) error {
 	}
 	delete(f.slept, instanceID)
 	return nil
+}
+
+func (f *fakeInstantiator) WakeFromSnapshot(_ context.Context, _ string, _ api.AppSpec) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.next++
+	id := "sbx_woken_" + string(rune('a'+f.next))
+	f.live[id] = "woken"
+	return id, nil
 }
 
 // crash removes the app's live instance without going through Destroy,
