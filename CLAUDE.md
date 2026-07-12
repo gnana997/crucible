@@ -15,11 +15,11 @@ fits together), [api](docs/api.md), [wire](docs/wire.md), [cli](docs/cli.md), [m
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.4.4 — durable apps you deploy, reach, update, and pull privately. The core runtime
+**Status:** v0.5.0 — durable apps you deploy, reach, update, pull privately, and scale to zero. The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
-an MCP server (22 tools), daemon API-key auth with scoped/policy tokens, and a
+an MCP server (24 tools), daemon API-key auth with scoped/policy tokens, and a
 TUI. Two durability tiers: **sandboxes** are ephemeral (a daemon restart drops
 the VM), while **apps** (`crucible app`) are durable — the daemon re-creates a
 healthy instance from persisted desired state. The v0.4 line built apps out:
@@ -32,7 +32,11 @@ drain the old; a failed update keeps the old instance serving) + operate an app
 the current instance per call); **v0.4.4 private registries** (`crucible registry
 login` stores a per-registry credential on the daemon that feeds every pull incl.
 an app's re-pull on restart; gated by the `registry` scoped-token op; never reads
-`~/.docker/config.json`; plus one-shot `run --registry-auth`). See the ROADMAP
+`~/.docker/config.json`; plus one-shot `run --registry-auth`); **v0.5.0
+scale-to-zero** (`crucible app sleep`/`wake` + `app create --idle-timeout`
+`--min-scale 0`) — an idle app snapshots to ~zero RAM and wakes **in place** on
+the next request through the ingress proxy in under a second (same IP + identity,
+clock stepped to now), and a slept app survives a daemon restart. See the ROADMAP
 for what's next.
 
 ## Working style

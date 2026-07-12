@@ -17,10 +17,12 @@ Durable apps are named workloads the daemon keeps a healthy instance of and re-c
 | `logs <name> [-f] [--source]` | the current instance's durable logs (`-f` reattaches across a redeploy) |
 | `exec <name> [-i] [--cwd] [--timeout] [-e] -- <cmd>...` | run a command in the current instance |
 | `shell <name> [--shell]` | interactive shell in the current instance |
+| `sleep <name>` | snapshot the app and stop its VMM (free RAM+CPU), keeping its identity + ingress route; it wakes **in place** |
+| `wake <name>` | wake a slept app (restore in place: same IP, clock stepped to now); idempotent on a running app |
 
 ## Create flags
 
-`--image` (required), `--pull`, `--restart always|on-failure|never`, `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr` (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`, `--disk`, `--stopped`.
+`--image` (required), `--pull`, `--restart always|on-failure|never`, `--health http:PORT[:PATH]|tcp:PORT`, `--health-cmd '<shell command>'` (exec check, exit 0 = healthy), `--port <guest port>` (proxy target), `-p/--publish` (repeatable), `-P/--publish-all` (publish the image's `EXPOSE`d ports), `-e/--env KEY=VALUE` (repeatable, delivered to the entrypoint), `--net-allow` (repeatable), `--net-allow-cidr` (public IPv4 CIDR), `--net-full-egress` (any public host), `--vcpus`, `--memory`, `--disk`, `--stopped`, `--idle-timeout <dur>` (auto-sleep after this much idle time through the ingress proxy; `0`/unset = never), `--min-scale <n>` (`0` enables scale-to-zero; `≥1` keeps that many warm).
 
 ## Operate flags
 
@@ -31,6 +33,9 @@ crucible app create web --image nginx:alpine --port 80 -e LOG_LEVEL=info --resta
 crucible app update web --image nginx:alpine --port 80 --memory 512   # rolls out zero-downtime
 crucible app exec web -- /bin/sh -c 'nginx -t'
 crucible app logs web -f                                              # reattaches if the app rolls
+crucible app sleep web                                                # snapshot + free RAM; route kept
+crucible app wake web                                                 # restore in place (same IP)
+crucible app create api --image myapi --port 8080 --idle-timeout 5m --min-scale 0  # auto scale-to-zero
 crucible app rm web
 ```
 

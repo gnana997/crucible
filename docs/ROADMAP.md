@@ -87,19 +87,28 @@ The durable app is now reachable by name and updatable in place.
 Update a deployed app without dropping traffic, and drive a running app by name.
 
 - [x] **Zero-downtime rolling `app update`** — for a proxy-fronted app the reconciler boots the new instance, waits for a **readiness gate** (its health check, or a TCP connect to the app's port), **flips the ingress route** to it, then drains the old instance before destroying it. The proxy follows the flip, so the cutover drops nothing. A **failed** update aborts and keeps the old instance serving (never takes the app down); `status.instance_generation` shows which spec is live.
-- [x] **Operate an app by name** — `crucible app exec`/`logs`/`shell` (and MCP `app_exec`/`app_logs`, → 22 tools) resolve the app's **current** instance server-side per call, so they survive a self-heal or redeploy. `app logs -f` reattaches to the new instance across a roll. Flag parity added (`app exec --cwd/--timeout/-e`, `app shell --shell`).
+- [x] **Operate an app by name** — `crucible app exec`/`logs`/`shell` (and MCP `app_exec`/`app_logs`) resolve the app's **current** instance server-side per call, so they survive a self-heal or redeploy. `app logs -f` reattaches to the new instance across a roll. Flag parity added (`app exec --cwd/--timeout/-e`, `app shell --shell`).
 
-### v0.4.4 — Private registries *(current)*
+### v0.4.4 — Private registries
 
 Pull authenticated images, with the credential on the daemon.
 
 - [x] **Private-registry pull** — `crucible registry login/logout/ls` stores a per-registry credential on the daemon (`--registry-store`, `0600`, gated by a new `registry` scoped-token op) that feeds every pull: `run`, `app create`, and an app's **re-pull on restart** (so a durable app on a private image survives a reboot). Static creds cover Docker Hub, GHCR, GitLab, Quay, self-hosted, and static GCP/ACR; ECR via `aws ecr get-login-password`. Never reads `~/.docker/config.json`. Plus one-shot `run --registry-auth` for CI ([registry.md](registry.md)).
 
+### v0.5.0 — Scale to zero *(current)*
+
+An app sleeps when idle and wakes on the next request in under a second — same IP, same identity, correct clock — and survives a daemon restart while asleep. Built by re-pointing machinery crucible already ships (snapshot/restore with lazy memory, clone-safety, the reconciler, the ingress proxy) at a new policy, not a new subsystem.
+
+- [x] **App sleep/wake** — `crucible app sleep`/`app wake` snapshot a running app and stop its VMM to free RAM + CPU while keeping the netns, subnet/IP reservation, and ingress route, then restore it **in place**: same instance id, same IP (no DHCP bounce), CRNG reseeded and clock stepped to host time before it's reachable, but — unlike a fork — machine-id/hostname *not* rotated. On the Go SDK (`SleepApp`/`WakeApp`) and MCP (`app_sleep`/`app_wake`) ([apps.md](apps.md)).
+- [x] **Automatic scale-to-zero** — `app create --idle-timeout <dur> --min-scale 0` drops an idle app to ~zero RAM: the ingress proxy tracks per-app last-activity + open connections and, once idle and healthy, the reconciler sleeps it. The next request **triggers a wake, holds the request, and forwards it once the app passes readiness** — a request herd coalesces into a single wake. `--min-scale ≥1` stays always-warm; `--idle-timeout 0` never sleeps.
+- [x] **Survives a daemon restart while asleep** — sleep captures a durable snapshot (journaled record + cloned rootfs), so a slept app is re-adopted on daemon start and the first post-restart request wakes a fresh instance from it.
+- [x] **Wake admission gate** — a wake is refused (`503`, app stays asleep) when host free memory is below `--wake-min-free-mib` (default 256), plus `snapshots_active` and an `app_wake_latency_seconds` histogram on `/metrics`.
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, and private-registry pull exist (v0.4.0–v0.4.4); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, and scale-to-zero exist (v0.4.0–v0.5.0); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
@@ -115,9 +124,9 @@ The app model, its front door, zero-downtime updates, operate-by-name, and priva
 - • **Per-language seccomp policies.** Hand-tuned syscall allowlists per runtime; generic policies are too loose.
 - • **DNS-layer allowlist filtering** and **packet capture on demand** (`crucible sandbox tcpdump …` → a pcap of everything the sandbox did on the network).
 
-### v0.5 — Observability and debugging
+### v0.5.x — Observability and debugging
 
-Turn the per-exec records into first-class, exportable telemetry.
+The scale-to-zero fast-follow: turn the per-exec records into first-class, exportable telemetry.
 
 - • **OpenTelemetry export.** Every lifecycle event, exec, and snapshot as OTel spans with stable semantic conventions; OTLP to Jaeger / Tempo / Datadog / Honeycomb / Grafana.
 - • **Prometheus histograms.** Proper latency histograms on the `/metrics` endpoint, plus reference Grafana dashboards as code.

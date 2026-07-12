@@ -78,6 +78,8 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 | `delete_app` | Delete a durable app and tear down its instance. | `name` |
 | `app_exec` | Run a command in an app's **current instance**, addressed by name — resolved per call, so it stays correct across a self-heal or redeploy. | `app_name`, `command[]`, `cwd?`, `env?[]`, `timeout_s?` |
 | `app_logs` | Read an app's current-instance logs, addressed by name. | `app_name`, `source?` (service\|exec\|all), `since?` |
+| `app_sleep` | Sleep a durable app: snapshot it and stop its VMM to free RAM+CPU, keeping its identity + route so it wakes **in place**. | `app_name` |
+| `app_wake` | Wake a slept app (restore in place: same IP, clock stepped to now). Idempotent on a running app. | `app_name` |
 | `delete_sandbox` | Destroy a sandbox. | `sandbox_id` |
 | `list_snapshots` | List snapshots. | — |
 | `delete_snapshot` | Delete a snapshot. | `snapshot_id` |

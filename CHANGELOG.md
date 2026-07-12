@@ -6,6 +6,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.5.0] — 2026-07-12
+
+Scale to zero. An app sleeps when idle and wakes on the next request in under a
+second — same IP, same identity, correct clock — and survives a daemon restart
+while asleep. Built by re-pointing machinery crucible already ships
+(snapshot/restore with lazy memory, clone-safety, the reconciler, the ingress
+proxy) at a new policy, not by inventing a new subsystem.
+
+### Added
+
+- **App sleep/wake.** `crucible app sleep <name>` snapshots a running app and
+  stops its VMM to free RAM + CPU while keeping the netns, subnet/IP reservation,
+  and ingress route; `crucible app wake <name>` restores it **in place** — same
+  instance id, same IP, no DHCP bounce — reseeding the guest CRNG and stepping
+  its clock to host time *before the app is reachable*, but (unlike a fork)
+  **not** rotating machine-id/hostname. On the Go SDK (`SleepApp`/`WakeApp`,
+  `App.Sleep`/`App.Wake`) and MCP (`app_sleep`/`app_wake`). Status now reports
+  the `asleep` and `waking` phases, `last_wake_latency_ms`, and `sleep_count`.
+- **Automatic scale-to-zero.** `crucible app create --idle-timeout <dur>` (with
+  `--min-scale 0`) drops an app to ~zero RAM once it has been idle: the ingress
+  proxy tracks per-app last-activity + open connections, and once the app is idle
+  and healthy the reconciler sleeps it. The next request through the proxy
+  **triggers a wake, holds the request, and forwards it when the app passes its
+  readiness probe** — a herd of requests hitting one sleeping app coalesces into
+  a single wake. `--min-scale ≥1` keeps ≥1 instance always-warm (today's
+  behavior); `--idle-timeout 0` never sleeps.
+- **Survives a daemon restart while asleep.** Sleep captures a **durable**
+  snapshot (journaled record + cloned rootfs), so a slept app is re-adopted on
+  daemon start and the first post-restart request wakes a fresh instance from it.
+- **Wake admission gate.** A wake is refused (the request gets a `503` and the
+  app stays asleep) when host free memory is below a floor
+  (`--wake-min-free-mib`, default 256) rather than thrashing the box. The live
+  snapshot count is exported as `snapshots_active` on `/metrics`, alongside an
+  `app_wake_latency_seconds` histogram.
+
+### Changed
+
+- The MCP server gains `app_sleep` / `app_wake` — **22 → 24 tools**.
+
 ## [0.4.4] — 2026-07-12
 
 Private registries. Pull authenticated images — so `run`, `app create`, and an
@@ -111,7 +150,7 @@ v0.4.0 durable apps and applies across `app create`, `run`, and `sandbox create`
 
 ### Added
 
-- **Real egress for trusted workloads (A6).** Two opt-in modes widen egress past
+- **Real egress for trusted workloads.** Two opt-in modes widen egress past
   the hostname allowlist, on `app create`, `run`, and `sandbox create`:
   `--net-full-egress` (reach any public host) and `--net-allow-cidr
   203.0.113.0/24` (reach IP literals in a public prefix). The invariant is

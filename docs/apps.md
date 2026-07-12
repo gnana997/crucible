@@ -106,6 +106,8 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 | `app logs <name> [-f] [--source]` | the instance's durable logs |
 | `app exec <name> [-i] -- <cmd>` | run a command in the current instance |
 | `app shell <name>` | interactive shell in the current instance |
+| `app sleep <name>` | snapshot + stop the VMM (free RAM+CPU), keeping identity + route; wakes **in place** |
+| `app wake <name>` | wake a slept app (restore in place: same IP, clock stepped to now) |
 
 `create` flags: `--image` (required), `--pull`, `--restart`, `--health`
 (http/tcp), `--health-cmd` (exec), `--port` (proxy target port), `-p/--publish` (repeatable),
@@ -113,7 +115,8 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 `-e/--env KEY=VALUE` (repeatable), `--net-allow` (repeatable),
 `--net-allow-cidr` (public IPv4 CIDR, repeatable), `--net-full-egress` (reach any
 public host), `--vcpus`, `--memory`, `--disk`, `--stopped` (create without
-starting an instance).
+starting an instance), `--idle-timeout <dur>` + `--min-scale <n>` (scale to zero
+— see below).
 
 Env vars are delivered to the app's entrypoint (image `ENV` < your `--env`, so
 yours win); `-P` reads the ports the image declares, so `crucible app create web
@@ -145,17 +148,53 @@ the old spec. A bad update never takes the app down. Apps that publish a fixed
 host port (or have no `--port`) can't run two instances at once, so they keep the
 simpler destroy-then-boot redeploy.
 
+## Scale to zero
+
+An app can **sleep when idle and wake on the next request in under a second**.
+Sleeping snapshots the running guest and stops its VMM — freeing its RAM and CPU
+— while **keeping** the netns, subnet/IP reservation, and ingress route, so the
+app stays addressable at ~zero cost. Waking restores it **in place**: the same
+instance id and IP (no DHCP bounce, no proxy re-resolution), with the guest CRNG
+reseeded and its clock stepped to the current time *before it serves* — but,
+unlike a fork, machine-id and hostname are **not** rotated. A wake is
+snapshot-restore with lazy (`userfaultfd`) memory, so it costs the working set,
+not the whole guest RAM.
+
+**Manual:** `crucible app sleep web` / `crucible app wake web`.
+
+**Automatic:** `app create --idle-timeout <dur> --min-scale 0`. The ingress proxy
+tracks each app's last-activity time and open-connection count; once the app has
+been idle for `--idle-timeout` **and** has no open connections **and** is
+healthy, the reconciler sleeps it. The next request through the proxy **triggers
+a wake, holds the request, and forwards it when the app passes its readiness
+probe** — a herd of requests hitting one sleeping app coalesces into a **single**
+wake, and a wake that can't be served in time gets a clean `503`. `--min-scale
+≥1` keeps that many instances always-warm (today's default behavior);
+`--idle-timeout 0` never sleeps.
+
+**Durability & guards.** Sleep captures a **durable** snapshot (journaled record
++ cloned rootfs), so a slept app survives a daemon restart — it's re-adopted on
+start, and the first post-restart request wakes a fresh instance from the
+snapshot. A wake is refused (the request gets a `503`, the app stays asleep) when
+host free memory is below `--wake-min-free-mib` (daemon flag, default 256) rather
+than thrashing the box. Sleeping drains in-flight requests; idle keepalive TCP
+connections are reset at sleep, and the proxy never reuses a pre-sleep upstream
+connection.
+
 ## Status fields
 
 `app get` / `app ls` surface the observed status the reconciler maintains:
 
-- **phase** — `pending` (booting / backing off), `running`, `crashlooping`, `stopped`
+- **phase** — `pending` (booting / backing off), `running`, `crashlooping`,
+  `stopped`, `asleep` (snapshotted, VMM stopped), `waking` (restoring on a request)
 - **health** — `healthy`, `unhealthy`, `unknown` (no check, or in the start period)
 - **restarts** — how many times the daemon has restarted the instance
 - **instance_id** — the sandbox currently backing the app (empty when none)
 - **instance_generation** — the spec generation the live instance was booted
   from; it lags `generation` while a rolling update is in progress or after a
   failed update (the old instance is still serving the previous spec)
+- **last_wake_latency_ms** / **sleep_count** — for a scale-to-zero app, the most
+  recent wake's request→served latency and how many times it has slept
 
 ## From the API / SDKs
 
@@ -173,6 +212,9 @@ cr.CreateApp(ctx, api.CreateAppRequest{AppSpec: api.AppSpec{
 
 app := cr.App("web")
 res, _ := app.Exec(ctx, wire.ExecRequest{Cmd: []string{"nginx", "-t"}}, os.Stdout, os.Stderr)
+
+app.Sleep(ctx) // snapshot + free RAM, keep the identity + route
+app.Wake(ctx)  // restore in place (same IP, clock stepped to now)
 ```
 
 Reach an app by name through the [ingress proxy](proxy.md) instead of juggling
