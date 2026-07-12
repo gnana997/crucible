@@ -181,7 +181,7 @@ else
   fail "app status after restart: $GET"
 fi
 
-# The http health probe must reach the guest and pass (W5).
+# The http health probe must reach the guest and pass.
 echo "== 04b app reports healthy via its http health check"
 HEALTHY=0
 for _ in $(seq 1 20); do
@@ -274,7 +274,7 @@ else
 fi
 cli app rm healthexec >/dev/null 2>&1
 
-# ---- 10 app update redeploys (v0.4.2 W6) ------------------------------------
+# ---- 10 app update redeploys (v0.4.2) --------------------------------------
 # `app update` replaces the spec and bumps the generation; the reconciler
 # destroys the old instance and boots a fresh one from the new spec.
 echo "== 10 app update replaces the spec and redeploys the instance"

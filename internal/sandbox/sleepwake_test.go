@@ -10,7 +10,7 @@ import (
 )
 
 // TestSleepWakeInPlaceRoundTrip exercises the Manager-level orchestration of
-// B3/B4 against the stub runner: sleep snapshots + stops the VMM while KEEPING
+// Exercised against the stub runner: sleep snapshots + stops the VMM while KEEPING
 // the record, and wake restores in place (reusing the same workdir) and clears
 // the asleep marker. The real KVM behavior (RAM freed, netns kept, listener
 // survives) is covered by scripts/spike_sleepwake.sh.
@@ -80,7 +80,7 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWakeAdmissionRefusesWhenMemoryLow is S7: a wake is refused when host
+// TestWakeAdmissionRefusesWhenMemoryLow: a wake is refused when host
 // MemAvailable is below the configured floor, and admitted once it recovers.
 func TestWakeAdmissionRefusesWhenMemoryLow(t *testing.T) {
 	m, _ := newTestManager(t)
@@ -117,7 +117,7 @@ func TestWakeAdmissionRefusesWhenMemoryLow(t *testing.T) {
 	}
 }
 
-// TestSleepRegistersDurableSnapshotAndGCs covers S8's durability model: each
+// TestSleepRegistersDurableSnapshotAndGCs covers the durability model: each
 // sleep registers a DURABLE snapshot (so a slept app survives a daemon restart
 // via re-adoption); an in-place wake KEEPS that snapshot (it backs the woken
 // VM's lazy memory); the next sleep supersedes and GCs it; and Delete reclaims

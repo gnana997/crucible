@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke for app scale-to-zero (v0.5.0 M1): create → sleep → wake,
+# End-to-end smoke for app scale-to-zero (v0.5.0): create → sleep → wake,
 # driven entirely through the app-level CLI/API.
 #
 # What this proves on real KVM:
@@ -8,7 +8,7 @@
 #   02  `app sleep web` snapshots + stops the VMM: phase=asleep, RAM freed
 #       (firecracker process gone), the published port stops serving
 #   03  the reconciler LEAVES A SLEPT APP ALONE — across several reconcile
-#       intervals the VMM stays gone and phase stays asleep (the A2 guard;
+#       intervals the VMM stays gone and phase stays asleep (the reconciler guard;
 #       without it a --restart=always app would be cold-booted right back)
 #   04  `app wake web` restores in place: phase=running, same published port
 #       serves again, and status reports a last_wake_latency_ms
@@ -45,7 +45,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible app scale-to-zero smoke (v0.5.0 M1)"
+echo " crucible app scale-to-zero smoke (v0.5.0)"
 echo " output dir : $SMOKE_ROOT     listen: $LISTEN"
 echo "==============================================================="
 
@@ -132,7 +132,7 @@ curl -s --max-time 3 "http://localhost:${PUB_PORT}/" >/dev/null 2>&1 \
   && echo "   (note: port still answered while asleep — unexpected)" \
   || echo "   (expected: published port does not serve while asleep)"
 
-echo "== 03 reconciler leaves a slept --restart=always app alone (A2 guard)"
+echo "== 03 reconciler leaves a slept --restart=always app alone"
 sleep 8   # several reconcile intervals (default 3s)
 if [[ "$(fc_count)" -eq "$FC_SLEEP" && "$(phase)" == "asleep" ]]; then
   pass "still asleep after reconcile passes (no cold-boot)"

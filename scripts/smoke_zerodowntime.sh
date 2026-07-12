@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Zero-downtime rolling `app update` smoke (v0.4.3 / W1).
+# Zero-downtime rolling `app update` smoke (v0.4.3).
 #
 #   01  daemon healthy with the proxy enabled; a proxy-fronted app serves by name
 #   02  hammer the app by name through the proxy while `app update` rolls it —
@@ -47,7 +47,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible zero-downtime rolling-update smoke (W1)"
+echo " crucible zero-downtime rolling-update smoke (v0.4.3)"
 echo "==============================================================="
 echo " output dir : $SMOKE_ROOT"
 echo " proxy      : http://127.0.0.1:$PROXY_PORT (domain: $DOMAIN)"
@@ -141,7 +141,7 @@ grep -qa '"msg":"ingress proxy enabled"' "$DAEMON_LOG" \
   || { fail "proxy did not enable (see $DAEMON_LOG)"; tail -20 "$DAEMON_LOG"; }
 
 cli app rm web >/dev/null 2>&1 || true
-# No --health: the update's readiness gate is a TCP connect to --port (D1).
+# No --health: the update's readiness gate is a TCP connect to --port.
 if [[ "$(cli app create web --image "$IMAGE" --port 80 --restart always --memory 256 2>/dev/null)" == "web" ]]; then
   hitproxy "html" || hitproxy "nginx" \
     && pass "app 'web' reachable by name through the proxy" \
@@ -207,7 +207,7 @@ done
 [[ "$REAPED" -eq 1 ]] && pass "superseded instance $INST1 reaped after the drain window" \
   || fail "superseded instance $INST1 still present after the drain window"
 
-# ---- 04 operate the app BY NAME (W2/W3): exec + logs resolve server-side -----
+# ---- 04 operate the app BY NAME: exec + logs resolve server-side ------------
 echo "== 04 operate 'web' by name: app exec + app logs → current instance"
 EXECOUT="$(cli app exec web -- /bin/sh -c 'echo ZDT-EXEC-OK' 2>/dev/null)"
 [[ "$EXECOUT" == *ZDT-EXEC-OK* ]] && pass "app exec web resolved to the current instance and ran" \

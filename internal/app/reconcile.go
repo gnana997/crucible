@@ -138,7 +138,7 @@ const (
 	crashLoopWindow          = 60 * time.Second
 	crashLoopThreshold       = 5
 
-	// Rolling update (W1): how long to wait for the incoming instance to pass
+	// Rolling update: how long to wait for the incoming instance to pass
 	// its readiness gate before aborting the roll (keeping the old instance),
 	// and how long to keep the superseded instance alive after a flip so the
 	// cutover drops nothing. drainWindow must exceed the resolver's cache TTL

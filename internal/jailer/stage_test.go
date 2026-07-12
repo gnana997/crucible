@@ -112,7 +112,7 @@ func TestStageOverwritesExisting(t *testing.T) {
 }
 
 // TestStageSnapshotArtifactsPrivatePerFork is the per-fork-isolation regression
-// (H1's second half). It replaces a test that asserted restore
+// (per-fork inode isolation). It replaces a test that asserted restore
 // artifacts were hard-linked — one inode shared by every fork — on
 // the theory that "COW at the firecracker layer" protected them.
 // That reasoning was wrong: COW protects a fork's memory *mapping*,
@@ -168,7 +168,7 @@ func TestStageSnapshotArtifactsPrivatePerFork(t *testing.T) {
 	}
 }
 
-// TestStageSharedFileIsolatesInode is the H1 regression: a Shared
+// TestStageSharedFileIsolatesInode is the per-fork-isolation regression: a Shared
 // source (the daemon-wide kernel) must be staged as its OWN inode,
 // read-only, and must NOT have its ownership or contents mutated by
 // staging — so the post-stage chown can never downgrade the shared
@@ -223,7 +223,7 @@ func TestStageSharedFileIsolatesInode(t *testing.T) {
 	}
 }
 
-// TestStageSharedKernelPreservesOwnershipRoot is the privileged H1
+// TestStageSharedKernelPreservesOwnershipRoot is the privileged
 // end-to-end check: staging the shared kernel as an unprivileged jail
 // uid (10000, the value production uses) must NOT change the shared
 // source's owner, while a private file staged the same run IS chowned

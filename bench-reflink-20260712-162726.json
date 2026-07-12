@@ -1,0 +1,101 @@
+{
+  "density": {
+    "mem_free_mib": 3142,
+    "peak_live": 512
+  },
+  "env": {
+    "arch": "amd64",
+    "cpu_model": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+    "host": "gnana097",
+    "kernel": "7.0.0-27-generic",
+    "mem_available_mib": 11923,
+    "mem_total_mib": 30681,
+    "num_cpu": 24,
+    "os": "linux",
+    "reflink": {
+      "note": "FICLONE ok — snapshot/fork/wake reflink (fast)",
+      "path": "/mnt/crucible-bench/run",
+      "supported": true
+    }
+  },
+  "fanout": [
+    {
+      "children": 1,
+      "per_child_ms": 164.884,
+      "per_sec": 6.06483519883823,
+      "total_ms": 164.884
+    },
+    {
+      "children": 4,
+      "per_child_ms": 54.07,
+      "per_sec": 18.49424670339359,
+      "total_ms": 216.283
+    },
+    {
+      "children": 16,
+      "per_child_ms": 40.332,
+      "per_sec": 24.79392982365153,
+      "total_ms": 645.319
+    },
+    {
+      "children": 64,
+      "per_child_ms": 36.508,
+      "per_sec": 27.39062987719722,
+      "total_ms": 2336.565
+    },
+    {
+      "children": 128,
+      "per_child_ms": 31.414,
+      "per_sec": 31.832155244706897,
+      "total_ms": 4021.091
+    }
+  ],
+  "latency": {
+    "create_ms": {
+      "max": 2147.157,
+      "min": 977.576,
+      "p50": 1119.295,
+      "p90": 1536.324,
+      "p99": 1894.078
+    },
+    "exec_ms": {
+      "max": 4.383,
+      "min": 1.704,
+      "p50": 2.633,
+      "p90": 3.078,
+      "p99": 4.026
+    },
+    "fork_ms": {
+      "max": 273.941,
+      "min": 102.541,
+      "p50": 210.164,
+      "p90": 234.438,
+      "p99": 240.563
+    },
+    "snapshot_ms": {
+      "max": 2577.202,
+      "min": 383.827,
+      "p50": 467.978,
+      "p90": 873.744,
+      "p99": 2448.008
+    }
+  },
+  "memory": {
+    "efficiency_x": 32768,
+    "fork_wall_ms": 1275.741,
+    "forks": 64,
+    "host_ram_used_mib": 1,
+    "naive_mib": 32768,
+    "per_fork_mib": 0.015625
+  },
+  "proxy_wake": {
+    "image": "nginx:alpine",
+    "req_to_served_ms": {
+      "max": 265.776,
+      "min": 93.663,
+      "p50": 156.746,
+      "p90": 247.278,
+      "p99": 262.166
+    }
+  }
+}

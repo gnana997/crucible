@@ -535,7 +535,7 @@ func TestSourceIPHelper(t *testing.T) {
 	_ = fmt.Sprintf // silence unused import in case we trim stubs later
 }
 
-// TestProxyStripsUnroutableAnswers is the C1 regression test: an
+// TestProxyStripsUnroutableAnswers is the regression test: an
 // attacker-controlled upstream answering with metadata, sandbox-
 // pool, LAN, or other non-public addresses must get NOTHING — no
 // allow-set update, no record returned to the guest.

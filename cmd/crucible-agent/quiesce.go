@@ -14,7 +14,7 @@ var syncer = syscall.Sync
 
 // handleQuiesce flushes the guest's filesystems so a subsequent host-side
 // snapshot/FICLONE of the rootfs is filesystem-clean rather than merely
-// crash-consistent (the E6 sync slice, used before sleep). sync(2) takes no
+// crash-consistent (used before sleep). sync(2) takes no
 // arguments, cannot fail, and returns nothing, so this always succeeds — a
 // caller that gets a non-2xx is talking to something other than this handler.
 func handleQuiesce(w http.ResponseWriter, _ *http.Request) {

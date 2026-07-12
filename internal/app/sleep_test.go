@@ -10,7 +10,7 @@ import (
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
-// TestAppSleepSurvivesRestart is S8: a slept app survives a daemon restart. A
+// TestAppSleepSurvivesRestart: a slept app survives a daemon restart. A
 // new Manager over the SAME store re-adopts the app as asleep (not cold-boot),
 // and a wake restores it from the durable snapshot into a fresh instance.
 func TestAppSleepSurvivesRestart(t *testing.T) {
@@ -218,7 +218,7 @@ func TestIdleCheckLeavesNonIdle(t *testing.T) {
 	}
 }
 
-// TestSleepWakeMutuallyExclusive is the M2-3 correctness centerpiece: a wake
+// TestSleepWakeMutuallyExclusive is the correctness centerpiece: a wake
 // that arrives while a sleep is mid-flight must NOT interleave with it (which
 // would observe a half-slept instance). It blocks on the per-app transition
 // lock until the sleep completes, then resolves against a coherent asleep state.
@@ -262,7 +262,7 @@ func TestSleepWakeMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// TestReconcileLeavesAsleepAppAlone is the A2 guard: a slept (or mid-wake) app
+// TestReconcileLeavesAsleepAppAlone is the reconciler guard: a slept (or mid-wake) app
 // is a steady desired state. Even with its instance gone, the reconciler must
 // NOT cold-boot a replacement — only an explicit Wake does that.
 func TestReconcileLeavesAsleepAppAlone(t *testing.T) {
@@ -278,7 +278,7 @@ func TestReconcileLeavesAsleepAppAlone(t *testing.T) {
 			}
 
 			// Simulate a sleep: mark the phase and drop the live instance, as the
-			// Sleep path (Group B/C) will. Without the guard, reconcile would see
+			// Sleep path will. Without the guard, reconcile would see
 			// a missing instance and cold-boot.
 			m.obsMu.Lock()
 			ob := m.obs[rec.ID]

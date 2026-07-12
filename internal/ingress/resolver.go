@@ -1,5 +1,5 @@
 // Package ingress routes inbound traffic to an app's current instance: a name
-// resolver (A3) and, on top of it, the in-process proxy (A2, forthcoming).
+// resolver and, on top of it, the in-process proxy.
 //
 // This file is the resolver. It maps a request hostname to the live guest IP +
 // port of the named app's *current* instance, resolved fresh (with a small TTL

@@ -49,8 +49,13 @@ func main() {
 		fanoutS  = flag.String("fanout", "1,4,16,64,128", "fork fan-out sizes")
 		memForks = flag.Int("mem-forks", 64, "forks for the memory-efficiency test")
 		density  = flag.Int("density", 0, "density target (0 = skip); forks until this many live or a failure")
-		phases   = flag.String("phases", "latency,fanout,memory,density", "phases to run")
+		phases   = flag.String("phases", "latency,fanout,memory,density", "phases to run (add 'proxywake' for the end-to-end wake number)")
 		jsonOut  = flag.String("json", "", "write machine-readable results to this path")
+
+		proxyAddr   = flag.String("proxy-addr", "", "ingress proxy address for the proxywake phase, e.g. 127.0.0.1:7879")
+		proxyDomain = flag.String("proxy-domain", "apps.local", "ingress proxy domain suffix")
+		wakeImage   = flag.String("wake-image", "nginx:alpine", "OCI image for the proxywake phase app (must serve HTTP on :80)")
+		reflinkPath = flag.String("reflink-path", "", "filesystem path to probe for reflink support (default: OS temp dir; point at the daemon's --work-base for an accurate stamp)")
 	)
 	flag.Parse()
 
@@ -72,6 +77,16 @@ func main() {
 
 	fmt.Println(accent.Render("crucible-bench") + dim.Render("  →  "+*addr))
 	printEnv(b)
+	env := captureEnv(*reflinkPath)
+	b.results["env"] = env
+	if rl, ok := env["reflink"].(map[string]any); ok {
+		tag := okc.Render("reflink")
+		if s, _ := rl["supported"].(bool); !s {
+			tag = accent.Render("NO reflink")
+		}
+		fmt.Println(dim.Render("  storage "+fmt.Sprintf("%v", rl["path"])+" · ") + tag +
+			dim.Render("  "+fmt.Sprintf("%v", rl["note"])))
+	}
 
 	ctx := context.Background()
 	if err := cl.Health(ctx); err != nil {
@@ -90,6 +105,16 @@ func main() {
 	}
 	if run("density") && *density > 0 {
 		b.density(ctx, *density)
+	}
+	if run("wake") {
+		b.wake(ctx)
+	}
+	if run("proxywake") {
+		if *proxyAddr == "" {
+			fmt.Fprintln(os.Stderr, "proxywake phase needs --proxy-addr; skipping")
+		} else {
+			b.proxyWake(ctx, *proxyAddr, *proxyDomain, *wakeImage)
+		}
 	}
 
 	if *jsonOut != "" {
@@ -178,27 +203,36 @@ func (b *bench) latency(ctx context.Context) {
 	})
 
 	_ = b.cl.DeleteSnapshot(ctx, base.ID)
+	_ = b.cl.DeleteSandbox(ctx, warm.ID)
 
-	// wake latency: the scale-to-zero headline number. Each sample sleeps the
-	// warm sandbox (untimed) then times the wake-in-place (restore + reseed +
-	// clock). Needs a rootfs whose guest agent has /wake (rebuild profiles with
-	// the current crucible-agent), else the wake errors as unsupported.
+	b.results["latency"] = map[string]any{
+		"create_ms": create, "exec_ms": exec, "snapshot_ms": snap, "fork_ms": fork,
+	}
+}
+
+// wake measures the sandbox-level sleep→restore-in-place mechanism (reseed +
+// clock). Opt-in (--phases wake): needs a rootfs whose guest agent has /wake —
+// rebuild profiles with the current crucible-agent, or use the proxywake phase
+// (OCI images carry the embedded agent, so /wake is always present there).
+func (b *bench) wake(ctx context.Context) {
+	fmt.Println("\n" + head.Render("④ wake") + dim.Render(fmt.Sprintf("  (%d samples; sandbox restore-in-place)", b.samples)))
+	warm, err := b.cl.CreateSandbox(ctx, b.createReq())
+	if err != nil {
+		fatal("create warm", err)
+	}
+	defer func() { _ = b.cl.DeleteSandbox(ctx, warm.ID) }()
+
 	wake := b.measure("wake (asleep → restored)", func() time.Duration {
 		if err := b.cl.SleepSandbox(ctx, warm.ID); err != nil {
 			fatal("sleep", err)
 		}
 		t0 := time.Now()
 		if err := b.cl.WakeSandbox(ctx, warm.ID); err != nil {
-			fatal("wake", err)
+			fatal("wake (needs a rootfs whose agent has /wake)", err)
 		}
 		return time.Since(t0)
 	})
-
-	_ = b.cl.DeleteSandbox(ctx, warm.ID)
-
-	b.results["latency"] = map[string]any{
-		"create_ms": create, "exec_ms": exec, "snapshot_ms": snap, "fork_ms": fork, "wake_ms": wake,
-	}
+	b.results["wake"] = map[string]any{"wake_ms": wake}
 }
 
 func (b *bench) fanout(ctx context.Context, sizes []int) {

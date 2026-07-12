@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# Correctness matrix for app sleep/wake (v0.5.0 M1, Group D). Where
+# Correctness matrix for app sleep/wake (v0.5.0). Where
 # smoke_app_sleepwake.sh proves scale-to-zero *works*, this proves it is
 # *correct* — the two silent-corruption gates the functional smoke can't see:
 #
-#   D2 / E4  guest clock is STEPPED on wake. After a real sleep gap, an asleep
+#   * guest clock is STEPPED on wake. After a real sleep gap, an asleep
 #            guest's clock is frozen at snapshot time; wake steps it to host
 #            wall time. We sleep the app for GAP seconds, wake it, and assert the
 #            guest's clock is within a few seconds of the host's — NOT ~GAP
 #            behind (which is what a frozen, un-stepped clock would show).
 #
-#   D3 / E1  identity is PRESERVED across wake (wake != fork). Wake reseeds the
+#   * identity is PRESERVED across wake (wake != fork). Wake reseeds the
 #            CRNG but must NOT rotate hostname/machine-id. We capture the guest
 #            hostname before sleep and assert it is unchanged after wake.
 #
-# D1/E2 (a guest TCP listener survives restore) and D4 (the slept instance's
-# netns is not reaped) are already demonstrated by smoke_app_sleepwake.sh: the
+# A guest TCP listener surviving restore, and the slept instance's
+# netns not being reaped, are already demonstrated by smoke_app_sleepwake.sh: the
 # app serves again on wake (listener survived) at the same guest IP (netns kept).
 #
 # Requires: root + KVM, firecracker + jailer + vmlinux, crucible built, curl,
@@ -50,7 +50,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible sleep/wake correctness (v0.5.0 M1, Group D)"
+echo " crucible sleep/wake correctness (v0.5.0)"
 echo " output dir : $SMOKE_ROOT   gap: ${GAP}s   clock tol: ${CLOCK_TOL}s"
 echo "==============================================================="
 
@@ -120,7 +120,7 @@ cli app wake web >/dev/null 2>&1
 if ! wait_phase running; then fail "app did not return to running after wake"; tail -40 "$DAEMON_LOG"; exit 1; fi
 pass "woke to running"
 
-echo "== 04 D3/E1: identity preserved (hostname unchanged, wake != fork)"
+echo "== 04 identity preserved (hostname unchanged, wake != fork)"
 HOST_AFTER="$(gexec hostname)"
 if [[ "$HOST_AFTER" == "$HOST_BEFORE" ]]; then
   pass "hostname unchanged across sleep/wake ($HOST_AFTER)"
@@ -128,7 +128,7 @@ else
   fail "hostname changed: before=$HOST_BEFORE after=$HOST_AFTER (wake must not rotate identity)"
 fi
 
-echo "== 05 D2/E4: guest clock stepped to host time (not ~${GAP}s behind)"
+echo "== 05 guest clock stepped to host time (not ~${GAP}s behind)"
 HOST_NOW="$(date +%s)"
 GUEST_NOW="$(gexec date +%s)"
 if [[ "$GUEST_NOW" =~ ^[0-9]+$ ]]; then
@@ -137,7 +137,7 @@ if [[ "$GUEST_NOW" =~ ^[0-9]+$ ]]; then
   if [[ "$DIFF" -le "$CLOCK_TOL" ]]; then
     pass "guest clock stepped on wake (drift ${DIFF}s <= ${CLOCK_TOL}s)"
   else
-    fail "guest clock NOT stepped: ${DIFF}s drift (E4 gate — stale clock breaks TLS/JWT/TTLs)"
+    fail "guest clock NOT stepped: ${DIFF}s drift (stale clock breaks TLS/JWT/TTLs)"
   fi
 else
   fail "could not read guest clock: '$GUEST_NOW'"

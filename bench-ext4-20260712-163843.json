@@ -1,0 +1,97 @@
+{
+  "env": {
+    "arch": "amd64",
+    "cpu_model": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+    "host": "gnana097",
+    "kernel": "7.0.0-27-generic",
+    "mem_available_mib": 15382,
+    "mem_total_mib": 30681,
+    "num_cpu": 24,
+    "os": "linux",
+    "reflink": {
+      "note": "FICLONE failed (operation not supported) — filesystem does not support reflink; snapshot/fork/wake will byte-copy",
+      "path": "/var/lib/crucible-bench-ext4/run",
+      "supported": false
+    }
+  },
+  "fanout": [
+    {
+      "children": 1,
+      "per_child_ms": 870.611,
+      "per_sec": 1.1486179620780426,
+      "total_ms": 870.611
+    },
+    {
+      "children": 4,
+      "per_child_ms": 444.813,
+      "per_sec": 2.2481346215384517,
+      "total_ms": 1779.252
+    },
+    {
+      "children": 16,
+      "per_child_ms": 309.643,
+      "per_sec": 3.2295210252093662,
+      "total_ms": 4954.295
+    },
+    {
+      "children": 64,
+      "per_child_ms": 273.376,
+      "per_sec": 3.6579525629188834,
+      "total_ms": 17496.126
+    },
+    {
+      "children": 128,
+      "per_child_ms": 844.622,
+      "per_sec": 1.183960194893588,
+      "total_ms": 108111.742
+    }
+  ],
+  "latency": {
+    "create_ms": {
+      "max": 2208.8,
+      "min": 1214.353,
+      "p50": 1462.687,
+      "p90": 1907.289,
+      "p99": 2077.896
+    },
+    "exec_ms": {
+      "max": 20.295,
+      "min": 0.966,
+      "p50": 4.013,
+      "p90": 9.872,
+      "p99": 11.992
+    },
+    "fork_ms": {
+      "max": 797.925,
+      "min": 551.511,
+      "p50": 694.894,
+      "p90": 734.126,
+      "p99": 740.29
+    },
+    "snapshot_ms": {
+      "max": 1251.563,
+      "min": 516.9,
+      "p50": 629.537,
+      "p90": 1040.867,
+      "p99": 1110.05
+    }
+  },
+  "memory": {
+    "efficiency_x": 28.668416447944008,
+    "fork_wall_ms": 75031.828,
+    "forks": 64,
+    "host_ram_used_mib": 1143,
+    "naive_mib": 32768,
+    "per_fork_mib": 17.859375
+  },
+  "proxy_wake": {
+    "image": "nginx:alpine",
+    "req_to_served_ms": {
+      "max": 359.772,
+      "min": 213.769,
+      "p50": 247.965,
+      "p90": 327.454,
+      "p99": 343.601
+    }
+  }
+}

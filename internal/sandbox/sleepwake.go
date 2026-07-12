@@ -1,7 +1,7 @@
 package sandbox
 
-// In-place sleep/wake — the sandbox-level primitives behind scale-to-zero
-// (v0.5.0 items B3/B4). Sleep snapshots a running guest and stops its VMM to
+// In-place sleep/wake — the sandbox-level primitives behind scale-to-zero.
+// Sleep snapshots a running guest and stops its VMM to
 // free RAM while keeping the netns + record; Wake restores it into the SAME
 // identity (id, netns, IP), reseeding the CRNG and stepping the clock but — the
 // wake-vs-fork distinction — NOT rotating machine-id/hostname or re-DHCPing.
@@ -43,7 +43,7 @@ type sleepState struct {
 
 // SleepInPlace snapshots a running sandbox, then stops its VMM to free RAM while
 // KEEPING the netns, workdir, and in-memory record — the "snapshot then stop,
-// don't tear down" half of sleep (C2). The sandbox stays registered; the /30 is
+// don't tear down" half of sleep. The sandbox stays registered; the /30 is
 // still reserved; WakeInPlace restores it into the same identity.
 //
 // Ordering matters: the guest filesystems are synced (quiesce) while the VM can

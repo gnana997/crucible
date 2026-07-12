@@ -1,6 +1,6 @@
 package daemon
 
-// Sandbox-level in-place sleep/wake routes (v0.5.0 B3/B4). These are the
+// Sandbox-level in-place sleep/wake routes. These are the
 // low-level primitive, parallel to snapshot/fork; the product-facing surface is
 // app-level sleep/wake (drives these through the app control plane). Not yet in
 // the public API docs while scale-to-zero is under construction.

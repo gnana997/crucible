@@ -61,7 +61,7 @@ func (s *Server) routes() *http.ServeMux {
 	// Config.LogStore is nil.
 	mux.HandleFunc("GET /sandboxes/{id}/logs", s.handleSandboxLogs)
 	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
-	// Sandbox-level in-place sleep/wake (v0.5.0 B3/B4): the low-level primitive
+	// Sandbox-level in-place sleep/wake: the low-level primitive
 	// behind scale-to-zero, parallel to snapshot/fork.
 	mux.HandleFunc("POST /sandboxes/{id}/sleep", s.handleSleepSandbox)
 	mux.HandleFunc("POST /sandboxes/{id}/wake", s.handleWakeSandbox)

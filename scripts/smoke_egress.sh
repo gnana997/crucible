@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Egress-model smoke (v0.4.1 / A6): the range-based egress modes and — the whole
+# Egress-model smoke (v0.4.1): the range-based egress modes and — the whole
 # point — the SSRF tripwire that guards them.
 #
 #   01  daemon healthy
@@ -52,7 +52,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible egress-model smoke (A6)"
+echo " crucible egress-model smoke (v0.4.1)"
 echo "==============================================================="
 echo " output dir : $SMOKE_ROOT"
 echo " public tgt : $PUBLIC_HOST:$PUBLIC_PORT"

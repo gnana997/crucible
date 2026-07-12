@@ -102,7 +102,7 @@ func TestResolveErrors(t *testing.T) {
 	}
 }
 
-// TestResolveAsleep is M2-1: asleep/waking apps (instance id kept, VMM stopped)
+// TestResolveAsleep: asleep/waking apps (instance id kept, VMM stopped)
 // resolve to the distinct ErrAsleep — the proxy's signal to wake and hold —
 // while other non-running phases stay ErrNoInstance.
 func TestResolveAsleep(t *testing.T) {
@@ -125,7 +125,7 @@ func TestResolveAsleep(t *testing.T) {
 		}
 	}
 
-	// S8: a re-adopted asleep app (after a daemon restart) has NO instance id but
+	// A re-adopted asleep app (after a daemon restart) has NO instance id but
 	// is still wakeable → ErrAsleep, not ErrNoInstance.
 	reAdopted := phased("asleep")
 	reAdopted.Status.InstanceID = ""

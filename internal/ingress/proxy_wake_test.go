@@ -103,7 +103,7 @@ func TestProxyWakesAsleepAppAndForwards(t *testing.T) {
 }
 
 // TestProxyReportsWakeLatency: a successful wake-on-request reports its latency
-// via OnWake (M2-7).
+// via OnWake.
 func TestProxyReportsWakeLatency(t *testing.T) {
 	var observed int32
 	p, _, waker, closeBackend := newWakeTestProxy(t, func(time.Duration) { atomic.AddInt32(&observed, 1) })

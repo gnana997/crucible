@@ -75,7 +75,7 @@ Turn a durable app from *survivable* into *deployable*: real config and real egr
 
 ### v0.4.2 — Reach it by name
 
-Closes P1b: the durable app is now reachable by name and updatable in place.
+The durable app is now reachable by name and updatable in place.
 
 - [x] **Ingress proxy** — reach an app by name instead of a published port. `--proxy-listen` (Host-header routing, L7), `--proxy-tls-listen` (SNI passthrough, L4 — the guest terminates its own TLS), `--proxy-domain <domain>` (`web.<domain>` → app `web`). Off in the daemon by default; the installer enables it on `:7879` (next to the API, clear of the `:80`/`:8080`/… ports you publish to), overridable to `:80`/`:443` for a production ingress. Resolution is live, so the route follows the app across self-heal and redeploy and never points at a stale IP ([proxy.md](proxy.md)).
 - [x] **`crucible app update`** — replace an app's spec (name immutable) and redeploy: the reconciler bumps the generation, destroys the old instance, and boots a fresh one. Also on the Go SDK (`UpdateApp`) and the MCP `update_app` tool. *(v0.4.3 makes this zero-downtime — see below.)*

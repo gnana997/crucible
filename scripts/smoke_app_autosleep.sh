@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# M2 exit demo: automatic scale-to-zero through the ingress proxy (v0.5.0).
+# Automatic scale-to-zero through the ingress proxy (v0.5.0).
 #
 # What this proves on real KVM:
 #   01  a proxy-fronted app with --idle-timeout serves by name
@@ -44,7 +44,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible AUTO scale-to-zero smoke (v0.5.0 M2)"
+echo " crucible AUTO scale-to-zero smoke (v0.5.0)"
 echo " output: $SMOKE_ROOT   proxy: http://127.0.0.1:$PROXY_PORT ($DOMAIN)  idle: $IDLE"
 echo "==============================================================="
 

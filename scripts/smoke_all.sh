@@ -47,7 +47,7 @@ SMOKES=(
   "kvm        smoke_shell.sh"        # interactive shell (M-series feature)
   "kvm        smoke_ws_exec.sh"      # WebSocket interactive exec (cross-language transport)
   "kvm        smoke_durable.sh"      # durable apps survive a daemon restart (v0.4)
-  "kvm        smoke_egress.sh"       # A6 egress modes + SSRF tripwire (v0.4.1)
+  "kvm        smoke_egress.sh"       # egress modes + SSRF tripwire (v0.4.1)
   "kvm        smoke_proxy.sh"        # ingress proxy: reach-by-name + isolation (v0.4.2)
   "kvm        smoke_zerodowntime.sh" # zero-downtime rolling app update (v0.4.3)
   "kvm        smoke_registry.sh"    # private-registry credentials (v0.4.4)

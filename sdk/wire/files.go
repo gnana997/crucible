@@ -14,7 +14,7 @@ package wire
 // point outside). Nothing is buffered whole: the daemon is a streaming proxy
 // between the client's request body and the agent's request body.
 //
-// The pull path (GET /files) is added with C2.
+// The pull path (GET /files) mirrors it in the opposite direction.
 
 // FilesPutResult is the JSON summary the agent returns from PUT /files, echoed
 // back to the client through the daemon.

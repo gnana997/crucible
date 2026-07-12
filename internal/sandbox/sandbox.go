@@ -177,7 +177,7 @@ type Sandbox struct {
 	// asleep, when non-nil, holds the snapshot artifacts captured by
 	// SleepInPlace to wake from: the VMM is stopped (RAM freed) but the record,
 	// netns, and workdir are kept. Cleared by WakeInPlace. In-memory only —
-	// surviving a daemon restart while asleep is a later item (C8).
+	// surviving a daemon restart while asleep is handled by the durable snapshot.
 	asleep *sleepState
 
 	// memSnapshotID is the id of the DURABLE snapshot backing this instance's

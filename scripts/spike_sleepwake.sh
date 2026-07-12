@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Smoke test for in-place sleep/wake (v0.5.0 B3/B4).
+# Smoke test for in-place sleep/wake (v0.5.0).
 #
 # Drives the real sandbox-level primitives: SleepInPlace snapshots + stops the
 # VMM (freeing RAM) keeping the netns; WakeInPlace restores in place, reseeding
@@ -12,7 +12,7 @@
 #   2. The netns is KEPT across sleep (teardown asymmetry): unlike Delete, sleep
 #      must not tear down the network. We assert the netns count is unchanged.
 #   3. The firecracker process is actually GONE while asleep (RAM reclaimed).
-#   4. The guest's TCP listener survives snapshot→restore (E2): the published
+#   4. The guest's TCP listener survives snapshot→restore: the published
 #      port serves again after wake, with no re-publish and no identity refresh.
 #
 # The sharp unknown this targets: reusing the SAME jailer chroot / sandbox id

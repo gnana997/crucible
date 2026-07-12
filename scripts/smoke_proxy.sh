@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Ingress-proxy + inbound-isolation smoke (v0.4.2 / A2+A3+A4).
+# Ingress-proxy + inbound-isolation smoke (v0.4.2).
 #
 #   01  daemon healthy with the proxy enabled
 #   02  reach an app BY NAME through the proxy (Host header → current instance)
 #   03  self-heal: kill the instance → the proxy follows the app to the new one
-#       (A3 never routes a stale IP)
+#       (the resolver never routes a stale IP)
 #   04  unknown host → 404; an app with no ready instance → 502 (no buffering)
-#   05  inbound isolation (A4): a guest cannot reach a PEER guest's IP — the
+#   05  inbound isolation: a guest cannot reach a PEER guest's IP — the
 #       proxy does not open a lateral-movement path
 #
 # The proxy dials the guest from the daemon's host netns (same origin as the
@@ -48,7 +48,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible ingress-proxy smoke (A2/A3/A4)"
+echo " crucible ingress-proxy smoke (v0.4.2)"
 echo "==============================================================="
 echo " output dir : $SMOKE_ROOT"
 echo " proxy      : http://127.0.0.1:$PROXY_PORT (domain: $DOMAIN)"
@@ -143,7 +143,7 @@ else
 fi
 
 # ---- 03 self-heal: the proxy follows the app to a new instance --------------
-echo "== 03 kill the instance → proxy follows the app to the fresh one (A3)"
+echo "== 03 kill the instance → proxy follows the app to the fresh one"
 INST="$(api "$BASE_URL/apps/web" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
 if [[ "$INST" == sbx_* ]]; then
   cli sandbox rm "$INST" >/dev/null 2>&1 || true
@@ -173,7 +173,7 @@ code="$(proxycode "dormant.$DOMAIN")"
 cli app rm dormant >/dev/null 2>&1 || true
 
 # ---- 05 inbound isolation: a guest can't reach a peer guest's IP ------------
-echo "== 05 inbound isolation (A4): web's guest cannot reach a peer guest's IP"
+echo "== 05 inbound isolation: web's guest cannot reach a peer guest's IP"
 PEER="$(cli sandbox create --image "$IMAGE" --memory 256 --net-allow example.com 2>/dev/null)"
 if [[ "$PEER" == sbx_* ]]; then
   PEER_IP="$(api "$BASE_URL/sandboxes/$PEER" 2>/dev/null | grep -o '"guest_ip":"[0-9.]*"' | grep -o '[0-9.]*' | head -1)"

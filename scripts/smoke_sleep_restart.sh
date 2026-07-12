@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# S8: a slept app survives a daemon restart (v0.5.0 M3).
+# A slept app survives a daemon restart (v0.5.0).
 #
 # What this proves on real KVM:
 #   01  a proxy-fronted app is created and served by name
@@ -46,7 +46,7 @@ mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
-echo " crucible sleep-survives-restart smoke (v0.5.0 M3 / S8)"
+echo " crucible sleep-survives-restart smoke (v0.5.0)"
 echo " output: $SMOKE_ROOT   proxy: http://127.0.0.1:$PROXY_PORT ($DOMAIN)"
 echo "==============================================================="
 
