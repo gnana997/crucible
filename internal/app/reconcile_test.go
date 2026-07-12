@@ -777,3 +777,50 @@ func TestSeedHealthFromImage(t *testing.T) {
 		t.Errorf("explicit health overwritten by seed: %+v", got2.Spec.Health)
 	}
 }
+
+func TestCanCall(t *testing.T) {
+	m, _ := newMgr(t, newFake())
+	web := nginxSpec("web", wire.RestartAlways)
+	web.CanCall = []string{"backend"}
+	if _, err := m.Create(web, true); err != nil {
+		t.Fatalf("create web: %v", err)
+	}
+	if _, err := m.Create(nginxSpec("backend", wire.RestartAlways), true); err != nil {
+		t.Fatalf("create backend: %v", err)
+	}
+
+	if !m.CanCall("web", "backend") {
+		t.Error("web→backend should be allowed (granted)")
+	}
+	if m.CanCall("backend", "web") {
+		t.Error("backend→web should be denied (no grant) — default-deny")
+	}
+	if !m.CanCall("web", "web") {
+		t.Error("web→web (self) should be allowed")
+	}
+	if m.CanCall("web", "unknown") {
+		t.Error("web→unknown (not granted) should be denied")
+	}
+	if m.CanCall("ghost", "backend") {
+		t.Error("unknown caller should be denied")
+	}
+	if m.CanCall("", "backend") || m.CanCall("web", "") {
+		t.Error("empty caller/target should be denied")
+	}
+}
+
+func TestValidateSpecCanCall(t *testing.T) {
+	base := nginxSpec("web", wire.RestartAlways)
+	base.CanCall = []string{"Bad Name"}
+	if err := validateSpec(base); err == nil {
+		t.Error("can_call with an invalid app name should fail validation")
+	}
+	base.CanCall = []string{"web"} // self-reference
+	if err := validateSpec(base); err == nil {
+		t.Error("can_call listing the app itself should fail validation")
+	}
+	base.CanCall = []string{"backend", "cache"}
+	if err := validateSpec(base); err != nil {
+		t.Errorf("valid can_call targets should pass: %v", err)
+	}
+}

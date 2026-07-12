@@ -56,6 +56,38 @@ func (s sandboxGuestIP) GuestIP(instanceID string) (string, bool) {
 	return s.mgr.Routable(instanceID)
 }
 
+// internalAuthorizer implements ingress.CallerAuthorizer for app→app networking:
+// it maps a source guest IP to its owning app (whichever app's current instance
+// holds that IP) and checks the caller's can_call grant. Default-deny — an
+// unrecognized source IP or a missing grant is not authorized.
+type internalAuthorizer struct {
+	apps *app.Manager
+	ips  sandboxGuestIP // instance → guest IP
+}
+
+func (a internalAuthorizer) AuthorizeCall(callerIP, targetApp string) (string, bool) {
+	caller, ok := a.appForGuestIP(callerIP)
+	if !ok {
+		return "", false
+	}
+	return caller, a.apps.CanCall(caller, targetApp)
+}
+
+func (a internalAuthorizer) appForGuestIP(ip string) (string, bool) {
+	apps, err := a.apps.List()
+	if err != nil {
+		return "", false
+	}
+	for _, ap := range apps {
+		if ap.Status != nil && ap.Status.InstanceID != "" {
+			if gip, ok := a.ips.GuestIP(ap.Status.InstanceID); ok && gip == ip {
+				return ap.Name, true
+			}
+		}
+	}
+	return "", false
+}
+
 // runDaemon implements the `crucible daemon` subcommand.
 //
 // It wires the four layers we built in wk1 — runner → sandbox.Manager →
@@ -328,6 +360,11 @@ Required flags:
 	// run without --network-egress-iface.
 	network.ReapOrphans(context.Background(), logger)
 
+	// Declared before the network manager so the DNS proxy's app→app authorizer
+	// (below) can close over it; it's assigned when durable apps start, and the
+	// closure is only invoked at query time (after that), nil-checking to fail
+	// closed in the interim.
+	var appMgr *app.Manager
 	var netMgr *network.Manager
 	if *netEgressIface != "" && *jailerBin != "" {
 		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
@@ -351,7 +388,17 @@ Required flags:
 			DNSUpstream:       *dnsUpstream,
 			InternalProxyPort: internalProxyPort,
 			InternalZone:      internalZone,
-			Logger:            logger,
+			// App→app DNS authorization (default-deny): the querying sandbox's app
+			// must list the target in its can_call. nil appMgr / unknown source /
+			// missing grant → deny (NXDOMAIN at the DNS layer).
+			InternalAuthz: func(sandboxID, target string) bool {
+				if appMgr == nil {
+					return false
+				}
+				caller, ok := appMgr.AppForInstance(sandboxID)
+				return ok && appMgr.CanCall(caller, target)
+			},
+			Logger: logger,
 		})
 		if nerr != nil {
 			logger.Error("network init failed", "err", nerr)
@@ -484,7 +531,7 @@ Required flags:
 	// reconcile above has reaped the previous run's instances, so the
 	// app reconciler's initial pass boots fresh instances from persisted
 	// desired state — this is how an app survives a daemon restart.
-	var appMgr *app.Manager
+	// (appMgr is declared earlier so the DNS authorizer can close over it.)
 	var appStore *app.Store
 	var activityTracker *ingress.ActivityTracker
 	if *appDB != "" {
@@ -526,11 +573,16 @@ Required flags:
 				logger.Warn("internal-networking requested but network is disabled; app→app networking off (set --network-egress-iface + --jailer-bin)")
 			}
 			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, internalZone, time.Second)
+			var internalAuthz ingress.CallerAuthorizer
+			if internalListen != "" {
+				internalAuthz = internalAuthorizer{apps: appMgr, ips: sandboxGuestIP{mgr}}
+			}
 			proxy = ingress.New(ingress.Config{
 				Resolver:       resolver,
 				HTTPListen:     *proxyListen,
 				TLSListen:      *proxyTLSListen,
 				InternalListen: internalListen,
+				InternalAuthz:  internalAuthz,
 				Logger:         logger,
 				Waker:          appMgr,          // wake a slept app on the first request for it
 				Activity:       activityTracker, // feed the idle monitor

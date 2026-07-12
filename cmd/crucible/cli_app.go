@@ -73,7 +73,7 @@ type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
 	idleTimeout                                   string
 	vcpus, memory, port, minScale                 int
-	netAllow, publish, env, netAllowCIDR          []string
+	netAllow, publish, env, netAllowCIDR, canCall []string
 	netFullEgress, publishAll                     bool
 }
 
@@ -96,6 +96,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
 	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (needs the ingress proxy)")
 	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
+	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
 }
 
 func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
@@ -125,6 +126,7 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		Port:       a.port,
 		PublishAll: a.publishAll,
 		Restart:    wire.RestartPolicy{Policy: a.restart},
+		CanCall:    a.canCall,
 	}
 	for _, p := range a.publish {
 		pm, perr := parsePublish(p)

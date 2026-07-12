@@ -809,12 +809,13 @@ func TestIsPublicUnicast(t *testing.T) {
 
 func TestInternalAnswer(t *testing.T) {
 	vip := netip.MustParseAddr("10.20.255.254")
-	p := &Proxy{cfg: Config{InternalZone: "internal", InternalVIP: vip}}
+	allow := func(sandboxID, target string) bool { return target == "backend" }
+	p := &Proxy{cfg: Config{InternalZone: "internal", InternalVIP: vip, InternalAuthz: allow}}
 
-	// A query for an in-zone app → authoritative A record pointing at the VIP.
+	// Authorized A query for an in-zone app → authoritative A record → the VIP.
 	reqA := new(dns.Msg)
 	reqA.SetQuestion("backend.internal.", dns.TypeA)
-	m := p.internalAnswer(reqA)
+	m := p.internalAnswer(reqA, "sbx_1")
 	if m == nil || !m.Authoritative || len(m.Answer) != 1 {
 		t.Fatalf("A: want 1 authoritative answer, got %+v", m)
 	}
@@ -822,12 +823,27 @@ func TestInternalAnswer(t *testing.T) {
 		t.Errorf("A record = %v, want 10.20.255.254", m.Answer[0])
 	}
 
-	// AAAA for an in-zone app → NODATA (non-nil reply, empty answer) so a
-	// dual-stack resolver falls back to the A record.
+	// Authorized AAAA → NODATA (non-nil NOERROR, empty answer) so a dual-stack
+	// resolver falls back to the A record.
 	reqAAAA := new(dns.Msg)
 	reqAAAA.SetQuestion("backend.internal.", dns.TypeAAAA)
-	if m := p.internalAnswer(reqAAAA); m == nil || len(m.Answer) != 0 {
-		t.Errorf("AAAA: want NODATA (empty answer), got %+v", m)
+	if m := p.internalAnswer(reqAAAA, "sbx_1"); m == nil || len(m.Answer) != 0 || m.Rcode != dns.RcodeSuccess {
+		t.Errorf("AAAA: want NODATA (empty NOERROR), got %+v", m)
+	}
+
+	// UNAUTHORIZED in-zone target → NXDOMAIN (no inventory leak), never an A.
+	reqDeny := new(dns.Msg)
+	reqDeny.SetQuestion("secret.internal.", dns.TypeA)
+	if m := p.internalAnswer(reqDeny, "sbx_1"); m == nil || m.Rcode != dns.RcodeNameError || len(m.Answer) != 0 {
+		t.Errorf("unauthorized: want NXDOMAIN, got %+v", m)
+	}
+
+	// Nil authorizer with the zone set → deny everything in-zone (fail closed).
+	noAuthz := &Proxy{cfg: Config{InternalZone: "internal", InternalVIP: vip}}
+	req := new(dns.Msg)
+	req.SetQuestion("backend.internal.", dns.TypeA)
+	if m := noAuthz.internalAnswer(req, "sbx_1"); m == nil || m.Rcode != dns.RcodeNameError {
+		t.Errorf("nil authz: want NXDOMAIN (fail closed), got %+v", m)
 	}
 
 	// Out-of-zone, the bare zone, and a disabled zone → not ours (nil).
@@ -842,7 +858,7 @@ func TestInternalAnswer(t *testing.T) {
 	} {
 		req := new(dns.Msg)
 		req.SetQuestion(tc.q, dns.TypeA)
-		if got := tc.p.internalAnswer(req); got != nil {
+		if got := tc.p.internalAnswer(req, "sbx_1"); got != nil {
 			t.Errorf("%s: internalAnswer = %+v, want nil", tc.name, got)
 		}
 	}

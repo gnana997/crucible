@@ -70,6 +70,12 @@ type AppSpec struct {
 	// stopped — freeing RAM while keeping the app instantly addressable —
 	// then restored in place on the next request (wake).
 	Sleep *SleepPolicy `json:"sleep,omitempty"`
+
+	// CanCall lists the apps this app may reach over the internal zone
+	// (<app>.internal) through the ingress proxy — app→app service networking
+	// (v0.5.1). Default-deny: empty means this app may call no other app. Requires
+	// the daemon's --internal-networking. Each entry is an app name (DNS label).
+	CanCall []string `json:"can_call,omitempty"`
 }
 
 // SleepPolicy configures an app's scale-to-zero behavior.

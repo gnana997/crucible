@@ -35,6 +35,7 @@ type createAppInput struct {
 	NetAllow      []string `json:"net_allow,omitempty" jsonschema:"egress hostname allowlist for the app (repeatable); empty means no network"`
 	NetAllowCIDR  []string `json:"net_allow_cidr,omitempty" jsonschema:"public IPv4 CIDRs the app may reach directly, e.g. [\"203.0.113.0/24\"]"`
 	NetFullEgress bool     `json:"net_full_egress,omitempty" jsonschema:"allow the app egress to ANY public host (metadata/link-local/RFC1918 still blocked). Subject to the server's --net-allow-max ceiling."`
+	CanCall       []string `json:"can_call,omitempty" jsonschema:"apps this app may reach at <app>.internal via the ingress proxy (app-to-app networking, default-deny); needs the daemon's --internal-networking"`
 	Stopped       bool     `json:"stopped,omitempty" jsonschema:"create the app without starting an instance"`
 }
 
@@ -165,6 +166,7 @@ func (h *handlers) appSpecFrom(in createAppInput) (api.AppSpec, error) {
 		PublishAll: in.PublishAll,
 		Network:    mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress),
 		Restart:    wire.RestartPolicy{Policy: restart},
+		CanCall:    in.CanCall,
 	}
 	for _, p := range in.Publish {
 		pm, perr := api.ParsePublish(p)

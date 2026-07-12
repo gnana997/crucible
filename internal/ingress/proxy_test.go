@@ -109,3 +109,48 @@ func TestPeekSNI(t *testing.T) {
 		t.Error("no ClientHello bytes captured for replay")
 	}
 }
+
+// authzFunc adapts a func to CallerAuthorizer for tests.
+type authzFunc func(ip, target string) (string, bool)
+
+func (f authzFunc) AuthorizeCall(ip, target string) (string, bool) { return f(ip, target) }
+
+func TestInternalAuthz(t *testing.T) {
+	apps := fakeApps{apps: map[string]api.AppResponse{"backend": runningApp("backend", 80, "sbx_b")}}
+	inst := fakeInstances{ips: map[string]string{"sbx_b": "10.20.0.2"}}
+	r := NewResolver(apps, inst, "apps.local", "internal", 0)
+
+	internalReq := func() *http.Request {
+		req := httptest.NewRequest("GET", "http://backend.internal/", nil)
+		req.RemoteAddr = "10.20.0.10:5000"
+		return req
+	}
+
+	// Authorizer refuses → 403, before any resolve/wake.
+	deny := authzFunc(func(ip, target string) (string, bool) { return "web", false })
+	p := New(Config{Resolver: r, InternalAuthz: deny, Logger: quietLog()})
+	rec := httptest.NewRecorder()
+	p.handle(rec, internalReq(), true)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("denied internal call = %d, want 403", rec.Code)
+	}
+
+	// No authorizer wired → fail closed (403).
+	p2 := New(Config{Resolver: r, Logger: quietLog()})
+	rec2 := httptest.NewRecorder()
+	p2.handle(rec2, internalReq(), true)
+	if rec2.Code != http.StatusForbidden {
+		t.Errorf("nil authorizer = %d, want 403 (fail closed)", rec2.Code)
+	}
+
+	// Out-of-zone host → 404 (not a valid internal target).
+	allow := authzFunc(func(ip, target string) (string, bool) { return "web", true })
+	p3 := New(Config{Resolver: r, InternalAuthz: allow, Logger: quietLog()})
+	rec3 := httptest.NewRecorder()
+	badReq := httptest.NewRequest("GET", "http://backend.example.com/", nil)
+	badReq.RemoteAddr = "10.20.0.10:5000"
+	p3.handle(rec3, badReq, true)
+	if rec3.Code != http.StatusNotFound {
+		t.Errorf("out-of-zone internal host = %d, want 404", rec3.Code)
+	}
+}

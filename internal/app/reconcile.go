@@ -355,6 +355,48 @@ func (m *Manager) GetByName(name string) (api.AppResponse, error) {
 	return m.toResponse(rec), nil
 }
 
+// CanCall reports whether caller is authorized to reach target over the internal
+// zone (app→app networking, v0.5.1). Default-deny: an unknown caller, or one
+// whose spec's can_call does not list target, returns false. A call to self is
+// always allowed.
+func (m *Manager) CanCall(caller, target string) bool {
+	if caller == "" || target == "" {
+		return false
+	}
+	if caller == target {
+		return true
+	}
+	rec, found, err := m.store.GetByName(caller)
+	if err != nil || !found {
+		return false
+	}
+	for _, t := range rec.Spec.CanCall {
+		if t == target {
+			return true
+		}
+	}
+	return false
+}
+
+// AppForInstance returns the name of the app whose CURRENT instance is the given
+// sandbox id, or ("", false) if none — used to identify an app→app caller from
+// the source sandbox of an internal request or DNS query.
+func (m *Manager) AppForInstance(instanceID string) (string, bool) {
+	if instanceID == "" {
+		return "", false
+	}
+	apps, err := m.List()
+	if err != nil {
+		return "", false
+	}
+	for _, a := range apps {
+		if a.Status != nil && a.Status.InstanceID == instanceID {
+			return a.Name, true
+		}
+	}
+	return "", false
+}
+
 // DeleteByName removes the app with the given name.
 func (m *Manager) DeleteByName(name string) error {
 	rec, found, err := m.store.GetByName(name)
@@ -1256,6 +1298,14 @@ func validateSpec(spec api.AppSpec) error {
 		// > 1) arrive with horizontal scale-out in v0.5.x.
 		if sp.MinScale < 0 || sp.MinScale > 1 {
 			return fmt.Errorf("app: sleep min_scale must be 0 or 1, got %d", sp.MinScale)
+		}
+	}
+	for _, target := range spec.CanCall {
+		if !IsValidName(target) {
+			return fmt.Errorf("app: invalid can_call target %q (want an app name: a DNS label)", target)
+		}
+		if target == spec.Name {
+			return fmt.Errorf("app: can_call may not list the app itself (%q)", target)
 		}
 	}
 	return nil

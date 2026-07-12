@@ -25,6 +25,14 @@ const (
 
 type targetKey struct{}
 
+// CallerAuthorizer authorizes an app→app (internal-zone) request: given the
+// source guest address and the target app name, is the call allowed? It returns
+// the resolved caller app name for logging. Satisfied by the daemon, which maps
+// the source IP to the calling app and checks its can_call grant.
+type CallerAuthorizer interface {
+	AuthorizeCall(callerIP, targetApp string) (callerApp string, allowed bool)
+}
+
 // Config configures the ingress proxy.
 type Config struct {
 	Resolver   *Resolver
@@ -38,6 +46,12 @@ type Config struct {
 	// identical to HTTPListen but over the internal zone; wake-on-request applies,
 	// so an internal call wakes a scaled-to-zero callee.
 	InternalListen string
+
+	// InternalAuthz authorizes each app→app request (default-deny). When
+	// InternalListen is set this MUST be set too: a nil authorizer denies every
+	// internal request (fail closed), so an unauthorized call never even wakes the
+	// callee.
+	InternalAuthz CallerAuthorizer
 
 	// Waker, when set, makes the proxy wake a slept app on the first request
 	// for it (scale-to-zero): an ErrAsleep resolve triggers a coalesced wake and
@@ -65,6 +79,7 @@ type Proxy struct {
 	tlsListen      string
 	internalListen string
 
+	authz       CallerAuthorizer // app→app authorization; nil = deny internal
 	rp          *httputil.ReverseProxy
 	httpSrv     *http.Server
 	internalSrv *http.Server
@@ -88,6 +103,7 @@ func New(cfg Config) *Proxy {
 		httpListen:     cfg.HTTPListen,
 		tlsListen:      cfg.TLSListen,
 		internalListen: cfg.InternalListen,
+		authz:          cfg.InternalAuthz,
 		tlsSem:         make(chan struct{}, maxTLSConns),
 	}
 	if cfg.Waker != nil {
@@ -125,6 +141,11 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 	resolve, appName := p.resolver.Resolve, p.resolver.AppName
 	if internal {
 		resolve, appName = p.resolver.ResolveInternal, p.resolver.AppNameInternal
+		// Authorize BEFORE resolve/wake so an unauthorized call never wakes the
+		// callee. A denied or unknown caller gets 403; an out-of-zone host, 404.
+		if !p.authorizeInternal(w, r, appName(r.Host)) {
+			return
+		}
 	}
 	tg, err := resolve(r.Host)
 	if errors.Is(err, ErrAsleep) && p.coord != nil {
@@ -151,6 +172,32 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 	}
 	r = r.WithContext(context.WithValue(r.Context(), targetKey{}, tg))
 	p.rp.ServeHTTP(w, r)
+}
+
+// authorizeInternal enforces app→app default-deny for an internal request. It
+// returns false (and writes the response) when the target is out of zone (404),
+// or the caller is unidentified/unauthorized, or no authorizer is configured
+// (403 — fail closed).
+func (p *Proxy) authorizeInternal(w http.ResponseWriter, r *http.Request, target string) bool {
+	if target == "" {
+		http.Error(w, "no such app", http.StatusNotFound)
+		return false
+	}
+	callerIP := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(callerIP); err == nil {
+		callerIP = h
+	}
+	var callerApp string
+	var ok bool
+	if p.authz != nil {
+		callerApp, ok = p.authz.AuthorizeCall(callerIP, target)
+	}
+	if !ok {
+		p.log.Debug("ingress: internal call denied", "caller_ip", callerIP, "caller", callerApp, "target", target)
+		http.Error(w, "forbidden: app-to-app call not authorized", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // wakeAndResolve triggers a coalesced wake of the app for host, then re-resolves
