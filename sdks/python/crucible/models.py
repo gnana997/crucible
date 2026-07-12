@@ -210,6 +210,7 @@ class WireServiceSpec(BaseModel):
 
 
 class AppResponse(BaseModel):
+    can_call: list[str] | None = None
     created_at: AwareDatetime | None = None
     desired_state: str | None = None
     disk_bytes: int | None = None
@@ -246,6 +247,7 @@ class ConfigureServiceReq(BaseModel):
 
 
 class CreateAppRequest(BaseModel):
+    can_call: list[str] | None = None
     desired_state: str | None = None
     disk_bytes: int | None = None
     env: dict[str, str] | None = None
@@ -307,6 +309,7 @@ class SnapshotListResponse(BaseModel):
 
 
 class UpdateAppReq(BaseModel):
+    can_call: list[str] | None = None
     disk_bytes: int | None = None
     env: dict[str, str] | None = None
     health: HealthCheck | None = None

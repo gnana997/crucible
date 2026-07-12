@@ -2060,6 +2060,12 @@
       "AppResponse": {
         "type": "object",
         "properties": {
+          "can_call": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -2208,6 +2214,12 @@
       "CreateAppRequest": {
         "type": "object",
         "properties": {
+          "can_call": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "desired_state": {
             "type": "string"
           },
@@ -2811,6 +2823,12 @@
       "UpdateAppReq": {
         "type": "object",
         "properties": {
+          "can_call": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "disk_bytes": {
             "type": "integer",
             "format": "int64"

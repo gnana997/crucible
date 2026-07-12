@@ -547,6 +547,7 @@ export interface components {
             apps?: components["schemas"]["AppResponse"][] | null;
         };
         AppResponse: {
+            can_call?: string[];
             /** Format: date-time */
             created_at?: string;
             desired_state?: string;
@@ -599,6 +600,7 @@ export interface components {
             user?: string;
         };
         CreateAppRequest: {
+            can_call?: string[];
             desired_state?: string;
             /** Format: int64 */
             disk_bytes?: number;
@@ -794,6 +796,7 @@ export interface components {
             vcpus?: number;
         };
         UpdateAppReq: {
+            can_call?: string[];
             /** Format: int64 */
             disk_bytes?: number;
             env?: {
