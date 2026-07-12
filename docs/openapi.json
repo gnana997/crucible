@@ -3,7 +3,7 @@
   "info": {
     "title": "crucible",
     "description": "REST API for the crucible daemon, a Firecracker microVM sandbox runtime. The daemon is the contract every SDK mirrors. Auth is a bearer token (`Authorization: Bearer \u003ckey\u003e`); `/healthz` is always exempt, and a loopback daemon with no keys configured serves unauthenticated. The exec and service-log endpoints stream a binary frame protocol OpenAPI cannot model — see the guides for the frame format.",
-    "version": "0.4.3"
+    "version": "0.4.4"
   },
   "paths": {
     "/apps": {

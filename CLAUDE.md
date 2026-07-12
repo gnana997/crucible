@@ -15,7 +15,7 @@ fits together), [api](docs/api.md), [wire](docs/wire.md), [cli](docs/cli.md), [m
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.4.3 — durable apps you deploy, reach, and update. The core runtime
+**Status:** v0.4.4 — durable apps you deploy, reach, update, and pull privately. The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -29,7 +29,11 @@ v0.4.0 self-healing + reconcile-from-spec; v0.4.1 config (`--env`) + exec health
 zero-downtime rolling `app update`** (boot → readiness gate → flip the route →
 drain the old; a failed update keeps the old instance serving) + operate an app
 **by name** (`app exec`/`logs`/`shell` + MCP `app_exec`/`app_logs`, resolved to
-the current instance per call). See the ROADMAP for what's next.
+the current instance per call); **v0.4.4 private registries** (`crucible registry
+login` stores a per-registry credential on the daemon that feeds every pull incl.
+an app's re-pull on restart; gated by the `registry` scoped-token op; never reads
+`~/.docker/config.json`; plus one-shot `run --registry-auth`). See the ROADMAP
+for what's next.
 
 ## Working style
 

@@ -82,21 +82,27 @@ Closes P1b: the durable app is now reachable by name and updatable in place.
 - [x] **Health seeded from the image** — an app that declares no health inherits the image's Docker `HEALTHCHECK` (as an `exec` check) when present.
 - [x] **Inbound isolation** — inbound reaches a guest only from the daemon over its veth; peers can't reach each other and a guest can't reach the proxy listeners at all, so the proxy is not a lateral path.
 
-### v0.4.3 — Operate & safe-update *(current)*
+### v0.4.3 — Operate & safe-update
 
 Update a deployed app without dropping traffic, and drive a running app by name.
 
 - [x] **Zero-downtime rolling `app update`** — for a proxy-fronted app the reconciler boots the new instance, waits for a **readiness gate** (its health check, or a TCP connect to the app's port), **flips the ingress route** to it, then drains the old instance before destroying it. The proxy follows the flip, so the cutover drops nothing. A **failed** update aborts and keeps the old instance serving (never takes the app down); `status.instance_generation` shows which spec is live.
 - [x] **Operate an app by name** — `crucible app exec`/`logs`/`shell` (and MCP `app_exec`/`app_logs`, → 22 tools) resolve the app's **current** instance server-side per call, so they survive a self-heal or redeploy. `app logs -f` reattaches to the new instance across a roll. Flag parity added (`app exec --cwd/--timeout/-e`, `app shell --shell`).
 
+### v0.4.4 — Private registries *(current)*
+
+Pull authenticated images, with the credential on the daemon.
+
+- [x] **Private-registry pull** — `crucible registry login/logout/ls` stores a per-registry credential on the daemon (`--registry-store`, `0600`, gated by a new `registry` scoped-token op) that feeds every pull: `run`, `app create`, and an app's **re-pull on restart** (so a durable app on a private image survives a reboot). Static creds cover Docker Hub, GHCR, GitLab, Quay, self-hosted, and static GCP/ACR; ECR via `aws ecr get-login-password`. Never reads `~/.docker/config.json`. Plus one-shot `run --registry-auth` for CI ([registry.md](registry.md)).
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, and operate-by-name exist (v0.4.0–v0.4.3); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, and private-registry pull exist (v0.4.0–v0.4.4); next is the rest of production-grade deploys.
 
-- • **Private / authenticated registry pull** — credentialed pulls from private registries (ghcr.io, ECR, …).
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
+- • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
 - • **Volumes.** Persistent block storage decoupled from an instance, so stateful apps (postgres, sqlite) survive a redeploy — the real ceiling of today's stateless re-create model.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.

@@ -6,6 +6,38 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.4.4] — 2026-07-12
+
+Private registries. Pull authenticated images — so `run`, `app create`, and an
+app's re-pull on restart can fetch private images, with the credential living on
+the daemon (not your local docker config).
+
+### Added
+
+- **Pull from private/authenticated registries.** `crucible registry login
+  <host>` stores a per-registry `(username, secret)` credential on the daemon,
+  which feeds every image pull — `run`, `sandbox create --image`, `app create`,
+  and (critically) an app's **re-pull on restart or reboot**, so a durable app on
+  a private image survives a daemon restart. `registry ls` lists host + username
+  (**never the secret**); `registry logout` removes one. Log in with
+  `--password-stdin`, `--password`, or a masked prompt. Static credentials cover
+  Docker Hub, GHCR, GitLab, Quay, self-hosted registries (Harbor/Nexus/
+  Artifactory), and the static forms of GCP (`_json_key`) and Azure ACR; AWS ECR
+  works with an `aws ecr get-login-password` token (re-run every ~12h). See
+  [docs/registry.md](docs/registry.md).
+- **One-shot per-request credentials.** `crucible run` / `sandbox create` take
+  `--registry-auth USER:SECRET` (or the `CRUCIBLE_REGISTRY_AUTH` env var) for a
+  CI/throwaway pull — used for that pull only, never stored, and taking
+  precedence over a stored credential. Also `registry_auth` on the create /
+  `POST /images` request bodies (Go SDK: `Client.RegistryLogin`/`RegistryLogout`/
+  `ListRegistryCredentials`).
+- **Scoped-token `registry` operation.** Managing credentials
+  (`POST`/`DELETE /registry/credentials`) is gated by a new `registry` policy
+  operation; listing needs only `read`. Credentials are stored `0600` (usable,
+  **not encrypted at rest** — they must be replayed to the registry) and are
+  never read from `~/.docker/config.json`, so a host login can't leak into the
+  root daemon.
+
 ## [0.4.3] — 2026-07-12
 
 Operate & safe-update. Updating a deployed app no longer drops traffic, and you
