@@ -80,6 +80,43 @@ func TestSleepWakeInPlaceRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWakeAdmissionRefusesWhenMemoryLow is S7: a wake is refused when host
+// MemAvailable is below the configured floor, and admitted once it recovers.
+func TestWakeAdmissionRefusesWhenMemoryLow(t *testing.T) {
+	m, _ := newTestManager(t)
+	ctx := context.Background()
+	avail := 1000
+	m.cfg.WakeMinFreeMiB = 512
+	m.cfg.MemAvailableMiB = func() (int, error) { return avail, nil }
+
+	s, err := m.Create(ctx, CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := m.SleepInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("sleep: %v", err)
+	}
+
+	// Host is starved → refuse.
+	avail = 100
+	if err := m.WakeInPlace(ctx, s.ID); !errors.Is(err, ErrInsufficientMemory) {
+		t.Fatalf("wake under low memory err = %v, want ErrInsufficientMemory", err)
+	}
+	// Still asleep and retryable.
+	m.mu.RLock()
+	stillAsleep := s.asleep != nil
+	m.mu.RUnlock()
+	if !stillAsleep {
+		t.Fatal("refused wake should leave the sandbox asleep")
+	}
+
+	// Memory recovers → admit.
+	avail = 1000
+	if err := m.WakeInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("wake after memory recovered: %v", err)
+	}
+}
+
 // TestSleepRegistersDurableSnapshotAndGCs covers S8's durability model: each
 // sleep registers a DURABLE snapshot (so a slept app survives a daemon restart
 // via re-adoption); an in-place wake KEEPS that snapshot (it backs the woken

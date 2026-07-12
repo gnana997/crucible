@@ -178,10 +178,26 @@ func (b *bench) latency(ctx context.Context) {
 	})
 
 	_ = b.cl.DeleteSnapshot(ctx, base.ID)
+
+	// wake latency: the scale-to-zero headline number. Each sample sleeps the
+	// warm sandbox (untimed) then times the wake-in-place (restore + reseed +
+	// clock). Needs a rootfs whose guest agent has /wake (rebuild profiles with
+	// the current crucible-agent), else the wake errors as unsupported.
+	wake := b.measure("wake (asleep → restored)", func() time.Duration {
+		if err := b.cl.SleepSandbox(ctx, warm.ID); err != nil {
+			fatal("sleep", err)
+		}
+		t0 := time.Now()
+		if err := b.cl.WakeSandbox(ctx, warm.ID); err != nil {
+			fatal("wake", err)
+		}
+		return time.Since(t0)
+	})
+
 	_ = b.cl.DeleteSandbox(ctx, warm.ID)
 
 	b.results["latency"] = map[string]any{
-		"create_ms": create, "exec_ms": exec, "snapshot_ms": snap, "fork_ms": fork,
+		"create_ms": create, "exec_ms": exec, "snapshot_ms": snap, "fork_ms": fork, "wake_ms": wake,
 	}
 }
 

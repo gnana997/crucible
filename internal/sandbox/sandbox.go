@@ -368,6 +368,18 @@ type ManagerConfig struct {
 	// forks from them would need it re-specified). Optional.
 	ReloadAllowlist func(patterns []string) (NetworkAllowlist, error)
 
+	// WakeMinFreeMiB is the wake-admission floor: a wake is refused when host
+	// MemAvailable is below this, so waking slept apps can't drive the host into
+	// OOM. Zero disables the check (the default for tests/library callers). The
+	// woken guest faults its working set in immediately, so this is a "don't wake
+	// anything when the host is already starved" guard, not a per-guest reserve.
+	WakeMinFreeMiB int
+
+	// MemAvailableMiB reports host memory available for a new workload, in MiB.
+	// Nil uses /proc/meminfo (production); tests inject a stub. Consulted only
+	// when WakeMinFreeMiB > 0.
+	MemAvailableMiB func() (int, error)
+
 	// QuotaPolicy selects how host-side cgroup v2 limits are set on each
 	// sandbox's VMM. The zero value (QuotaPolicyOff) applies no limits,
 	// so tests and library callers get today's behavior by default; the
@@ -1016,6 +1028,15 @@ func (m *Manager) Get(id string) (*Sandbox, error) {
 	return s, nil
 }
 
+// SnapshotCount returns the number of registered snapshots — fork snapshots
+// plus the durable per-instance sleep snapshots. Read as a Prometheus gauge for
+// storage/scale-to-zero visibility.
+func (m *Manager) SnapshotCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.snapshots)
+}
+
 // Routable returns the guest IP to route inbound traffic to, or ("", false)
 // when the sandbox is unknown, has no network, or is asleep — a slept sandbox's
 // VMM is stopped, so its IP must not be routed to until it is woken. Reads the
@@ -1587,6 +1608,9 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publish []PortMapping) (*Sandbox, error) {
 	snap, err := m.GetSnapshot(snapshotID)
 	if err != nil {
+		return nil, err
+	}
+	if err := m.admitWake(); err != nil {
 		return nil, err
 	}
 	return m.forkOne(ctx, snap, "", publish, true)

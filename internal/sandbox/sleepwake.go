@@ -180,6 +180,9 @@ func (m *Manager) WakeInPlace(ctx context.Context, id string) error {
 	if st == nil {
 		return fmt.Errorf("wake: sandbox %s is not asleep", id)
 	}
+	if err := m.admitWake(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(st.memMiB))
 	defer cancel()
 

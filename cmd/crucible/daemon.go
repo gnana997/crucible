@@ -106,6 +106,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// protecting the daemon from fan-out alone. 0 uses the built-in
 		// default (64). A scoped token's own max_fork can only tighten this.
 		maxFork = fs.Int("max-fork", envInt("CRUCIBLE_MAX_FORK", 0), "max sandboxes a single fork request may create (0 = built-in default of 64); env CRUCIBLE_MAX_FORK")
+		// wakeMinFree refuses to wake a slept app when host MemAvailable is below
+		// this floor, so scale-to-zero wakes can't drive the host into OOM. 0
+		// disables the check.
+		wakeMinFree = fs.Int("wake-min-free-mib", envInt("CRUCIBLE_WAKE_MIN_FREE_MIB", 256), "refuse to wake a slept app when host MemAvailable is below this many MiB (0 = disabled); env CRUCIBLE_WAKE_MIN_FREE_MIB")
 		// Network flags: when --network-egress-iface is set AND
 		// --jailer-bin is set, the daemon can provision per-sandbox
 		// netns + nft + DHCP + DNS proxy. Without both, sandbox
@@ -375,8 +379,9 @@ Required flags:
 		ReloadAllowlist: func(patterns []string) (sandbox.NetworkAllowlist, error) {
 			return network.New(patterns)
 		},
-		QuotaPolicy:  quotaPolicy,
-		MaxForkCount: *maxFork,
+		QuotaPolicy:    quotaPolicy,
+		MaxForkCount:   *maxFork,
+		WakeMinFreeMiB: *wakeMinFree,
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)
@@ -403,6 +408,7 @@ Required flags:
 	// scrape time so it can't drift from reality across creates/deletes/
 	// reconcile.
 	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
+	mx.SetSnapshotSource(mgr.SnapshotCount)
 
 	// OCI image store (optional). Enabled by --image-dir; the injected
 	// Private-registry credential store (optional). Empty path disables it —

@@ -71,6 +71,19 @@ func (m *Metrics) SetActiveSandboxSource(fn func() int) {
 	}, func() float64 { return float64(fn()) }))
 }
 
+// SetSnapshotSource registers the snapshots_active gauge, read from fn at scrape
+// time (fork snapshots + durable per-instance sleep snapshots). Pull-model, like
+// SetActiveSandboxSource. Call at most once.
+func (m *Metrics) SetSnapshotSource(fn func() int) {
+	if m == nil || fn == nil {
+		return
+	}
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "snapshots_active",
+		Help: "Snapshots currently registered (forks + durable sleep snapshots).",
+	}, func() float64 { return float64(fn()) }))
+}
+
 // IncSandboxCreated bumps sandboxes_created_total. Call once per sandbox
 // that successfully comes up (cold boot or fork).
 func (m *Metrics) IncSandboxCreated() {
