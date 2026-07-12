@@ -38,7 +38,7 @@ func TestCheckNftSandboxIDRejectsInjection(t *testing.T) {
 }
 
 func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
-	got := BuildBaseScript("eth0", netip.MustParseAddr("10.20.255.254"))
+	got := BuildBaseScript("eth0", netip.MustParseAddr("10.20.255.254"), 0)
 	mustContainAll(t, got, []string{
 		"table inet crucible {",
 		"map sandbox_chains {",
@@ -77,6 +77,25 @@ func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
 	}
 	if inputIdx+inputCtIdx >= dropIdx {
 		t.Errorf("input established-accept(%d) must precede vh-* drop(%d)", inputIdx+inputCtIdx, dropIdx)
+	}
+}
+
+func TestBuildBaseScriptInternalProxyRule(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+	// With a port, the input chain opens guest→anycast:port TCP, gated by the
+	// same (iifname . saddr) attestation as the DNS rule.
+	with := BuildBaseScript("eth0", anycast, 80)
+	wantRule := "ip saddr @" + nftGuestSourcesSet + " ip daddr 10.20.255.254 tcp dport 80 accept"
+	if !strings.Contains(with, wantRule) {
+		t.Errorf("port 80: missing internal-proxy accept rule %q in:\n%s", wantRule, with)
+	}
+	// It must sit before the input chain's vh-* catch-all drop.
+	if ruleIdx, dropIdx := strings.Index(with, "tcp dport 80"), strings.Index(with, `"vh-*" drop`); ruleIdx < 0 || dropIdx < 0 || ruleIdx > dropIdx {
+		t.Errorf("internal-proxy accept(%d) must precede vh-* drop(%d)", ruleIdx, dropIdx)
+	}
+	// Port 0 disables app→app: no TCP rule at all.
+	if without := BuildBaseScript("eth0", anycast, 0); strings.Contains(without, "tcp dport") {
+		t.Errorf("port 0: internal-proxy rule should be absent:\n%s", without)
 	}
 }
 

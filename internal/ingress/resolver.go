@@ -52,11 +52,12 @@ type Target struct {
 
 // Resolver maps a request hostname → the current instance of the named app.
 type Resolver struct {
-	apps      AppLookup
-	instances InstanceLookup
-	domain    string // proxy domain suffix (e.g. "apps.local"); "" = host is the app name
-	ttl       time.Duration
-	now       func() time.Time
+	apps         AppLookup
+	instances    InstanceLookup
+	domain       string // proxy domain suffix (e.g. "apps.local"); "" = host is the app name
+	internalZone string // app→app zone suffix (e.g. "internal"); "" = app→app disabled
+	ttl          time.Duration
+	now          func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -69,27 +70,37 @@ type cacheEntry struct {
 }
 
 // NewResolver builds a resolver. domain is the --proxy-domain suffix (a leading
-// dot is optional); ttl is the cache window (0 disables caching).
-func NewResolver(apps AppLookup, instances InstanceLookup, domain string, ttl time.Duration) *Resolver {
+// dot is optional); internalZone is the app→app suffix (e.g. "internal", ""
+// disables app→app resolution); ttl is the cache window (0 disables caching).
+func NewResolver(apps AppLookup, instances InstanceLookup, domain, internalZone string, ttl time.Duration) *Resolver {
+	norm := func(s string) string {
+		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(s)), ".")
+	}
 	return &Resolver{
-		apps:      apps,
-		instances: instances,
-		domain:    strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "."),
-		ttl:       ttl,
-		now:       time.Now,
-		cache:     map[string]cacheEntry{},
+		apps:         apps,
+		instances:    instances,
+		domain:       norm(domain),
+		internalZone: norm(internalZone),
+		ttl:          ttl,
+		now:          time.Now,
+		cache:        map[string]cacheEntry{},
 	}
 }
 
-// AppName extracts the app name from a request host: strip any :port, lowercase,
-// trim a trailing dot, then remove the proxy-domain suffix. Returns "" if the
-// host is not under the configured domain.
-func (r *Resolver) AppName(host string) string {
+// normHost strips any :port, lowercases, and trims a trailing dot.
+func normHost(host string) string {
 	h := strings.ToLower(strings.TrimSpace(host))
 	if hh, _, err := net.SplitHostPort(h); err == nil {
 		h = hh
 	}
-	h = strings.TrimSuffix(h, ".")
+	return strings.TrimSuffix(h, ".")
+}
+
+// AppName extracts the app name from an external request host: normalize, then
+// remove the proxy-domain suffix. Returns "" if the host is not under the
+// configured domain (when domain is "", the whole host is the app name).
+func (r *Resolver) AppName(host string) string {
+	h := normHost(host)
 	if r.domain == "" {
 		return h
 	}
@@ -100,11 +111,40 @@ func (r *Resolver) AppName(host string) string {
 	return strings.TrimSuffix(h, suffix)
 }
 
-// Resolve maps a request host to the current instance's guest IP + port, live
-// (cached for ttl). ErrNoRoute for an unknown host/app or missing target port;
-// ErrNoInstance when the app has no ready instance.
+// AppNameInternal extracts the app name from an app→app host in the internal
+// zone (e.g. "backend.internal" → "backend"). Returns "" when app→app is
+// disabled (internalZone == "") or the host is not under the internal zone.
+func (r *Resolver) AppNameInternal(host string) string {
+	if r.internalZone == "" {
+		return ""
+	}
+	suffix := "." + r.internalZone
+	h := normHost(host)
+	if !strings.HasSuffix(h, suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(h, suffix)
+}
+
+// Resolve maps an external request host to the current instance's guest IP +
+// port, live (cached for ttl). ErrNoRoute for an unknown host/app or missing
+// target port; ErrNoInstance when the app has no ready instance.
 func (r *Resolver) Resolve(host string) (Target, error) {
-	name := r.AppName(host)
+	return r.resolve(r.AppName(host))
+}
+
+// ResolveInternal is Resolve for an app→app host in the internal zone
+// (backend.internal → the backend app's current instance). Same wake/routing
+// semantics as Resolve; the caller-authorization check lives at the proxy
+// handler (which knows the calling guest), not here.
+func (r *Resolver) ResolveInternal(host string) (Target, error) {
+	return r.resolve(r.AppNameInternal(host))
+}
+
+// resolve maps an already-extracted app name to its current instance target.
+// The name→instance cache is keyed by app name, so it is shared across the
+// external and internal zones (same app, same target).
+func (r *Resolver) resolve(name string) (Target, error) {
 	if name == "" {
 		return Target{}, ErrNoRoute
 	}

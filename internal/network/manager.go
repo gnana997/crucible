@@ -55,6 +55,16 @@ type ManagerConfig struct {
 	// "ip:port" → exact.
 	DNSUpstream string
 
+	// InternalProxyPort, when > 0, opens a guest→anycast:port TCP allow in the
+	// input chain so guests can reach the ingress VIP for app→app
+	// (backend.internal) calls, and the DNS proxy answers the internal zone with
+	// the anycast VIP. 0 disables app→app networking (v0.5.1).
+	InternalProxyPort int
+
+	// InternalZone is the app→app DNS suffix (e.g. "internal"). Answered with the
+	// DNS anycast (the ingress VIP) when set together with InternalProxyPort.
+	InternalZone string
+
 	// Logger receives Manager lifecycle events. Nil means
 	// slog.Default.
 	Logger *slog.Logger
@@ -179,7 +189,7 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	}
 
 	// 3. nftables base table.
-	if err := EnsureBaseTable(ctx, cfg.EgressIface, cfg.DNSAnycast); err != nil {
+	if err := EnsureBaseTable(ctx, cfg.EgressIface, cfg.DNSAnycast, cfg.InternalProxyPort); err != nil {
 		_ = removeCrucibleDNSIface(context.Background())
 		return nil, fmt.Errorf("network: nft base table: %w", err)
 	}
@@ -199,7 +209,12 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		// explicitly so an operator-configured pool outside
 		// RFC1918 space stays unreachable too.
 		BlockedPrefixes: []netip.Prefix{cfg.SubnetPool},
-		Logger:          log,
+		// App→app service discovery: answer <app>.<InternalZone> with the anycast
+		// VIP so a guest resolves peers to the ingress proxy (which routes + wakes).
+		// Empty zone leaves this off.
+		InternalZone: cfg.InternalZone,
+		InternalVIP:  cfg.DNSAnycast,
+		Logger:       log,
 	})
 	if err != nil {
 		_ = TeardownBaseTable(context.Background())

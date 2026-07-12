@@ -68,7 +68,7 @@ func newWakeTestProxy(t *testing.T, onWake func(time.Duration)) (*Proxy, *waking
 
 	apps := &wakingApps{instance: "sbx_1", port: port, phase: "asleep"}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": host}}
-	resolver := NewResolver(apps, inst, "apps.local", 0) // ttl 0: no cache
+	resolver := NewResolver(apps, inst, "apps.local", "", 0) // ttl 0: no cache
 	waker := &blockingWaker{apps: apps, release: make(chan struct{})}
 	p := New(Config{Resolver: resolver, Waker: waker, OnWake: onWake})
 	return p, apps, waker, backend.Close

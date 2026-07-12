@@ -69,7 +69,7 @@ func sandboxAllowedSetName(sandboxID string) string {
 //
 // Rendered as a string so tests can assert it byte-for-byte, and
 // so callers can inspect or log what got applied.
-func BuildBaseScript(egressIface string, dnsAnycast netip.Addr) string {
+func BuildBaseScript(egressIface string, dnsAnycast netip.Addr, internalProxyPort int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %s {\n", NftTableName)
 	fmt.Fprintf(&b, "\tmap %s {\n", nftSandboxMap)
@@ -110,6 +110,15 @@ func BuildBaseScript(egressIface string, dnsAnycast netip.Addr) string {
 	fmt.Fprintf(&b, "\t\tct state established,related accept\n")
 	fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr %s udp dport 53 accept\n",
 		nftGuestSourcesSet, dnsAnycast)
+	// App→app (v0.5.1): accept guest→anycast on the internal-proxy TCP port so a
+	// guest can reach the ingress VIP for backend.internal calls. Same
+	// kernel-attested (iifname . saddr) gate as the DNS rule — a guest cannot
+	// reach a peer's /30 (that stays dropped below); the anycast VIP is the only
+	// inter-app path, and per-app call authorization is enforced at the proxy.
+	if internalProxyPort > 0 {
+		fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr %s tcp dport %d accept\n",
+			nftGuestSourcesSet, dnsAnycast, internalProxyPort)
+	}
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n", vethHostPrefix+"*")
 	fmt.Fprintf(&b, "\t}\n")
 	fmt.Fprintf(&b, "\tchain %s {\n", nftPostroutingChain)
@@ -208,7 +217,7 @@ func BuildSandboxTeardownScript(sandboxID string, hostIface string, guestIP neti
 // tearing down any previous instance, guaranteeing a clean state
 // on startup. Operators who want to preserve state across daemon
 // restarts shouldn't; every restart is a fresh world.
-func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr) error {
+func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr, internalProxyPort int) error {
 	// Flush any prior state, ignoring "no such table" errors.
 	if err := runCmd(ctx, "nft", "flush", "table", "inet", NftTableName); err != nil {
 		if !isNoSuchObject(ctx, err) {
@@ -220,7 +229,7 @@ func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.A
 			return fmt.Errorf("delete existing table: %w", err)
 		}
 	}
-	script := BuildBaseScript(egressIface, dnsAnycast)
+	script := BuildBaseScript(egressIface, dnsAnycast, internalProxyPort)
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		return fmt.Errorf("install base table: %w", err)
 	}

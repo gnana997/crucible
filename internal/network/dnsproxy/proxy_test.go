@@ -806,3 +806,44 @@ func TestIsPublicUnicast(t *testing.T) {
 		}
 	}
 }
+
+func TestInternalAnswer(t *testing.T) {
+	vip := netip.MustParseAddr("10.20.255.254")
+	p := &Proxy{cfg: Config{InternalZone: "internal", InternalVIP: vip}}
+
+	// A query for an in-zone app → authoritative A record pointing at the VIP.
+	reqA := new(dns.Msg)
+	reqA.SetQuestion("backend.internal.", dns.TypeA)
+	m := p.internalAnswer(reqA)
+	if m == nil || !m.Authoritative || len(m.Answer) != 1 {
+		t.Fatalf("A: want 1 authoritative answer, got %+v", m)
+	}
+	if a, ok := m.Answer[0].(*dns.A); !ok || a.A.String() != "10.20.255.254" {
+		t.Errorf("A record = %v, want 10.20.255.254", m.Answer[0])
+	}
+
+	// AAAA for an in-zone app → NODATA (non-nil reply, empty answer) so a
+	// dual-stack resolver falls back to the A record.
+	reqAAAA := new(dns.Msg)
+	reqAAAA.SetQuestion("backend.internal.", dns.TypeAAAA)
+	if m := p.internalAnswer(reqAAAA); m == nil || len(m.Answer) != 0 {
+		t.Errorf("AAAA: want NODATA (empty answer), got %+v", m)
+	}
+
+	// Out-of-zone, the bare zone, and a disabled zone → not ours (nil).
+	for _, tc := range []struct {
+		name string
+		p    *Proxy
+		q    string
+	}{
+		{"out-of-zone", p, "example.com."},
+		{"bare-zone", p, "internal."},
+		{"disabled", &Proxy{cfg: Config{}}, "backend.internal."},
+	} {
+		req := new(dns.Msg)
+		req.SetQuestion(tc.q, dns.TypeA)
+		if got := tc.p.internalAnswer(req); got != nil {
+			t.Errorf("%s: internalAnswer = %+v, want nil", tc.name, got)
+		}
+	}
+}

@@ -91,6 +91,18 @@ type Config struct {
 	// Logger receives lifecycle events and per-query summaries.
 	// Nil means slog.Default().
 	Logger *slog.Logger
+
+	// InternalZone, when non-empty (e.g. "internal"), makes the proxy answer
+	// <app>.<InternalZone> queries authoritatively with InternalVIP (the ingress
+	// anycast VIP) instead of forwarding upstream — app→app service discovery
+	// (v0.5.1). The proxy does not verify the app exists; the ingress proxy routes
+	// or 404s and (in a later slice) enforces per-app call authorization.
+	InternalZone string
+
+	// InternalVIP is the A address returned for InternalZone queries — the DNS
+	// anycast, which the ingress proxy also listens on. Ignored when InternalZone
+	// is empty or InternalVIP is invalid.
+	InternalVIP netip.Addr
 }
 
 // Defaults picked to be tight enough that a wedged upstream
@@ -344,6 +356,17 @@ func (p *Proxy) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 		return
 	}
 
+	// App→app (v0.5.1): answer <app>.<InternalZone> authoritatively with the
+	// ingress VIP, bypassing the egress allowlist + upstream. The name is not in
+	// any guest's egress allowlist by design, so this branch must run before the
+	// allowlist check below.
+	if reply := p.internalAnswer(req); reply != nil {
+		if err := w.WriteMsg(reply); err != nil {
+			p.log.Debug("write internal reply failed", "err", err)
+		}
+		return
+	}
+
 	// Evaluate questions. The DNS protocol allows multi-question
 	// queries in theory but in practice every resolver sends
 	// exactly one; we enforce all-or-nothing match so a crafted
@@ -540,6 +563,41 @@ func filterOutAAAA(rrs []dns.RR) []dns.RR {
 }
 
 // --- helpers ----------------------------------------------------
+
+// internalRecordTTL is the TTL (seconds) on synthesized app→app A records. The
+// VIP is a fixed anycast, so this only bounds how fast disabling the zone
+// propagates to guests; keep it modest.
+const internalRecordTTL = 30
+
+// internalAnswer returns an authoritative reply for an app→app query in the
+// configured internal zone, or nil when the zone is disabled or the query is not
+// under it. A queries return the ingress VIP; AAAA (and other qtypes) get an
+// empty NOERROR (NODATA) so a dual-stack resolver falls back to the A record on
+// the IPv4-only guest fabric.
+func (p *Proxy) internalAnswer(req *dns.Msg) *dns.Msg {
+	if p.cfg.InternalZone == "" || !p.cfg.InternalVIP.IsValid() || len(req.Question) != 1 {
+		return nil
+	}
+	q := req.Question[0]
+	if q.Qclass != dns.ClassINET {
+		return nil
+	}
+	zone := dns.CanonicalName(dns.Fqdn(p.cfg.InternalZone))
+	qn := dns.CanonicalName(q.Name)
+	if qn == zone || !dns.IsSubDomain(zone, qn) {
+		return nil // bare zone or out-of-zone → not ours
+	}
+	m := new(dns.Msg)
+	m.SetReply(req)
+	m.Authoritative = true
+	if q.Qtype == dns.TypeA {
+		m.Answer = append(m.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: internalRecordTTL},
+			A:   net.IP(p.cfg.InternalVIP.AsSlice()),
+		})
+	}
+	return m
+}
 
 func (p *Proxy) policyFor(src netip.Addr) (*policyEntry, bool) {
 	v, ok := p.policies.Load(src)

@@ -67,6 +67,10 @@ func (s sandboxGuestIP) GuestIP(instanceID string) (string, bool) {
 //  3. Drains every still-live sandbox (Manager.Shutdown) so we don't
 //     leave orphan firecracker processes running.
 //
+// internalNetworkZone is the DNS suffix apps use to reach each other
+// (<app>.internal) when --internal-networking is enabled (v0.5.1).
+const internalNetworkZone = "internal"
+
 // The return value is the exit code for the parent main().
 func runDaemon(args []string, stdout, stderr io.Writer) int {
 	// `crucible daemon token …` manages the API-key store (not the daemon).
@@ -147,6 +151,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		proxyListen    = fs.String("proxy-listen", "", "ingress proxy HTTP listen address (e.g. :80): routes by Host header to an app's current instance. Requires --app-db. Empty disables the HTTP proxy.")
 		proxyTLSListen = fs.String("proxy-tls-listen", "", "ingress proxy TLS listen address (e.g. :443): SNI passthrough to an app's current instance (the guest terminates TLS). Empty disables it.")
 		proxyDomain    = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
+		// App→app service networking (v0.5.1, experimental). Off by default:
+		// grant-all reachability (no per-app authorization yet) — do not enable on
+		// an untrusted multi-tenant host until authz lands.
+		internalNet  = fs.Bool("internal-networking", false, "EXPERIMENTAL: let apps reach each other by name (<app>.internal) through the ingress proxy VIP. Requires --network-egress-iface + --app-db + the proxy. No per-app authorization yet (grant-all).")
+		internalPort = fs.Int("internal-proxy-port", 80, "TCP port the app→app (<app>.internal) ingress VIP listens on, bound to the DNS anycast; guests reach peers at http://<app>.internal[:port]/")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -326,12 +335,23 @@ Required flags:
 			_, _ = fmt.Fprintf(stderr, "error: --network-subnet-pool: %v\n", perr)
 			return 2
 		}
+		// App→app networking opens the guest→VIP nft allow + the internal DNS zone
+		// only when explicitly enabled (see --internal-networking) AND the ingress
+		// proxy is running (otherwise nothing would answer at the VIP).
+		internalProxyPort := 0
+		internalZone := ""
+		if *internalNet && (*proxyListen != "" || *proxyTLSListen != "") {
+			internalProxyPort = *internalPort
+			internalZone = internalNetworkZone
+		}
 		nmgr, nerr := network.Start(context.Background(), network.ManagerConfig{
-			SubnetPool:  subnetPool,
-			DNSAnycast:  network.DefaultDNSAnycast,
-			EgressIface: *netEgressIface,
-			DNSUpstream: *dnsUpstream,
-			Logger:      logger,
+			SubnetPool:        subnetPool,
+			DNSAnycast:        network.DefaultDNSAnycast,
+			EgressIface:       *netEgressIface,
+			DNSUpstream:       *dnsUpstream,
+			InternalProxyPort: internalProxyPort,
+			InternalZone:      internalZone,
+			Logger:            logger,
 		})
 		if nerr != nil {
 			logger.Error("network init failed", "err", nerr)
@@ -496,21 +516,31 @@ Required flags:
 		if appMgr == nil {
 			logger.Warn("ingress proxy requested but durable apps are disabled; set --app-db", "proxy_listen", *proxyListen, "proxy_tls_listen", *proxyTLSListen)
 		} else {
-			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, time.Second)
+			// App→app (v0.5.1): the internal listener binds the DNS anycast VIP, so
+			// it needs the network manager up (the anycast lives on its dummy iface).
+			internalZone, internalListen := "", ""
+			if *internalNet && netMgr != nil {
+				internalZone = internalNetworkZone
+				internalListen = net.JoinHostPort(network.DefaultDNSAnycast.String(), strconv.Itoa(*internalPort))
+			} else if *internalNet {
+				logger.Warn("internal-networking requested but network is disabled; app→app networking off (set --network-egress-iface + --jailer-bin)")
+			}
+			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, internalZone, time.Second)
 			proxy = ingress.New(ingress.Config{
-				Resolver:   resolver,
-				HTTPListen: *proxyListen,
-				TLSListen:  *proxyTLSListen,
-				Logger:     logger,
-				Waker:      appMgr,          // wake a slept app on the first request for it
-				Activity:   activityTracker, // feed the idle monitor
-				OnWake:     mx.ObserveWakeLatency,
+				Resolver:       resolver,
+				HTTPListen:     *proxyListen,
+				TLSListen:      *proxyTLSListen,
+				InternalListen: internalListen,
+				Logger:         logger,
+				Waker:          appMgr,          // wake a slept app on the first request for it
+				Activity:       activityTracker, // feed the idle monitor
+				OnWake:         mx.ObserveWakeLatency,
 			})
 			if perr := proxy.Start(); perr != nil {
 				logger.Error("ingress proxy start failed", "err", perr)
 				return 1
 			}
-			logger.Info("ingress proxy enabled", "http", *proxyListen, "tls", *proxyTLSListen, "domain", *proxyDomain)
+			logger.Info("ingress proxy enabled", "http", *proxyListen, "tls", *proxyTLSListen, "domain", *proxyDomain, "internal", internalListen)
 		}
 	}
 

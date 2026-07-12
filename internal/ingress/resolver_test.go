@@ -37,7 +37,7 @@ func runningApp(name string, port int, instance string, publish ...api.PortMappi
 }
 
 func TestAppName(t *testing.T) {
-	r := NewResolver(nil, nil, "apps.local", 0)
+	r := NewResolver(nil, nil, "apps.local", "", 0)
 	cases := map[string]string{
 		"web.apps.local":    "web",
 		"web.apps.local:80": "web",
@@ -54,16 +54,62 @@ func TestAppName(t *testing.T) {
 	}
 
 	// No domain → the host is the app name.
-	bare := NewResolver(nil, nil, "", 0)
+	bare := NewResolver(nil, nil, "", "", 0)
 	if got := bare.AppName("web:8080"); got != "web" {
 		t.Errorf("bare AppName = %q, want web", got)
+	}
+}
+
+func TestAppNameInternal(t *testing.T) {
+	r := NewResolver(nil, nil, "apps.local", "internal", 0)
+	cases := map[string]string{
+		"backend.internal":    "backend",
+		"backend.internal:80": "backend",
+		"BACKEND.Internal.":   "backend",
+		"a.b.internal":        "a.b",
+		"web.apps.local":      "", // external zone, not internal
+		"internal":            "", // bare zone, no app label
+		"backend.example.com": "",
+	}
+	for host, want := range cases {
+		if got := r.AppNameInternal(host); got != want {
+			t.Errorf("AppNameInternal(%q) = %q, want %q", host, got, want)
+		}
+	}
+	// Disabled internal zone → always "".
+	off := NewResolver(nil, nil, "apps.local", "", 0)
+	if got := off.AppNameInternal("backend.internal"); got != "" {
+		t.Errorf("disabled zone: AppNameInternal = %q, want \"\"", got)
+	}
+}
+
+func TestResolveInternal(t *testing.T) {
+	apps := fakeApps{apps: map[string]api.AppResponse{"backend": runningApp("backend", 8080, "sbx_9")}}
+	inst := fakeInstances{ips: map[string]string{"sbx_9": "10.20.0.6"}}
+	r := NewResolver(apps, inst, "apps.local", "internal", 0)
+
+	// In-zone app→app host resolves to the callee's instance.
+	tg, err := r.ResolveInternal("backend.internal")
+	if err != nil {
+		t.Fatalf("ResolveInternal: %v", err)
+	}
+	if tg.GuestIP != "10.20.0.6" || tg.Port != 8080 {
+		t.Errorf("target = %+v, want 10.20.0.6:8080", tg)
+	}
+	// An external host is not in the internal zone → no route.
+	if _, err := r.ResolveInternal("backend.apps.local"); !errors.Is(err, ErrNoRoute) {
+		t.Errorf("ResolveInternal(external host) err = %v, want ErrNoRoute", err)
+	}
+	// The external Resolve must NOT accept the .internal zone.
+	if _, err := r.Resolve("backend.internal"); !errors.Is(err, ErrNoRoute) {
+		t.Errorf("Resolve(.internal) err = %v, want ErrNoRoute", err)
 	}
 }
 
 func TestResolveHappyPath(t *testing.T) {
 	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", 80, "sbx_1")}}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
-	r := NewResolver(apps, inst, "apps.local", 0)
+	r := NewResolver(apps, inst, "apps.local", "", 0)
 
 	tg, err := r.Resolve("web.apps.local")
 	if err != nil {
@@ -78,7 +124,7 @@ func TestResolveErrors(t *testing.T) {
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
 
 	// Unknown host / app → ErrNoRoute.
-	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{}}, inst, "apps.local", 0)
+	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{}}, inst, "apps.local", "", 0)
 	if _, err := r.Resolve("nope.apps.local"); !errors.Is(err, ErrNoRoute) {
 		t.Errorf("unknown app err = %v, want ErrNoRoute", err)
 	}
@@ -89,14 +135,14 @@ func TestResolveErrors(t *testing.T) {
 
 	// App present but no ready instance → ErrNoInstance.
 	noInst := runningApp("web", 80, "") // empty instance id
-	r2 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": noInst}}, inst, "apps.local", 0)
+	r2 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": noInst}}, inst, "apps.local", "", 0)
 	if _, err := r2.Resolve("web.apps.local"); !errors.Is(err, ErrNoInstance) {
 		t.Errorf("no-instance err = %v, want ErrNoInstance", err)
 	}
 
 	// Instance id set but IP unknown → ErrNoInstance.
 	unknownIP := runningApp("web", 80, "sbx_missing")
-	r3 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": unknownIP}}, inst, "apps.local", 0)
+	r3 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": unknownIP}}, inst, "apps.local", "", 0)
 	if _, err := r3.Resolve("web.apps.local"); !errors.Is(err, ErrNoInstance) {
 		t.Errorf("unknown-ip err = %v, want ErrNoInstance", err)
 	}
@@ -113,13 +159,13 @@ func TestResolveAsleep(t *testing.T) {
 		return a
 	}
 	for _, phase := range []string{"asleep", "waking"} {
-		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", 0)
+		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", "", 0)
 		if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrAsleep) {
 			t.Errorf("phase %q err = %v, want ErrAsleep", phase, err)
 		}
 	}
 	for _, phase := range []string{"pending", "crashlooping", "stopped"} {
-		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", 0)
+		r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": phased(phase)}}, inst, "apps.local", "", 0)
 		if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrNoInstance) {
 			t.Errorf("phase %q err = %v, want ErrNoInstance", phase, err)
 		}
@@ -129,7 +175,7 @@ func TestResolveAsleep(t *testing.T) {
 	// is still wakeable → ErrAsleep, not ErrNoInstance.
 	reAdopted := phased("asleep")
 	reAdopted.Status.InstanceID = ""
-	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": reAdopted}}, inst, "apps.local", 0)
+	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": reAdopted}}, inst, "apps.local", "", 0)
 	if _, err := r.Resolve("web.apps.local"); !errors.Is(err, ErrAsleep) {
 		t.Errorf("re-adopted asleep (no instance id) err = %v, want ErrAsleep", err)
 	}
@@ -140,7 +186,7 @@ func TestResolvePortFallback(t *testing.T) {
 
 	// Port 0 → fall back to the first published guest port.
 	fell := runningApp("web", 0, "sbx_1", api.PortMapping{HostPort: 8080, GuestPort: 8080})
-	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": fell}}, inst, "apps.local", 0)
+	r := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": fell}}, inst, "apps.local", "", 0)
 	tg, err := r.Resolve("web.apps.local")
 	if err != nil || tg.Port != 8080 {
 		t.Fatalf("port fallback = %+v, %v; want port 8080", tg, err)
@@ -148,7 +194,7 @@ func TestResolvePortFallback(t *testing.T) {
 
 	// Port 0 and nothing published → ErrNoRoute (nowhere to forward).
 	none := runningApp("web", 0, "sbx_1")
-	r2 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": none}}, inst, "apps.local", 0)
+	r2 := NewResolver(fakeApps{apps: map[string]api.AppResponse{"web": none}}, inst, "apps.local", "", 0)
 	if _, err := r2.Resolve("web.apps.local"); !errors.Is(err, ErrNoRoute) {
 		t.Errorf("no-port err = %v, want ErrNoRoute", err)
 	}
@@ -157,7 +203,7 @@ func TestResolvePortFallback(t *testing.T) {
 func TestResolveCacheWindow(t *testing.T) {
 	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", 80, "sbx_1")}}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2", "sbx_2": "10.20.0.9"}}
-	r := NewResolver(apps, inst, "apps.local", time.Second)
+	r := NewResolver(apps, inst, "apps.local", "", time.Second)
 	clk := time.Unix(0, 0).UTC()
 	r.now = func() time.Time { return clk }
 
@@ -182,7 +228,7 @@ func TestResolveCacheInstanceGuard(t *testing.T) {
 	// IP, never the dead one (whose /30 could have been re-leased to another app).
 	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", 80, "sbx_1")}}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
-	r := NewResolver(apps, inst, "apps.local", time.Second)
+	r := NewResolver(apps, inst, "apps.local", "", time.Second)
 	clk := time.Unix(0, 0).UTC()
 	r.now = func() time.Time { return clk }
 

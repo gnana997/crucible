@@ -39,7 +39,7 @@ func TestProxyHTTPRoutesByHost(t *testing.T) {
 
 	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", port, "sbx_1")}}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": ip}}
-	p := New(Config{Resolver: NewResolver(apps, inst, "apps.local", 0), Logger: quietLog()})
+	p := New(Config{Resolver: NewResolver(apps, inst, "apps.local", "", 0), Logger: quietLog()})
 
 	front := httptest.NewServer(p) // *Proxy is an http.Handler
 	defer front.Close()
@@ -66,7 +66,7 @@ func TestProxyHTTPStatusForBadRoutes(t *testing.T) {
 	apps := fakeApps{apps: map[string]api.AppResponse{
 		"web": runningApp("web", 80, ""), // no instance
 	}}
-	p := New(Config{Resolver: NewResolver(apps, fakeInstances{ips: map[string]string{}}, "apps.local", 0), Logger: quietLog()})
+	p := New(Config{Resolver: NewResolver(apps, fakeInstances{ips: map[string]string{}}, "apps.local", "", 0), Logger: quietLog()})
 	front := httptest.NewServer(p)
 	defer front.Close()
 

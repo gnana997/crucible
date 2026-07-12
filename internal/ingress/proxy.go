@@ -32,6 +32,13 @@ type Config struct {
 	TLSListen  string // e.g. ":443"; empty disables the TLS (SNI-passthrough) proxy
 	Logger     *slog.Logger
 
+	// InternalListen is the address the app→app (backend.internal) listener binds
+	// — the DNS anycast VIP + internal port (e.g. "10.20.255.254:80"), reachable
+	// only from guest netns. Empty disables app→app networking. Host routing is
+	// identical to HTTPListen but over the internal zone; wake-on-request applies,
+	// so an internal call wakes a scaled-to-zero callee.
+	InternalListen string
+
 	// Waker, when set, makes the proxy wake a slept app on the first request
 	// for it (scale-to-zero): an ErrAsleep resolve triggers a coalesced wake and
 	// the request is held until the app is running. Nil disables wake-on-request
@@ -52,19 +59,21 @@ type Config struct {
 // the guest owns its cert), both routed to an app's current instance via the
 // Resolver. In-process, mirroring the DNS proxy.
 type Proxy struct {
-	resolver   *Resolver
-	log        *slog.Logger
-	httpListen string
-	tlsListen  string
+	resolver       *Resolver
+	log            *slog.Logger
+	httpListen     string
+	tlsListen      string
+	internalListen string
 
-	rp       *httputil.ReverseProxy
-	httpSrv  *http.Server
-	tlsLn    net.Listener
-	tlsSem   chan struct{}    // bounds concurrent SNI-passthrough handlers
-	coord    *wakeCoordinator // nil when no Waker configured
-	activity *ActivityTracker // nil when activity tracking disabled
-	onWake   func(time.Duration)
-	wg       sync.WaitGroup
+	rp          *httputil.ReverseProxy
+	httpSrv     *http.Server
+	internalSrv *http.Server
+	tlsLn       net.Listener
+	tlsSem      chan struct{}    // bounds concurrent SNI-passthrough handlers
+	coord       *wakeCoordinator // nil when no Waker configured
+	activity    *ActivityTracker // nil when activity tracking disabled
+	onWake      func(time.Duration)
+	wg          sync.WaitGroup
 }
 
 // New builds a proxy from cfg. Call Start to bind and serve.
@@ -74,11 +83,12 @@ func New(cfg Config) *Proxy {
 		log = slog.Default()
 	}
 	p := &Proxy{
-		resolver:   cfg.Resolver,
-		log:        log,
-		httpListen: cfg.HTTPListen,
-		tlsListen:  cfg.TLSListen,
-		tlsSem:     make(chan struct{}, maxTLSConns),
+		resolver:       cfg.Resolver,
+		log:            log,
+		httpListen:     cfg.HTTPListen,
+		tlsListen:      cfg.TLSListen,
+		internalListen: cfg.InternalListen,
+		tlsSem:         make(chan struct{}, maxTLSConns),
 	}
 	if cfg.Waker != nil {
 		p.coord = newWakeCoordinator(cfg.Waker, 0)
@@ -102,14 +112,25 @@ func New(cfg Config) *Proxy {
 	return p
 }
 
-// ServeHTTP resolves the app from the request Host and reverse-proxies to its
-// current instance. Unknown host → 404; app with no ready instance → 502.
+// ServeHTTP is the external (proxy-domain) L7 handler.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	tg, err := p.resolver.Resolve(r.Host)
+	p.handle(w, r, false)
+}
+
+// handle resolves the app from the request Host and reverse-proxies to its
+// current instance. internal selects the app→app zone (backend.internal) over
+// the external proxy domain; the two share the ReverseProxy, wake path, and
+// activity tracking. Unknown host → 404; app with no ready instance → 502.
+func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
+	resolve, appName := p.resolver.Resolve, p.resolver.AppName
+	if internal {
+		resolve, appName = p.resolver.ResolveInternal, p.resolver.AppNameInternal
+	}
+	tg, err := resolve(r.Host)
 	if errors.Is(err, ErrAsleep) && p.coord != nil {
 		// Slept app: wake it (coalesced across a herd) and re-resolve, holding
 		// this request in the blocked goroutine until it is running.
-		tg, err = p.wakeAndResolve(r.Context(), r.Host)
+		tg, err = p.wakeAndResolve(r.Context(), r.Host, internal)
 	}
 	if err != nil {
 		switch {
@@ -124,7 +145,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.activity != nil {
-		name := p.resolver.AppName(r.Host)
+		name := appName(r.Host)
 		p.activity.begin(name)
 		defer p.activity.end(name)
 	}
@@ -138,14 +159,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // timed-out wake → the app is still asleep → ErrAsleep (→ 503 upstream); and the
 // "someone else already woke it" race resolves straight to a running Target.
 // On a successful wake it reports the observed latency via onWake.
-func (p *Proxy) wakeAndResolve(ctx context.Context, host string) (Target, error) {
-	name := p.resolver.AppName(host)
+func (p *Proxy) wakeAndResolve(ctx context.Context, host string, internal bool) (Target, error) {
+	resolve, appName := p.resolver.Resolve, p.resolver.AppName
+	if internal {
+		resolve, appName = p.resolver.ResolveInternal, p.resolver.AppNameInternal
+	}
+	name := appName(host)
 	if name == "" {
 		return Target{}, ErrNoRoute
 	}
 	start := time.Now()
 	_ = p.coord.wake(ctx, name)
-	tg, err := p.resolver.Resolve(host)
+	tg, err := resolve(host)
 	if err == nil && p.onWake != nil {
 		p.onWake(time.Since(start))
 	}
@@ -175,11 +200,38 @@ func (p *Proxy) Start() error {
 			}
 		}()
 	}
+	if p.internalListen != "" {
+		ln, err := net.Listen("tcp", p.internalListen)
+		if err != nil {
+			if p.httpSrv != nil {
+				_ = p.httpSrv.Close()
+			}
+			return err
+		}
+		// Same L7 routing as the external listener, but over the internal zone
+		// (backend.internal). Bound to the anycast VIP, so only guest netns can
+		// reach it (enforced by nft; the caller-authz check lands in v0.5.1 M2).
+		p.internalSrv = &http.Server{
+			Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.handle(w, r, true) }),
+			ReadHeaderTimeout: httpHeaderTimeout,
+			IdleTimeout:       proxyIdleTimeout,
+		}
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			if err := p.internalSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				p.log.Error("ingress: internal serve", "err", err)
+			}
+		}()
+	}
 	if p.tlsListen != "" {
 		ln, err := net.Listen("tcp", p.tlsListen)
 		if err != nil {
 			if p.httpSrv != nil {
 				_ = p.httpSrv.Close()
+			}
+			if p.internalSrv != nil {
+				_ = p.internalSrv.Close()
 			}
 			return err
 		}
@@ -198,6 +250,9 @@ func (p *Proxy) Start() error {
 func (p *Proxy) Stop(ctx context.Context) {
 	if p.httpSrv != nil {
 		_ = p.httpSrv.Shutdown(ctx)
+	}
+	if p.internalSrv != nil {
+		_ = p.internalSrv.Shutdown(ctx)
 	}
 	if p.tlsLn != nil {
 		_ = p.tlsLn.Close()
@@ -241,7 +296,7 @@ func (p *Proxy) handleSNI(conn net.Conn) {
 		// Raw TCP has no request context; bound the wake so a stuck restore
 		// can't pin this connection (and its tlsSem slot) indefinitely.
 		wctx, cancel := context.WithTimeout(context.Background(), defaultWakeTimeout)
-		tg, err = p.wakeAndResolve(wctx, sni)
+		tg, err = p.wakeAndResolve(wctx, sni, false)
 		cancel()
 	}
 	if err != nil {
