@@ -506,7 +506,20 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 	}
 	instanceID := ob.instanceID
 	ob.phase = "asleep" // claim the state before the VMM stops
+	// Reap any roll instances in flight — a draining (post-flip) or incoming
+	// (mid-roll) instance. Left alone they'd keep a live VM running while the app
+	// is "asleep" (defeating scale-to-zero), and the reap in reconcilePrimary is
+	// skipped once phase is asleep. On wake the roll re-derives from the spec.
+	rollOrphans := []string{ob.drainInstanceID, ob.incomingInstanceID}
+	ob.drainInstanceID, ob.drainUntil = "", time.Time{}
+	ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
+	ob.rolloutUntil = time.Time{}
 	m.obsMu.Unlock()
+	for _, id := range rollOrphans {
+		if id != "" {
+			_ = m.inst.Destroy(ctx, id)
+		}
+	}
 
 	snapID, err := m.inst.Sleep(ctx, instanceID)
 	if err != nil {
@@ -785,9 +798,19 @@ func (m *Manager) reconcile(ctx context.Context) {
 		ob := m.obs[appID]
 		_, stillExists := desiredRec(recs, appID)
 		m.obsMu.Unlock()
-		if ob != nil && ob.instanceID != "" {
-			if err := m.inst.Destroy(ctx, ob.instanceID); err != nil {
-				m.log.Warn("app reconcile: destroy", "app", appID, "instance", ob.instanceID, "err", err)
+		// Destroy EVERY instance the app owns — not just the current one. A rolling
+		// update leaves a draining (superseded) instance and, mid-roll, an incoming
+		// one; both live in single best-effort slots reaped only by reconcilePrimary,
+		// which never runs again once the app isn't desired. Missing them here (then
+		// dropping `ob` below) orphans those VMs.
+		if ob != nil {
+			for _, id := range []string{ob.instanceID, ob.drainInstanceID, ob.incomingInstanceID} {
+				if id == "" {
+					continue
+				}
+				if err := m.inst.Destroy(ctx, id); err != nil {
+					m.log.Warn("app reconcile: destroy", "app", appID, "instance", id, "err", err)
+				}
 			}
 		}
 		m.destroyExtras(ctx, appID) // tear down horizontally-scaled replicas too
@@ -795,7 +818,12 @@ func (m *Manager) reconcile(ctx context.Context) {
 		if !stillExists {
 			delete(m.obs, appID) // app deleted → forget it
 		} else if ob != nil {
+			// Stopped (still desired, just not running): clear the roll/drain slots
+			// too so nothing dangles or gets re-reaped after the instances are gone.
 			ob.phase, ob.instanceID, ob.health = "stopped", "", "unknown"
+			ob.drainInstanceID, ob.drainUntil = "", time.Time{}
+			ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
+			ob.rolloutUntil = time.Time{}
 		}
 		m.obsMu.Unlock()
 	}
@@ -1323,7 +1351,7 @@ func (m *Manager) advanceRoll(ctx context.Context, rec Record, ob *observed, now
 	if ob.instanceID != "" && !m.inst.Exists(ob.instanceID) {
 		m.log.Warn("app: current instance died mid-roll; promoting incoming",
 			"app", rec.ID, "name", rec.Spec.Name, "incoming", ob.incomingInstanceID)
-		m.flip(rec, ob, now, false)
+		m.flip(ctx, rec, ob, now, false)
 		return
 	}
 	// Readiness gate: the incoming's health check, or a TCP connect to its port.
@@ -1340,7 +1368,7 @@ func (m *Manager) advanceRoll(ctx context.Context, rec Record, ob *observed, now
 	if ready {
 		m.log.Info("app: rolling update ready; flipping route to new instance",
 			"app", rec.ID, "name", rec.Spec.Name, "instance", ob.incomingInstanceID, "generation", ob.incomingGeneration)
-		m.flip(rec, ob, now, true)
+		m.flip(ctx, rec, ob, now, true)
 		return
 	}
 	// Not ready yet: abort if the rollout deadline has passed.
@@ -1353,10 +1381,15 @@ func (m *Manager) advanceRoll(ctx context.Context, rec Record, ob *observed, now
 // instance is kept alive for drainWindow (then reaped) so the cutover drops
 // nothing; when false the old instance is already gone. Resets crash-loop and
 // health state for the fresh instance and clears roll bookkeeping.
-func (m *Manager) flip(rec Record, ob *observed, now time.Time, drain bool) {
+func (m *Manager) flip(ctx context.Context, rec Record, ob *observed, now time.Time, drain bool) {
 	m.obsMu.Lock()
-	defer m.obsMu.Unlock()
+	// The drain slot holds at most one instance. If a prior roll's drained
+	// instance is still here — a second update flipped inside drainWindow, before
+	// the time-gated reap fired — overwriting the slot would orphan its VM. Capture
+	// it and destroy it below (outside the lock, matching the reap in reconcilePrimary).
+	stale := ""
 	if drain && ob.instanceID != "" {
+		stale = ob.drainInstanceID
 		ob.drainInstanceID = ob.instanceID
 		ob.drainUntil = now.Add(drainWindow)
 	}
@@ -1377,6 +1410,12 @@ func (m *Manager) flip(rec Record, ob *observed, now time.Time, drain bool) {
 	ob.incomingInstanceID, ob.incomingGeneration, ob.incomingReadyStreak = "", 0, 0
 	ob.rolloutUntil = time.Time{}
 	ob.rollFailures, ob.rollBackoff = 0, time.Time{}
+	m.obsMu.Unlock()
+	if stale != "" {
+		m.log.Info("app: destroying prior draining instance superseded by a new update",
+			"app", rec.ID, "name", rec.Spec.Name, "instance", stale)
+		_ = m.inst.Destroy(ctx, stale)
+	}
 }
 
 // abortRoll ends a failed rolling update: the incoming instance is destroyed

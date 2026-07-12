@@ -493,11 +493,17 @@ fi
 # ---- 14 v0.4.1: -P publishes the image's EXPOSEd port -----------------------
 echo "== 14 -P publishes the image's EXPOSEd port (guest 80 → host 80)"
 # -P maps the image's EXPOSEd :80 to host :80, so anything ALREADY bound to :80
-# would clash. Detect a listener by connectivity, not a 2xx — the ingress proxy
-# (now on :80 by default) answers an unmatched Host with 404, which `curl -sf`
-# would miss, letting -P run into a guaranteed bind clash.
-if [[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:80/ 2>/dev/null)" != "000" ]]; then
-  skip "-P check: something already listens on :80 (e.g. the ingress proxy) — -P to host :80 would clash"
+# would clash. A loopback `curl localhost:80` only catches a holder on 127.0.0.1 —
+# it MISSES one bound to a specific NIC (e.g. a docker-proxy on the LAN IP) or
+# *:80/[::]:80, which still collides with the daemon's 0.0.0.0:80 bind. So also
+# ask `ss` for ANY :80 listener, and if the bind still loses the race, read the
+# instance's last_error and SKIP on a port clash rather than FAIL (an occupied
+# host port is an environment issue, not a -P regression).
+port80_busy=0
+[[ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:80/ 2>/dev/null)" != "000" ]] && port80_busy=1
+command -v ss >/dev/null 2>&1 && ss -ltnH 'sport = :80' 2>/dev/null | grep -q . && port80_busy=1
+if [[ "$port80_busy" -eq 1 ]]; then
+  skip "-P check: host :80 is already in use (ingress proxy / docker-proxy / other) — -P to host :80 would clash"
 elif ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
   skip "daemon has no /apps endpoint"
 else
@@ -509,7 +515,12 @@ else
     if hit "http://localhost:80/" "html" || hit "http://localhost:80/" "nginx"; then
       pass "-P published the image's EXPOSEd port; served on :80 with no explicit -p"
     else
-      fail "-P did not publish the EXPOSEd port (:80 unreachable)"
+      PERR="$(curl -s "$BASE_URL/apps/$PAPP" 2>/dev/null)"
+      if [[ "$PERR" == *"address already in use"* || "$PERR" == *"bind :80"* ]]; then
+        skip "-P: host :80 is occupied — the bind failed (free the port; a specific-NIC holder slips past a loopback pre-check)"
+      else
+        fail "-P did not publish the EXPOSEd port (:80 unreachable): ${PERR:0:200}"
+      fi
     fi
     cli app rm "$PAPP" >/dev/null 2>&1
   else

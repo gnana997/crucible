@@ -42,13 +42,15 @@
 #   publish range (:80/:8080/:3000/…) so it never fights the app you're running;
 #   any free TCP port works, and host:port pins an interface. TLS is opt-in
 #   (needs a TLS-serving guest): PROXY_TLS_LISTEN=:7880. --no-proxy turns it off.
-#   For a production ingress on the standard port (put env before sudo / sudo -E):
-#     PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 sudo -E bash install.sh --enable
+#   Pass env AFTER sudo (sudo VAR=val bash …) so root actually inherits it — a
+#   VAR=val before sudo is dropped by sudo's env reset (esp. with curl | sudo bash).
+#   For a production ingress on the standard port:
+#     sudo PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 bash install.sh --enable
 #   INTERNAL_NET=1 (off) opts into app→app networking (v0.5.1): apps reach each
 #   other by name (<app>.internal), default-deny via `app create --can-call`. It
 #   just seeds the daemon flag so users don't hand-edit config; INTERNAL_PORT
 #   overrides the VIP port (default 80). One-line enable (needs the proxy, on by
-#   default): INTERNAL_NET=1 sudo -E bash install.sh --enable
+#   default): sudo INTERNAL_NET=1 bash install.sh --enable
 
 set -euo pipefail
 

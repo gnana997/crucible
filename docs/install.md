@@ -176,7 +176,10 @@ apt-get install -y e2fsprogs   # or: dnf install e2fsprogs
 
 ## Environment variables
 
-Prefix them before the command (use `sudo -E` so root inherits them):
+Pass them **after `sudo`** (`sudo VAR=val bash …`) so root's environment
+actually carries them — `VAR=val sudo bash` puts the var on `sudo`, which resets
+the environment and drops it before the script runs (a common footgun with the
+piped `curl | sudo bash` form).
 
 | Variable | Default | Applies to | Description |
 |---|---|---|---|
@@ -199,16 +202,20 @@ Prefix them before the command (use `sudo -E` so root inherits them):
 
 ```bash
 # Production ingress on standard ports (root binds :80/:443 with no extra caps):
-PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 sudo -E bash install.sh --enable --with-deps
+sudo PROXY_LISTEN=:80 PROXY_TLS_LISTEN=:443 bash install.sh --enable --with-deps
 
 # Turn the ingress proxy off entirely:
 sudo bash install.sh --enable --with-deps --no-proxy
 
 # Enable app→app networking in one line (no manual config edit):
-INTERNAL_NET=1 sudo -E bash install.sh --enable --with-deps
+sudo INTERNAL_NET=1 bash install.sh --enable --with-deps
+
+# Same, piped from curl (note the env goes AFTER sudo, and `-s --` before flags):
+curl -fsSL https://raw.githubusercontent.com/gnana997/crucible/main/install.sh \
+  | sudo INTERNAL_NET=1 bash -s -- --enable --with-deps
 
 # Pin a specific release, install to a custom prefix:
-PREFIX=/opt/crucible sudo -E bash install.sh --enable --with-deps --version v0.5.2
+sudo PREFIX=/opt/crucible bash install.sh --enable --with-deps --version v0.5.2
 
 # Install from a local build (repo checkout) without downloading:
 make build && sudo ./install.sh --enable --binary ./crucible

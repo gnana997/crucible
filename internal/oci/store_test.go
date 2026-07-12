@@ -15,6 +15,11 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
+// testAgent is the fake guest-agent binary the store tests inject. Sharing one
+// value keeps its sha256 (the cache freshness key) stable across a reopen, so
+// persistence tests re-adopt rather than purge.
+var testAgent = []byte("FAKE-AGENT-BINARY")
+
 func storeRequires(t *testing.T) {
 	t.Helper()
 	for _, tool := range []string{"mkfs.ext4", "fsck.ext4", "debugfs"} {
@@ -33,7 +38,7 @@ func newTestStore(t *testing.T) (*Store, string) {
 	}
 	s, err := New(StoreConfig{
 		Dir:         dir,
-		Agent:       []byte("FAKE-AGENT-BINARY"),
+		Agent:       testAgent,
 		Mode:        mode,
 		PullOptions: []PullOption{WithInsecureRegistry()},
 	})
@@ -120,8 +125,8 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("Pull: %v", err)
 	}
 
-	// Reopen the same dir: the scan must re-adopt the image.
-	s2, err := New(StoreConfig{Dir: dir, Agent: []byte("A"), Mode: s.mode})
+	// Reopen the same dir with the SAME agent: the scan must re-adopt the image.
+	s2, err := New(StoreConfig{Dir: dir, Agent: testAgent, Mode: s.mode})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -134,6 +139,49 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 	}
 	if _, err := os.Stat(got.RootfsPath); err != nil {
 		t.Errorf("re-adopted rootfs path invalid: %v", err)
+	}
+}
+
+// A daemon whose embedded agent changed must NOT reuse a conversion built by the
+// old agent: reopening the store with a different agent purges the stale image
+// (its baked guest agent would lag the daemon), so the next use re-converts.
+func TestStorePurgesStaleAgentOnReopen(t *testing.T) {
+	storeRequires(t)
+	reg := newFakeRegistry(t)
+	img := craftImage(t, "linux", "amd64", v1.Config{})
+	ref := reg + "/apps/stale:v1"
+	pushImage(t, ref, img)
+
+	s, dir := newTestStore(t)
+	rec, err := s.Pull(t.Context(), ref, nil)
+	if err != nil {
+		t.Fatalf("Pull: %v", err)
+	}
+	imgDir := filepath.Join(dir, digestDir(rec.Digest))
+	if _, err := os.Stat(imgDir); err != nil {
+		t.Fatalf("converted image dir missing: %v", err)
+	}
+
+	// Reopen with a DIFFERENT agent — the conversion is now stale and purged.
+	s2, err := New(StoreConfig{Dir: dir, Agent: []byte("A-DIFFERENT-AGENT"), Mode: s.mode})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if _, err := s2.Get(rec.Digest); !errors.Is(err, ErrImageNotFound) {
+		t.Errorf("stale-agent image was not purged from the index: err=%v", err)
+	}
+	if _, err := os.Stat(imgDir); !os.IsNotExist(err) {
+		t.Errorf("stale-agent image dir not removed from disk: %v", err)
+	}
+
+	// Reopen once more with the ORIGINAL agent: nothing to adopt (it's gone),
+	// confirming the purge deleted the artifact rather than merely de-indexing it.
+	s3, err := New(StoreConfig{Dir: dir, Agent: testAgent, Mode: s.mode})
+	if err != nil {
+		t.Fatalf("reopen original: %v", err)
+	}
+	if _, err := s3.Get(rec.Digest); !errors.Is(err, ErrImageNotFound) {
+		t.Errorf("purged image unexpectedly reappeared: err=%v", err)
 	}
 }
 

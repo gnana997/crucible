@@ -663,6 +663,102 @@ func TestRollingUpdateFlipsAndDrains(t *testing.T) {
 	}
 }
 
+// setupMidDrain boots an app, updates it, and drives the roll to the point where
+// the OLD instance is draining (post-flip, within the drain window). Returns the
+// manager, fake, clock, record, and the id of the now-draining old instance.
+func setupMidDrain(t *testing.T) (*Manager, *fakeInstantiator, *fakeClock, Record, string) {
+	t.Helper()
+	f := newFake()
+	m, _ := newMgr(t, f)
+	clk := &fakeClock{t: time.Unix(100, 0).UTC()}
+	m.now = clk.now
+	f.setProbe(HealthPassing)
+	rec := mustCreate(t, m, proxyHealthSpec("web"), true)
+
+	m.reconcile(ctx()) // boot gen 1
+	old := instanceOf(t, m, rec.ID)
+
+	upd := proxyHealthSpec("web")
+	upd.MemoryMiB = 512
+	if _, err := m.Update("web", upd); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	m.reconcile(ctx()) // startRoll: boot incoming
+	m.reconcile(ctx()) // readiness passes → flip; old now draining
+	if f.liveCount() != 2 || !f.Exists(old) {
+		t.Fatalf("mid-drain setup: live=%d oldExists=%v, want 2 + old draining", f.liveCount(), f.Exists(old))
+	}
+	return m, f, clk, rec, old
+}
+
+// TestDeleteMidDrainDestroysDrainingInstance: deleting an app while a rolling
+// update's OLD instance is still draining must tear down BOTH the current and the
+// draining instance. Regression: the teardown path used to destroy only the
+// current instance, then forget the app — orphaning the draining VM forever.
+func TestDeleteMidDrainDestroysDrainingInstance(t *testing.T) {
+	m, f, _, rec, old := setupMidDrain(t)
+
+	if err := m.Delete(rec.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	m.reconcile(ctx())
+	if f.Exists(old) {
+		t.Fatal("draining instance orphaned by app delete")
+	}
+	if f.liveCount() != 0 {
+		t.Fatalf("delete mid-drain leaked %d instance(s), want 0", f.liveCount())
+	}
+}
+
+// TestSupersedingUpdateReapsPriorDrainingInstance: a second update that flips
+// INSIDE the first update's drain window must destroy the first update's draining
+// instance before taking the single drain slot. Regression: flip overwrote the
+// slot unconditionally, orphaning the earlier old instance.
+func TestSupersedingUpdateReapsPriorDrainingInstance(t *testing.T) {
+	m, f, clk, rec, orig := setupMidDrain(t)
+	instA := instanceOf(t, m, rec.ID) // the instance made current by the first update
+	if instA == "" || instA == orig {
+		t.Fatalf("bad setup: instA=%q orig=%q", instA, orig)
+	}
+
+	// A second update lands well inside the 10s drain window (orig not yet reaped).
+	clk.advance(2 * time.Second)
+	updB := proxyHealthSpec("web")
+	updB.MemoryMiB = 256
+	if _, err := m.Update("web", updB); err != nil {
+		t.Fatalf("Update B: %v", err)
+	}
+	m.reconcile(ctx()) // startRoll B
+	m.reconcile(ctx()) // flip B → instA now draining; orig must be destroyed here
+
+	if f.Exists(orig) {
+		t.Fatalf("prior draining instance %s orphaned by the superseding update", orig)
+	}
+	if !f.Exists(instA) {
+		t.Fatal("first update's instance should now be the (new) draining one")
+	}
+	if f.liveCount() != 2 {
+		t.Fatalf("after superseding flip live=%d, want 2 (new current + one draining)", f.liveCount())
+	}
+}
+
+// TestSleepMidDrainReapsDrainingInstance: sleeping an app while a roll's old
+// instance is still draining must destroy that instance — otherwise a live VM
+// keeps running while the app is "asleep", defeating scale-to-zero.
+func TestSleepMidDrainReapsDrainingInstance(t *testing.T) {
+	m, f, _, _, old := setupMidDrain(t)
+
+	if err := m.Sleep(ctx(), "web"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	if f.Exists(old) {
+		t.Fatal("draining instance left running while the app is asleep")
+	}
+	if f.liveCount() != 1 {
+		t.Fatalf("asleep app has live=%d, want 1 (only the snapshotted current)", f.liveCount())
+	}
+}
+
 // TestRollingUpdateNoHealthTCPGate: an app with no health check still rolls,
 // gating the flip on a TCP connect to its port.
 func TestRollingUpdateNoHealthTCPGate(t *testing.T) {

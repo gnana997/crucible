@@ -2,6 +2,8 @@ package oci
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,11 +28,15 @@ import (
 // sandbox reconcile sweep reaps everything under work-base it doesn't
 // recognize, and must never touch the image cache.
 type Store struct {
-	dir      string
-	agent    []byte
-	mode     MaterializeMode
-	pullOpts []PullOption
-	log      *slog.Logger
+	dir string
+	// agent is the guest agent injected into every conversion; agentDigest is
+	// its sha256, stamped into each record so a conversion built by a stale
+	// agent (a daemon upgrade) can be told apart from a current one.
+	agent       []byte
+	agentDigest string
+	mode        MaterializeMode
+	pullOpts    []PullOption
+	log         *slog.Logger
 
 	sf singleflight.Group
 	mu sync.RWMutex
@@ -68,6 +74,12 @@ type ImageRecord struct {
 	// RunConfig is the image's runtime contract — the source the boot
 	// path computes the effective service spec from.
 	RunConfig *RunConfig `json:"run_config"`
+
+	// AgentDigest is the sha256 of the guest agent injected into this
+	// conversion. The store purges any record whose digest doesn't match the
+	// daemon's current agent, so an upgraded daemon never boots an image with a
+	// stale baked agent. Empty on legacy records → treated as stale.
+	AgentDigest string `json:"agent_digest,omitempty"`
 }
 
 // StoreConfig configures New.
@@ -117,12 +129,13 @@ func New(cfg StoreConfig) (*Store, error) {
 		log = slog.Default()
 	}
 	s := &Store{
-		dir:      cfg.Dir,
-		agent:    cfg.Agent,
-		mode:     cfg.Mode,
-		pullOpts: cfg.PullOptions,
-		log:      log.With("component", "images"),
-		byDigest: make(map[string]*ImageRecord),
+		dir:         cfg.Dir,
+		agent:       cfg.Agent,
+		agentDigest: agentDigestOf(cfg.Agent),
+		mode:        cfg.Mode,
+		pullOpts:    cfg.PullOptions,
+		log:         log.With("component", "images"),
+		byDigest:    make(map[string]*ImageRecord),
 	}
 	if err := s.scan(); err != nil {
 		return nil, err
@@ -147,9 +160,39 @@ func (s *Store) scan() error {
 			s.log.Warn("skipping unreadable image dir", "dir", e.Name(), "err", err)
 			continue
 		}
+		// Freshness: a conversion whose injected agent differs from the daemon's
+		// current one is stale (a daemon/agent upgrade, or a legacy record with
+		// no stamp). Purge it here — at single-threaded startup, before any boot
+		// clones it — so the next use re-converts with the current agent. This is
+		// what keeps an upgraded daemon from silently booting an old baked agent.
+		if rec.AgentDigest != s.agentDigest {
+			s.log.Info("purging stale-agent image conversion", "dir", e.Name(),
+				"digest", rec.Digest, "had_agent", shortHex(rec.AgentDigest),
+				"want_agent", shortHex(s.agentDigest))
+			if err := os.RemoveAll(dir); err != nil {
+				s.log.Warn("could not remove stale image dir", "dir", e.Name(), "err", err)
+			}
+			continue
+		}
 		s.byDigest[rec.Digest] = rec
 	}
 	return nil
+}
+
+// agentDigestOf is the sha256 (hex) of the injected agent binary — the cache
+// freshness key. Two daemon builds with the same agent produce the same digest,
+// so a normal restart preserves the whole cache; an agent change invalidates it.
+func agentDigestOf(agent []byte) string {
+	sum := sha256.Sum256(agent)
+	return hex.EncodeToString(sum[:])
+}
+
+// shortHex trims a hex digest for logging; "" (a legacy record) stays "".
+func shortHex(h string) string {
+	if len(h) > 12 {
+		return h[:12]
+	}
+	return h
 }
 
 func loadRecord(dir string) (*ImageRecord, error) {
@@ -268,6 +311,7 @@ func (s *Store) materializeAndRecord(ctx context.Context, acq *Acquired) (*Image
 		ConvertMode:       res.Mode,
 		ConvertedAtUnixMs: acq.RunConfig.ConvertedAtUnixMs,
 		RunConfig:         acq.RunConfig,
+		AgentDigest:       s.agentDigest,
 	}
 	// Materialize stamps the injected run.json but not our copy; mirror
 	// the conversion time onto the record for a consistent view.
