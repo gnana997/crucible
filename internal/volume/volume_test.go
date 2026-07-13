@@ -52,6 +52,37 @@ func TestAttachProvisionsOnceAndPersists(t *testing.T) {
 	}
 }
 
+func TestSyncFsyncsBackingFile(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+
+	path, err := m.Attach("data", "sbx1") // provisions the backing file
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	// Dirty the backing file, then Sync it: fsync must succeed (durability at
+	// snapshot-sleep depends on this).
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open backing file: %v", err)
+	}
+	if _, err := f.WriteAt([]byte("crucible"), 0); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_ = f.Close()
+
+	if err := m.Sync("data"); err != nil {
+		t.Fatalf("Sync provisioned volume: %v", err)
+	}
+
+	// Unknown and invalid names are surfaced, not silently ignored.
+	if err := m.Sync("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Sync unknown = %v, want ErrNotFound", err)
+	}
+	if err := m.Sync("Bad Name"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("Sync bad name = %v, want ErrInvalidName", err)
+	}
+}
+
 func TestAttachGuardIsSingleWriter(t *testing.T) {
 	m := newMgr(t, t.TempDir())
 	if _, err := m.Attach("v", "sbx1"); err != nil {

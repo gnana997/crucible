@@ -257,6 +257,33 @@ func (m *Manager) Remove(name string) error {
 	return nil
 }
 
+// Sync fsyncs a volume's backing file so writes the host buffered for it
+// (cache_type=Writeback defers them until a guest FLUSH) reach persistent
+// storage. Called at snapshot-sleep time: Firecracker does NOT flush drive
+// backing files when it takes a snapshot, so without this an app that is slept
+// (snapshot + VMM stopped) could lose committed rows if the host crashes while
+// it is asleep — breaking the fsync-honest durability guarantee. Idempotent and
+// cheap (a no-op when nothing is dirty). ErrInvalidName / ErrNotFound on a bad
+// or unknown name. The caller must have quiesced the guest and paused the VM
+// first, so no new writes are in flight.
+func (m *Manager) Sync(name string) error {
+	if !nameRe.MatchString(name) {
+		return ErrInvalidName
+	}
+	f, err := os.OpenFile(filepath.Join(m.dir, name+".img"), os.O_RDWR, 0)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("volume: open %s for sync: %w", name, err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("volume: fsync %s: %w", name, err)
+	}
+	return nil
+}
+
 // provision creates + formats the backing file at sizeBytes on first use. mkfs
 // runs against a temp file renamed only after it succeeds, so a crash
 // mid-format never leaves a half-formatted file the "exists ⇒ formatted" check

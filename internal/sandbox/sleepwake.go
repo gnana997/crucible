@@ -91,6 +91,24 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 		_ = os.RemoveAll(snapDir)
 		return "", fmt.Errorf("sleep: pause %s: %w", id, err)
 	}
+	// F3: fsync each attached volume's backing file so committed data is durable
+	// on disk before the VMM stops. Firecracker does not flush drive backing
+	// files on snapshot, and cache_type=Writeback may leave writes in the host
+	// page cache — so a host crash while asleep could otherwise lose rows. The
+	// guest was synced (quiesce) before Pause and is now paused, so nothing is in
+	// flight. A fsync failure aborts the sleep (resume, stay running) rather than
+	// sleeping with un-durable data. The single-writer volume guard is left HELD:
+	// SleepInPlace never Deletes the sandbox, so the slept instance keeps its
+	// claim and the volume can't be attached elsewhere while it sleeps.
+	if m.cfg.VolumeManager != nil {
+		for _, vn := range s.volumeNames {
+			if err := m.cfg.VolumeManager.Sync(vn); err != nil {
+				_ = s.handle.Resume(ctx)
+				_ = os.RemoveAll(snapDir)
+				return "", fmt.Errorf("sleep: fsync volume %s for %s: %w", vn, id, err)
+			}
+		}
+	}
 	if err := fsutil.Clone(liveRootfs, snapRootfs); err != nil {
 		_ = s.handle.Resume(ctx) // stay running rather than half-slept
 		_ = os.RemoveAll(snapDir)
