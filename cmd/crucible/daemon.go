@@ -41,6 +41,7 @@ import (
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/telemetry"
 	"github.com/gnana997/crucible/internal/tokenstore"
+	"github.com/gnana997/crucible/internal/volume"
 )
 
 // defaultTokenFile is where the daemon's API-key store lives by default.
@@ -145,6 +146,8 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		chrootBase = fs.String("chroot-base", "/srv/jailer", "parent dir for per-VM jailer chroots (used only when --jailer-bin is set)")
 		jailUID    = fs.Uint("jail-uid", 10000, "unprivileged uid jailer drops to before exec'ing firecracker")
 		jailGID    = fs.Uint("jail-gid", defaultJailGID(), "unprivileged gid jailer drops to before exec'ing firecracker (defaults to the kvm group so the jailed firecracker can open /dev/kvm)")
+		volumeDir  = fs.String("volume-dir", "", "directory for persistent volume backing files; enables --volume when set (must be on the same filesystem as --chroot-base so volumes hardlink into the jail)")
+		volumeSize = fs.Int64("volume-default-size", 2<<30, "size in bytes a volume's backing file is created at on first use (2 GiB default; per-volume sizing lands in a later release)")
 		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
 		// pids.max) for each sandbox's VMM from its vCPU/memory request.
 		// Only takes effect under jailer mode; the direct-exec runner has
@@ -470,8 +473,29 @@ Required flags:
 		logger.Info("pprof enabled", "addr", *pprofListen)
 	}
 
+	// Persistent volumes (optional). Backing files are chowned to the user
+	// firecracker runs as: the jailer uid/gid under jailer, or the daemon's
+	// own uid/gid for direct-exec. Same-filesystem-as-chroot is required so
+	// volumes hardlink into the jail (volume.Manager / jailer.Stage enforce
+	// it at attach time).
+	var volMgr *volume.Manager
+	if *volumeDir != "" {
+		vuid, vgid := os.Getuid(), os.Getgid()
+		if *jailerBin != "" {
+			vuid, vgid = int(*jailUID), int(*jailGID)
+		}
+		vm, verr := volume.NewManager(*volumeDir, *volumeSize, vuid, vgid)
+		if verr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: init volume storage: %v\n", verr)
+			return 1
+		}
+		volMgr = vm
+		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize)
+	}
+
 	mgrCfg := sandbox.ManagerConfig{
 		Runner:            r,
+		VolumeManager:     volMgr,
 		WorkBase:          *workBase,
 		Kernel:            *kernel,
 		Rootfs:            *rootfs,

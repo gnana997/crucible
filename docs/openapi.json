@@ -2334,6 +2334,12 @@
           },
           "vcpus": {
             "type": "integer"
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeMount"
+            }
           }
         }
       },
@@ -2913,6 +2919,17 @@
           },
           "vcpus": {
             "type": "integer"
+          }
+        }
+      },
+      "VolumeMount": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
           }
         }
       },

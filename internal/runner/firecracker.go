@@ -328,6 +328,17 @@ func (f *Firecracker) configureAndBoot(ctx context.Context, h *fcHandle, spec Sp
 	}); err != nil {
 		return fmt.Errorf("runner: put rootfs drive: %w", err)
 	}
+	// Persistent volumes (direct-exec: firecracker opens the backing file
+	// directly, no chroot). cache_type=Writeback for fsync-honest writes.
+	for _, v := range spec.Volumes {
+		if err := h.client.PutDrive(ctx, fcapi.Drive{
+			DriveID:    v.DriveID,
+			PathOnHost: v.HostPath,
+			CacheType:  "Writeback",
+		}); err != nil {
+			return fmt.Errorf("runner: put volume drive %s: %w", v.DriveID, err)
+		}
+	}
 	if err := h.client.PutMachineConfig(ctx, fcapi.MachineConfig{
 		VCPUCount:  spec.VCPUs,
 		MemSizeMiB: spec.MemoryMiB,

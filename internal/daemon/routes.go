@@ -355,6 +355,15 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 		}
 	}
 
+	volumes := make([]sandbox.VolumeMount, 0, len(req.Volumes))
+	for _, v := range req.Volumes {
+		if v.Name == "" || !strings.HasPrefix(v.Path, "/") {
+			return sandbox.CreateConfig{}, &imageErr{http.StatusBadRequest,
+				fmt.Errorf("volume requires a name and an absolute path (got name=%q path=%q)", v.Name, v.Path)}
+		}
+		volumes = append(volumes, sandbox.VolumeMount{Name: v.Name, Path: v.Path})
+	}
+
 	return sandbox.CreateConfig{
 		VCPUs:          req.VCPUs,
 		MemoryMiB:      req.MemoryMiB,
@@ -367,6 +376,7 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 		Service:        req.Service,
 		Publish:        publish,
 		DiskBytes:      req.DiskBytes,
+		Volumes:        volumes,
 	}, nil
 }
 

@@ -34,6 +34,15 @@ type StageFile struct {
 	// artifacts) leave this false: they hardlink-then-chown as before,
 	// which is safe precisely because the inode is this VM's alone.
 	Shared bool
+
+	// NoCopyFallback forbids the EXDEV copy fallback (below). A persistent
+	// volume sets this: the hardlink shares the backing inode, so guest
+	// writes reach the file in --volume-dir and survive the sandbox. A
+	// copy would give the VM its own inode and silently make the volume
+	// ephemeral, so staging a cross-filesystem volume fails loudly instead
+	// — the operator must put --volume-dir on the same filesystem as the
+	// chroot base. Ignored when Shared is set.
+	NoCopyFallback bool
 }
 
 // Stage places host files into this spec's chroot so firecracker can
@@ -116,6 +125,9 @@ func stageOne(dst string, f StageFile, uid, gid uint32) error {
 		// (permission, missing src, etc.) is a real error.
 		if !errors.Is(err, unix.EXDEV) {
 			return fmt.Errorf("jailer: hardlink %s -> %s: %w", f.Src, dst, err)
+		}
+		if f.NoCopyFallback {
+			return fmt.Errorf("jailer: %s and the chroot are on different filesystems; a persistent volume cannot be copied — put --volume-dir on the same filesystem as --chroot-base: %w", f.Src, err)
 		}
 		if err := fsutil.Clone(f.Src, dst); err != nil {
 			return fmt.Errorf("jailer: clone fallback for %s: %w", f.Src, err)

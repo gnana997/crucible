@@ -91,9 +91,27 @@ type CreateSandboxRequest struct {
 	// built-in headroom. Ignored (a no-op) when the requested size is
 	// not larger than the clone already is.
 	DiskBytes int64 `json:"disk_bytes,omitempty"`
+
+	// Volumes are persistent block-device volumes to attach and mount at a
+	// path inside the guest, e.g. {Name: "pgdata", Path:
+	// "/var/lib/postgresql/data"}. Each is created + formatted ext4 on first
+	// use and reattached by name thereafter, so data survives the sandbox
+	// (and daemon restarts). Requires the daemon to have a volume directory.
+	Volumes []VolumeMount `json:"volumes,omitempty"`
 }
 
 // PortMapping publishes one host port to one guest port.
+// VolumeMount attaches a durable, named block-device volume at an absolute
+// path inside the guest. The backing store persists across sandboxes, so
+// re-creating with the same Name reattaches the same data. ext4 is
+// single-writer: a volume may be attached to at most one live sandbox.
+type VolumeMount struct {
+	// Name is the durable volume name ([a-z0-9][a-z0-9-]*, max 63 chars).
+	Name string `json:"name"`
+	// Path is the absolute mount point inside the guest.
+	Path string `json:"path"`
+}
+
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable
 	// from the LAN); "127.0.0.1" pins it to localhost-only.

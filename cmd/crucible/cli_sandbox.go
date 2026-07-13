@@ -41,6 +41,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 		publish                []string
 		publishAll             bool
 		registryAuth           string
+		volumes                []string
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -77,6 +78,13 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 				req.Publish = append(req.Publish, pm)
 			}
 			req.PublishAll = publishAll
+			for _, vspec := range volumes {
+				vm, err := parseVolume(vspec)
+				if err != nil {
+					return err
+				}
+				req.Volumes = append(req.Volumes, vm)
+			}
 			sb, err := o.client().CreateSandbox(cmd.Context(), req)
 			if err != nil {
 				return err
@@ -101,6 +109,7 @@ func newSandboxCreateCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().BoolVar(&netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "publish a host port to a guest port: [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	cmd.Flags().BoolVarP(&publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N; image mode)")
+	cmd.Flags().StringArrayVar(&volumes, "volume", nil, "attach a persistent volume: NAME:/absolute/path (repeatable); the volume is created on first use and its data survives the sandbox")
 	return cmd
 }
 
@@ -149,6 +158,17 @@ func buildNetworkRequest(netAllow, netAllowCIDR []string, fullEgress bool) *api.
 		FullEgress:    fullEgress,
 		AllowlistCIDR: netAllowCIDR,
 	}
+}
+
+// parseVolume parses a "NAME:/absolute/path" volume spec into an
+// api.VolumeMount. The name is the durable volume; the path is where it
+// mounts inside the guest.
+func parseVolume(spec string) (api.VolumeMount, error) {
+	name, path, ok := strings.Cut(spec, ":")
+	if !ok || name == "" || !strings.HasPrefix(path, "/") {
+		return api.VolumeMount{}, fmt.Errorf("invalid --volume %q: want NAME:/absolute/path", spec)
+	}
+	return api.VolumeMount{Name: name, Path: path}, nil
 }
 
 // parsePublish parses a docker-style port spec (see api.ParsePublish). Kept

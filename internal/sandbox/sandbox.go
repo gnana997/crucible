@@ -36,6 +36,7 @@ import (
 	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/runner"
+	"github.com/gnana997/crucible/internal/volume"
 	"github.com/gnana997/crucible/sdk/wire"
 )
 
@@ -174,6 +175,11 @@ type Sandbox struct {
 	execClient *agentapi.Client // cached; nil when VSockPath is empty
 	publish    PublishHandle    // active forwarders; nil when nothing published
 
+	// volumeNames are the durable volumes attached to this sandbox, held by
+	// the VolumeManager single-writer guard for the sandbox's lifetime and
+	// released on Delete so a later sandbox can reattach the same volume.
+	volumeNames []string
+
 	// asleep, when non-nil, holds the snapshot artifacts captured by
 	// SleepInPlace to wake from: the VMM is stopped (RAM freed) but the record,
 	// netns, and workdir are kept. Cleared by WakeInPlace. In-memory only —
@@ -260,6 +266,24 @@ type CreateConfig struct {
 	// the clone is already at least this large. Requires resize2fs on
 	// the host.
 	DiskBytes int64
+
+	// Volumes are persistent block-device volumes to attach and mount. Each
+	// is provisioned (created + formatted ext4 on first use) via
+	// ManagerConfig.VolumeManager, hard-linked into the sandbox as a
+	// cache_type=Writeback drive, and mounted by the guest agent at Path
+	// before the service starts. Requires VolumeManager and an agent channel.
+	Volumes []VolumeMount
+}
+
+// VolumeMount attaches a durable volume by name at an absolute guest path.
+type VolumeMount struct {
+	// Name is the durable volume name ([a-z0-9][a-z0-9-]*). The backing file
+	// persists across sandboxes, so re-creating with the same name reattaches
+	// the same data.
+	Name string
+	// Path is the absolute mount point inside the guest, e.g.
+	// "/var/lib/postgresql/data".
+	Path string
 }
 
 // NetworkConfig declares the per-sandbox network intent. Exactly
@@ -339,6 +363,12 @@ type ManagerConfig struct {
 	// (CreateConfig.Publish). Nil rejects any create that requests
 	// published ports.
 	PortPublisher PortPublisher
+
+	// VolumeManager, when non-nil, enables persistent volumes
+	// (CreateConfig.Volumes). Nil rejects any create that requests
+	// volumes. Constructed by the daemon with the jailer uid/gid so
+	// backing files are owned by the user firecracker runs as.
+	VolumeManager *volume.Manager
 
 	// ForkConcurrency caps how many forks Fork boots simultaneously.
 	// Each concurrent fork copies a multi-GB rootfs and boots a VM, so
@@ -733,6 +763,42 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		}
 	}()
 
+	// Persistent volumes: provision (create + format ext4 on first use) and
+	// claim each for this sandbox before boot. Each becomes a Writeback drive
+	// (the runner attaches it) and is mounted by the agent after healthz,
+	// before the service starts. The claim is held for the sandbox's life;
+	// the deferred rollback releases it only on a failed Create.
+	var volSpecs []runner.VolumeAttach
+	var volMounts []wire.MountSpec
+	var volNames []string
+	if len(req.Volumes) > 0 {
+		if m.cfg.VolumeManager == nil {
+			return nil, fmt.Errorf("%w: volumes requested but no volume storage configured (set --volume-dir)", ErrInvalidConfig)
+		}
+		for i, v := range req.Volumes {
+			hostPath, err := m.cfg.VolumeManager.Attach(v.Name, id)
+			if err != nil {
+				return nil, fmt.Errorf("sandbox: attach volume %q: %w", v.Name, err)
+			}
+			name := v.Name
+			defer func() {
+				if !success {
+					m.cfg.VolumeManager.Release(name)
+				}
+			}()
+			volSpecs = append(volSpecs, runner.VolumeAttach{
+				DriveID:  fmt.Sprintf("vol%d", i),
+				HostPath: hostPath,
+			})
+			volMounts = append(volMounts, wire.MountSpec{
+				Device:     fmt.Sprintf("/dev/vd%c", 'b'+i), // rootfs is vda; vol0→vdb, vol1→vdc, …
+				Mountpoint: v.Path,
+				Fstype:     "ext4",
+			})
+			volNames = append(volNames, name)
+		}
+	}
+
 	runnerSpec := runner.Spec{
 		Workdir:   workdir,
 		Kernel:    m.cfg.Kernel,
@@ -741,6 +807,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		VCPUs:     vcpus,
 		MemoryMiB: memMiB,
 		Quotas:    m.quotasFor(vcpus, memMiB),
+		Volumes:   volSpecs,
 	}
 	if netHandle != nil {
 		runnerSpec.NetNS = netHandle.NetnsPath
@@ -795,6 +862,23 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 			return nil, fmt.Errorf("sandbox: configure network: %w", err)
 		}
 	}
+
+	// Mount persistent volumes now — after the agent is healthy and the
+	// network is configured, but before the service starts, so a volume-
+	// backed app (e.g. postgres) sees its data directory in place. Fatal on
+	// failure: serving a database with an unmounted data dir is worse than
+	// failing the create.
+	for _, ms := range volMounts {
+		if s.execClient == nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("%w: volumes require an agent channel (no vsock)", ErrInvalidConfig)
+		}
+		if err := s.execClient.Mount(ctx, ms); err != nil {
+			_ = handle.Shutdown(context.Background())
+			return nil, fmt.Errorf("sandbox: mount volume at %s: %w", ms.Mountpoint, err)
+		}
+	}
+	s.volumeNames = volNames
 
 	// Optional supervised service: push the spec and start it before the
 	// sandbox is registered, so a successful Create always returns with
@@ -1760,6 +1844,15 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 			// the sandbox from the registry. Operators see the
 			// warning in the daemon log.
 			_ = err // logged by the network.Manager itself
+		}
+	}
+
+	// Release the single-writer volume claims so a later sandbox can
+	// reattach the same volumes. The backing files persist (durable); the
+	// hardlinks into this sandbox's chroot were dropped by handle.Shutdown.
+	if m.cfg.VolumeManager != nil {
+		for _, n := range s.volumeNames {
+			m.cfg.VolumeManager.Release(n)
 		}
 	}
 

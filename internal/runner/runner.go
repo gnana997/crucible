@@ -82,6 +82,29 @@ type Spec struct {
 	// leaves the VM without a NIC — the default-deny story for
 	// the network feature.
 	Net *NetConfig
+
+	// Volumes are persistent block devices attached after the rootfs and
+	// before InstanceStart. Each becomes a second+ virtio-blk drive with
+	// cache_type=Writeback (fsync-honest). The direct-exec runner opens
+	// HostPath directly; the jailer runner bind-mounts HostPath into the
+	// chroot first (never a copy — writes must reach the shared backing
+	// file). The guest agent mounts the resulting device out-of-band over
+	// vsock; the runner only attaches the drive. Empty = no volumes.
+	Volumes []VolumeAttach
+}
+
+// VolumeAttach names one persistent block device for Spec.Volumes. The
+// mount target (guest device + path + fstype) is handled by the daemon over
+// the agent vsock RPC after boot, not by the runner — the runner's job ends
+// at attaching the drive.
+type VolumeAttach struct {
+	// DriveID is the Firecracker drive_id, e.g. "vol0". Also names the
+	// chroot-relative staging path under jailer ("/vol0.ext4").
+	DriveID string
+
+	// HostPath is the absolute path to the backing file on the host
+	// (under the daemon's --volume-dir). Persistent across sandboxes.
+	HostPath string
 }
 
 // NetConfig describes the guest network interface Firecracker

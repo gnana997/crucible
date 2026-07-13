@@ -15,6 +15,15 @@ type Drive struct {
 	PathOnHost   string `json:"path_on_host"`
 	IsRootDevice bool   `json:"is_root_device"`
 	IsReadOnly   bool   `json:"is_read_only"`
+
+	// CacheType selects Firecracker's block-device write policy. Empty is
+	// Firecracker's default ("Unsafe": guest FLUSH/fsync is ignored — fine
+	// for the ephemeral rootfs). Persistent volumes set "Writeback" so a
+	// guest fsync becomes a host fdatasync on the backing file — the
+	// durability contract a database relies on. Valid values are exactly
+	// "Unsafe" and "Writeback" (capitalized), confirmed against Firecracker
+	// v1.16.1.
+	CacheType string `json:"cache_type,omitempty"`
 }
 
 // PutDrive attaches or replaces a block device identified by d.DriveID.

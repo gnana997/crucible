@@ -146,6 +146,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 		disk                   string
 		keep, rm               bool
 		registryAuth           string
+		volumes                []string
 	)
 	cmd := &cobra.Command{
 		Use:   "run [flags] <image>   |   run [flags] -- <command>...",
@@ -183,13 +184,13 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 					netAllow: netAllow, netAllowCIDR: netAllowCIDR, netFullEgress: netFullEgress,
 					publish: publish, publishAll: publishAll,
 					pull: pull, rm: rm, diskBytes: diskBytes,
-					registryAuth: registryAuth,
+					registryAuth: registryAuth, volumes: volumes,
 				})
 			}
 			return runCommand(cmd, o, args, runCommandOpts{
 				vcpus: vcpus, memory: memory, timeout: timeout,
 				profile: profile, netAllow: netAllow, netAllowCIDR: netAllowCIDR,
-				netFullEgress: netFullEgress, keep: keep,
+				netFullEgress: netFullEgress, keep: keep, volumes: volumes,
 			})
 		},
 	}
@@ -209,6 +210,7 @@ func newRunCmd(o *globalOpts) *cobra.Command {
 	// command mode
 	cmd.Flags().StringVar(&profile, "profile", "", "rootfs profile, e.g. python-3.12 (command mode)")
 	cmd.Flags().BoolVar(&keep, "keep", false, "keep the sandbox instead of deleting it after the command (command mode)")
+	cmd.Flags().StringArrayVar(&volumes, "volume", nil, "attach a persistent volume: NAME:/absolute/path (repeatable); created on first use, data survives the sandbox")
 	return cmd
 }
 
@@ -219,6 +221,7 @@ type runCommandOpts struct {
 	netAllowCIDR           []string
 	netFullEgress          bool
 	keep                   bool
+	volumes                []string
 }
 
 // runCommand is the throwaway-command path: create → exec one command →
@@ -227,6 +230,13 @@ func runCommand(cmd *cobra.Command, o *globalOpts, args []string, opts runComman
 	cl := o.client()
 	req := api.CreateSandboxRequest{VCPUs: opts.vcpus, MemoryMiB: opts.memory, TimeoutSec: opts.timeout, Profile: opts.profile}
 	req.Network = buildNetworkRequest(opts.netAllow, opts.netAllowCIDR, opts.netFullEgress)
+	for _, vspec := range opts.volumes {
+		vm, err := parseVolume(vspec)
+		if err != nil {
+			return err
+		}
+		req.Volumes = append(req.Volumes, vm)
+	}
 	sb, err := cl.CreateSandbox(cmd.Context(), req)
 	if err != nil {
 		return err
@@ -256,6 +266,7 @@ type runImageOpts struct {
 	diskBytes              int64
 	rm                     bool
 	registryAuth           string
+	volumes                []string
 }
 
 // runImage is the docker-parity path: acquire the image (local Docker or the
@@ -289,6 +300,13 @@ func runImage(cmd *cobra.Command, o *globalOpts, image string, opts runImageOpts
 		req.Publish = append(req.Publish, pm)
 	}
 	req.PublishAll = opts.publishAll
+	for _, vspec := range opts.volumes {
+		vm, err := parseVolume(vspec)
+		if err != nil {
+			return err
+		}
+		req.Volumes = append(req.Volumes, vm)
+	}
 
 	sb, err := cl.CreateSandbox(cmd.Context(), req)
 	if err != nil {

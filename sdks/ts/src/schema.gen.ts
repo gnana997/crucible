@@ -639,6 +639,7 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             timeout_s?: number;
             vcpus?: number;
+            volumes?: components["schemas"]["VolumeMount"][];
         };
         ErrorResponse: {
             error?: string;
@@ -825,6 +826,10 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
+        };
+        VolumeMount: {
+            name?: string;
+            path?: string;
         };
         Whoami: {
             policy?: components["schemas"]["Policy"];

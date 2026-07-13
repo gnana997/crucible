@@ -169,6 +169,11 @@ class SnapshotResponse(BaseModel):
     vcpus: int | None = None
 
 
+class VolumeMount(BaseModel):
+    name: str | None = None
+    path: str | None = None
+
+
 class Whoami(BaseModel):
     policy: Policy | None = None
     scoped: bool | None = None
@@ -266,6 +271,7 @@ class CreateSandboxRequest(BaseModel):
     service: WireServiceSpec | None = None
     timeout_s: int | None = None
     vcpus: int | None = None
+    volumes: list[VolumeMount] | None = None
 
 
 class ForkReq(BaseModel):

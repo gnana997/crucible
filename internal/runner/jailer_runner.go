@@ -172,10 +172,19 @@ func (j *JailerRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 	// let a compromised VMM poison the kernel for future tenants. The
 	// rootfs is already a per-sandbox clone, so it takes the fast
 	// hardlink path.
-	if err := jailer.Stage(jSpec, map[string]jailer.StageFile{
+	stage := map[string]jailer.StageFile{
 		chrootKernelPath: {Src: spec.Kernel, Shared: true},
 		chrootRootfsPath: {Src: spec.Rootfs},
-	}); err != nil {
+	}
+	// Persistent volumes hardlink into the chroot (same inode as the
+	// backing file in --volume-dir, so writes survive the sandbox and
+	// Cleanup's rmtree only drops the dentry). NoCopyFallback: a copy
+	// would silently make the volume ephemeral, so a cross-filesystem
+	// volume-dir fails loudly instead.
+	for _, v := range spec.Volumes {
+		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true}
+	}
+	if err := jailer.Stage(jSpec, stage); err != nil {
 		_ = jailer.Cleanup(jSpec)
 		return nil, fmt.Errorf("runner: stage files for jailer: %w", err)
 	}
@@ -361,6 +370,13 @@ func (j *JailerRunner) buildJailerSpec(workdir string, q Quotas, netnsPath strin
 // `[a-zA-Z0-9-]{1,64}`. The single underscore between prefix and
 // suffix is the only problematic character we produce, so this is a
 // one-rule swap rather than a general-purpose sanitizer.
+// chrootVolPath is the chroot-relative staging path for a volume drive,
+// e.g. "vol0" → "/vol0.ext4". firecracker (after pivot_root) opens this
+// path; Start hardlinks the backing file here.
+func chrootVolPath(driveID string) string {
+	return "/" + driveID + ".ext4"
+}
+
 func sanitizeJailerID(id string) string {
 	return strings.ReplaceAll(id, "_", "-")
 }
@@ -398,6 +414,19 @@ func (j *JailerRunner) configureAndBoot(ctx context.Context, h *fcHandle, spec S
 		IsRootDevice: true,
 	}); err != nil {
 		return fmt.Errorf("runner: put rootfs drive: %w", err)
+	}
+	// Persistent volumes: each is a second+ virtio-blk drive, hard-linked
+	// into the chroot by Start. cache_type=Writeback so the guest's fsync
+	// reaches the host backing file — the durability contract volumes owe
+	// a database. The guest agent mounts these out-of-band over vsock.
+	for _, v := range spec.Volumes {
+		if err := h.client.PutDrive(ctx, fcapi.Drive{
+			DriveID:    v.DriveID,
+			PathOnHost: chrootVolPath(v.DriveID),
+			CacheType:  "Writeback",
+		}); err != nil {
+			return fmt.Errorf("runner: put volume drive %s: %w", v.DriveID, err)
+		}
 	}
 	if err := h.client.PutMachineConfig(ctx, fcapi.MachineConfig{
 		VCPUCount:  spec.VCPUs,
