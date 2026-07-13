@@ -86,8 +86,20 @@ crucible daemon … --otlp-endpoint http://collector:4318 --otlp-protocol http
 
 `/metrics` and OTLP are two views of one registry; use either, or both.
 
-## Logs & traces over OTLP (coming)
+## OTLP log export
 
-App-log and trace export over OTLP are the next milestones (logs stream from the
-durable log store; traces cover deploy / sleep / wake / proxy spans). Until then,
-app logs are available via `crucible logs` / `crucible app logs -f`.
+When `--otlp-endpoint` is set (and `--log-dir` is on), the daemon also streams
+**app logs** over OTLP — every durable log line becomes an OTel log record with:
+
+- `service.*` resource + `crucible.app.instance` (the instance id),
+- `log.source` (`service` | `exec`) and `log.stream` (`stdout` | `stderr` | `event`),
+- the original timestamp; `stderr` maps to severity `WARN`, else `INFO`.
+
+It taps the log store's **best-effort fanout** — a slow OTLP backend can never
+back-pressure the app (records drop rather than block). Disable with
+`--otlp-logs=false` (metrics-only). Logs remain locally readable via `crucible
+logs` / `crucible app logs -f` regardless.
+
+## Traces over OTLP (coming)
+
+Trace export is the next milestone (deploy / sleep / wake / proxy spans).

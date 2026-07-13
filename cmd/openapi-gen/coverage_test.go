@@ -22,6 +22,9 @@ var routesExcludedFromSpec = map[string]string{
 	"POST /sandboxes/{id}/wake":  "scale-to-zero primitive; not yet public API",
 	"POST /apps/{name}/sleep":    "scale-to-zero; not yet public API (under construction)",
 	"POST /apps/{name}/wake":     "scale-to-zero; not yet public API (under construction)",
+	// Packet capture streams a raw pcap (application/vnd.tcpdump.pcap), not JSON —
+	// not modelable as an OpenAPI operation (like /metrics). SDK: Client.Capture.
+	"GET /sandboxes/{id}/capture": "binary pcap stream (not JSON); SDK Client.Capture, docs/network.md",
 }
 
 // TestOpenAPICoversAllRoutes is the drift guard for the reflection-based generator.

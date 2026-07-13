@@ -60,6 +60,7 @@ func (s *Server) routes() *http.ServeMux {
 	// Durable per-sandbox logs (service output + exec activity). 501 when
 	// Config.LogStore is nil.
 	mux.HandleFunc("GET /sandboxes/{id}/logs", s.handleSandboxLogs)
+	mux.HandleFunc("GET /sandboxes/{id}/capture", s.handleCapture)
 	mux.HandleFunc("POST /sandboxes/{id}/snapshot", s.handleCreateSnapshot)
 	// Sandbox-level in-place sleep/wake: the low-level primitive
 	// behind scale-to-zero, parallel to snapshot/fork.

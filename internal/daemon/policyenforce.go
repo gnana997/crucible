@@ -62,6 +62,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasSuffix(path, "/exec") {
 			return policy.OpExec, true
 		}
+		// GET /sandboxes/{id}/capture streams the guest's packets — it exposes
+		// traffic payloads, so it is its own default-deny op, not a read.
+		if strings.HasSuffix(path, "/capture") {
+			return policy.OpCapture, true
+		}
 		return policy.OpRead, true
 	case http.MethodDelete:
 		// Removing a registry credential is credential management, not a

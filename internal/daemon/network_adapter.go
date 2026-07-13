@@ -53,6 +53,7 @@ func (a *networkAdapter) Setup(ctx context.Context, req sandbox.NetworkSetupRequ
 		TapName:    inner.TapName,
 		GuestMAC:   formatMAC(inner.GuestMAC),
 		GuestIP:    inner.Lease.GuestIP.String(),
+		HostVeth:   inner.HostVeth(),
 		Gateway:    inner.Lease.Gateway.String(),
 		PrefixBits: inner.Lease.Prefix.Bits(),
 		DNSServer:  network.DefaultDNSAnycast.String(),

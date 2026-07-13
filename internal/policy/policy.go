@@ -34,12 +34,13 @@ const (
 	OpDelete   Operation = "delete"   // DELETE /sandboxes|snapshots/{id}
 	OpRead     Operation = "read"     // GET (list / inspect / profiles)
 	OpRegistry Operation = "registry" // POST/DELETE /registry/credentials (manage private-registry creds)
+	OpCapture  Operation = "capture"  // GET /sandboxes/{id}/capture (packet capture — exposes traffic payloads)
 )
 
 // KnownOperations returns the valid operation verbs, in a stable order (useful
 // for error messages and docs).
 func KnownOperations() []Operation {
-	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry}
+	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture}
 }
 
 func isKnownOp(op Operation) bool {

@@ -77,7 +77,9 @@ cli()  { "$CRUCIBLE_BIN" --addr "$LISTEN" "$@"; }
 metrics() { curl -s --max-time 5 "$BASE_URL/metrics" 2>/dev/null; }
 proxy_hit() { curl -s -o /dev/null --max-time 5 -H "Host: $1" "http://127.0.0.1:${PROXY_PORT}/" 2>/dev/null; }
 serves() { for _ in {1..40}; do [[ "$(curl -s --max-time 3 -H "Host: web.${DOMAIN}" "http://127.0.0.1:${PROXY_PORT}/" 2>/dev/null)" == *nginx* ]] && return 0; sleep 0.5; done; return 1; }
-wait_phase() { for _ in {1..80}; do [[ "$(cli app get web 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1)" == *"$1"* ]] && return 0; sleep 0.5; done; return 1; }
+# Read app status from the API (compact JSON); the CLI `app get` pretty-prints
+# ("phase": "x" with a space), which a compact grep would miss.
+wait_phase() { for _ in {1..80}; do [[ "$(curl -s "$BASE_URL/apps/web" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1)" == *"$1"* ]] && return 0; sleep 0.5; done; return 1; }
 
 DAEMON_PID=""
 start_daemon() {
@@ -144,14 +146,49 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:${
 hcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:${PPROF_PORT}/debug/pprof/heap" 2>/dev/null)"
 [[ "$hcode" == "200" ]] && pass "pprof heap profile serves" || fail "pprof heap did not serve (code=$hcode)"
 
-echo "== 05 OTLP metric export wired (O-M3)"
-# No collector runs, so we assert the pipeline was BUILT (the grpc exporter is
+echo "== 05 OTLP export wired (O-M3 metrics + O-M3b logs)"
+# No collector runs, so we assert the pipelines were BUILT (the exporters are
 # lazy — a missing collector doesn't fail startup). Full arrival is validated
-# against a real collector + the internal/telemetry bridge unit test.
+# against a real collector + the internal/telemetry bridge/pump unit tests.
 if grep -qa '"msg":"otlp metrics export enabled"' "$DAEMON_LOG"; then
   pass "OTLP metric export enabled (bridges the Prometheus registry)"
 else
-  fail "OTLP export not enabled — expected the enable log line"
+  fail "OTLP metric export not enabled — expected the enable log line"
+fi
+if grep -qa '"msg":"otlp logs export enabled"' "$DAEMON_LOG"; then
+  pass "OTLP log export enabled (taps the durable log-store fanout)"
+else
+  fail "OTLP log export not enabled — expected the enable log line"
+fi
+
+echo "== 06 packet capture (v0.5.4 O-M5): host-side pcap of the app instance"
+INST="$(curl -s "$BASE_URL/apps/web" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+if [[ "$INST" != sbx_* ]]; then
+  fail "could not read web's instance id for the capture test"
+elif ! command -v tcpdump >/dev/null 2>&1; then
+  skip "tcpdump not installed on host — capture needs it"
+else
+  PCAP="$SMOKE_ROOT/web.pcap"
+  # drive traffic through the proxy while capturing for a few seconds
+  ( for _ in $(seq 1 60); do proxy_hit "web.${DOMAIN}" >/dev/null 2>&1; sleep 0.05; done ) &
+  LOADPID=$!
+  cli sandbox capture "$INST" -w "$PCAP" --max-seconds 4 --filter "tcp" >/dev/null 2>&1
+  kill "$LOADPID" 2>/dev/null || true; wait "$LOADPID" 2>/dev/null || true
+  if [[ -s "$PCAP" ]]; then
+    MAGIC="$(head -c4 "$PCAP" | od -An -tx1 | tr -d ' \n')"
+    # pcap magic: d4c3b2a1 (LE) / a1b2c3d4 (BE); pcapng: 0a0d0d0a
+    if [[ "$MAGIC" == d4c3b2a1 || "$MAGIC" == a1b2c3d4 || "$MAGIC" == 0a0d0d0a ]]; then
+      pass "captured a valid pcap ($(wc -c <"$PCAP") bytes, magic $MAGIC)"
+    else
+      fail "capture output is not a pcap (magic=$MAGIC)"
+    fi
+  else
+    fail "capture produced no output"
+  fi
+  # audit line present in the daemon log
+  grep -qa '"msg":"packet capture started"' "$DAEMON_LOG" \
+    && pass "capture emitted an audit log line" \
+    || fail "no packet-capture audit log line"
 fi
 
 echo "==============================================================="

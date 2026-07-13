@@ -33,6 +33,7 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppLogsCmd(o),
 		newAppExecCmd(o),
 		newAppShellCmd(o),
+		newAppCaptureCmd(o),
 	)
 	return cmd
 }

@@ -133,6 +133,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		otlpProtocol = fs.String("otlp-protocol", "", "OTLP protocol: grpc (default) or http")
 		otlpHeaders  = fs.String("otlp-headers", "", "OTLP headers as k=v,k=v (auth/tenant); also OTEL_EXPORTER_OTLP_HEADERS")
 		otlpInsecure = fs.Bool("otlp-insecure", false, "use plaintext (no TLS) for the OTLP exporter")
+		otlpLogs     = fs.Bool("otlp-logs", true, "export app logs over OTLP when --otlp-endpoint is set (requires --log-dir)")
 		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
 		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
 		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
@@ -547,6 +548,11 @@ Required flags:
 			logStore = ls
 			logger.Info("durable logs enabled", "log_dir", *logDir)
 		}
+	}
+	// Stream app logs over OTLP (v0.5.4 O-M3b) — no-op unless --otlp-endpoint is
+	// set; taps the log store's best-effort fanout so it never blocks the app.
+	if *otlpLogs && logStore != nil {
+		tele.StartLogExport(context.Background(), logStore)
 	}
 
 	srv, err := daemon.New(daemon.Config{

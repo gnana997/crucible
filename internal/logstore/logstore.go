@@ -57,7 +57,28 @@ type Store struct {
 
 	mu    sync.Mutex
 	files map[string]*sandboxLog
+
+	// Fanout: best-effort delivery of each appended record to live subscribers
+	// (e.g. the OTLP log exporter). Delivery is drop-on-full so a slow consumer
+	// can NEVER back-pressure the writer / the app.
+	subMu   sync.Mutex
+	subs    map[int]*logSub
+	nextSub int
 }
+
+// Event is one appended record delivered to a Subscribe channel, tagged with the
+// sandbox/instance id it belongs to.
+type Event struct {
+	ID  string
+	Rec Record
+}
+
+type logSub struct {
+	ch   chan Event
+	once sync.Once
+}
+
+func (sub *logSub) close() { sub.once.Do(func() { close(sub.ch) }) }
 
 // sandboxLog is one sandbox's open append handle plus its running size.
 type sandboxLog struct {
@@ -117,7 +138,52 @@ func (s *Store) Append(id string, rec Record) error {
 	if err != nil {
 		return err
 	}
-	return l.append(rec, s.maxFileBytes)
+	if err := l.append(rec, s.maxFileBytes); err != nil {
+		return err
+	}
+	s.fanout(id, rec)
+	return nil
+}
+
+// Subscribe returns a channel that receives every appended record (with its
+// sandbox id) and an unsubscribe func. Delivery is best-effort with a bounded
+// buffer: when the buffer is full, records are DROPPED rather than blocking the
+// writer — logs must never back-pressure the app. Call unsubscribe (or Close the
+// store) to end the subscription; the channel is closed when it ends.
+func (s *Store) Subscribe(buffer int) (<-chan Event, func()) {
+	if buffer <= 0 {
+		buffer = 1024
+	}
+	sub := &logSub{ch: make(chan Event, buffer)}
+	s.subMu.Lock()
+	if s.subs == nil {
+		s.subs = map[int]*logSub{}
+	}
+	id := s.nextSub
+	s.nextSub++
+	s.subs[id] = sub
+	s.subMu.Unlock()
+	return sub.ch, func() {
+		s.subMu.Lock()
+		delete(s.subs, id)
+		s.subMu.Unlock()
+		sub.close()
+	}
+}
+
+// fanout delivers rec to every live subscriber without blocking: a full buffer
+// drops. Holds subMu only for the non-blocking sends, and a subscriber is closed
+// (by unsubscribe/Close) only after it is removed from the map under this lock,
+// so there is no send-on-closed-channel race.
+func (s *Store) fanout(id string, rec Record) {
+	s.subMu.Lock()
+	for _, sub := range s.subs {
+		select {
+		case sub.ch <- Event{ID: id, Rec: rec}:
+		default:
+		}
+	}
+	s.subMu.Unlock()
 }
 
 func (l *sandboxLog) append(rec Record, maxBytes int64) error {
@@ -225,6 +291,14 @@ func (s *Store) Read(id string, since int64, tailBytes, max int) (recs []Record,
 // Close closes every open append handle. Reads reopen the file, so this
 // only affects writers; call it on daemon shutdown.
 func (s *Store) Close() error {
+	// End every subscription first so its pump goroutine drains and exits.
+	s.subMu.Lock()
+	for id, sub := range s.subs {
+		delete(s.subs, id)
+		sub.close()
+	}
+	s.subMu.Unlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, l := range s.files {

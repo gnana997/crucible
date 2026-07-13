@@ -509,6 +509,10 @@ type NetworkHandle struct {
 	// the daemon can echo it back to callers in sandboxResponse.
 	GuestIP string
 
+	// HostVeth is the sandbox's host-side veth device in the root netns —
+	// where all the guest's traffic flows. Used by host-side packet capture.
+	HostVeth string
+
 	// Gateway is the host-side veth IP (guest's default route).
 	Gateway string
 
@@ -1050,6 +1054,19 @@ func (m *Manager) Routable(id string) (string, bool) {
 		return "", false
 	}
 	return s.Network.GuestIP, true
+}
+
+// HostIface returns the sandbox's host-side veth device (root netns) for a live,
+// networked sandbox — the interface a host-side packet capture listens on. False
+// if the sandbox is unknown, asleep, or has no network.
+func (m *Manager) HostIface(id string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.sandboxes[id]
+	if !ok || s.asleep != nil || s.Network == nil || s.Network.HostVeth == "" {
+		return "", false
+	}
+	return s.Network.HostVeth, true
 }
 
 // List returns a snapshot of current sandboxes. The slice is a copy; the

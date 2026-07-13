@@ -110,6 +110,12 @@ func (s VethSpec) Validate() error {
 // HostVeth returns the host-side veth interface name.
 func (s VethSpec) HostVeth() string { return vethHostPrefix + ifaceSuffix(s.SandboxID) }
 
+// HostVeth returns the sandbox's host-side veth device — the root-netns interface
+// that carries all of the guest's traffic, used by host-side packet capture.
+func (h *SandboxHandle) HostVeth() string {
+	return VethSpec{SandboxID: h.SandboxID}.HostVeth()
+}
+
 // GuestVeth returns the guest-side veth interface name.
 func (s VethSpec) GuestVeth() string { return vethGuestPrefix + ifaceSuffix(s.SandboxID) }
 

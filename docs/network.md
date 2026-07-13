@@ -84,5 +84,26 @@ Networking is egress-shaped, but port publish (`-p`) and the [ingress proxy](pro
 - **Peers cannot reach each other.** Each sandbox has its own `/30` in its own netns, and RFC1918 egress is always blocked, so one guest cannot reach a neighbor's guest IP, published port or not.
 - **The proxy is not a lateral path.** A guest cannot reach the proxy or publish listeners at all — the host input chain drops every guest-initiated packet to any host-local address (`iifname vh-* drop`, after the established/DNS accepts), even under full egress and even to the host's public IP. So one app can never reach another app's instance through the proxy, published or not; the only route to a guest is the daemon dialing in over its own veth.
 
+## Packet capture (debug)
+
+`crucible sandbox capture <id>` (or `app capture <name>`) streams a live packet
+capture of a guest's traffic as standard **pcap** — captured **host-side** on the
+sandbox's veth in the root netns, so it needs **no in-guest tcpdump** and works
+for distroless/scratch images.
+
+```bash
+crucible app capture web --filter 'tcp port 8080' -w web.pcap   # then open in Wireshark
+crucible sandbox capture sbx_… --max-seconds 30 | wireshark -k -i -
+```
+
+- **Bounded always** — `--max-bytes` (default 50 MiB) and `--max-seconds`
+  (default 60 s) cap every capture; `--snaplen` sets per-packet bytes.
+- **Filter** is a BPF expression, validated (no shell/option injection) and passed
+  to the host's `tcpdump`.
+- **Gated + audited** — payloads are sensitive, so it requires a token granted the
+  default-deny [`capture`](policy.md) scoped op (never implied by `read`), and the
+  daemon logs every capture (token, instance, filter, caps). Needs `tcpdump` on the
+  host.
+
 > [!NOTE]
 > Design goals, the packet flow, per-sandbox setup order, failure modes, and the deliberate non-goals (IPv6, port filters, rate limiting) live in [the network model](concepts/network-model.md).

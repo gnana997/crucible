@@ -23,6 +23,7 @@ func newSandboxCmd(o *globalOpts) *cobra.Command {
 		newSandboxInspectCmd(o),
 		newSandboxRmCmd(o),
 		newSandboxExecCmd(o),
+		newSandboxCaptureCmd(o),
 	)
 	return cmd
 }

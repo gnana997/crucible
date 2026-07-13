@@ -45,7 +45,7 @@ that axis"**, so `{}` is fully permissive.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `operations` | `[]string` | allow-list of verbs: `create`, `exec`, `snapshot`, `fork`, `delete`, `read`. Absent/empty = all allowed. |
+| `operations` | `[]string` | allow-list of verbs: `create`, `exec`, `snapshot`, `fork`, `delete`, `read`, `registry`, `capture`. Absent/empty = all allowed. |
 | `net_allow_max` | `[]string` | hostname egress ceiling (tri-state, below). |
 | `net_full_egress` | `bool` | grants the range-based egress modes (`full_egress`, `allowlist_cidr`). Default `false`: without it, a request asking for either is rejected — so a `net_allow_max` hostname ceiling can't be bypassed by switching to full-egress. |
 | `allow_profiles` | `[]string` | which rootfs profiles may launch. Absent = any. |
@@ -81,6 +81,7 @@ so the MCP server can mirror a policy by advertising only the tools it permits.
 | `delete` | `DELETE /sandboxes|snapshots/{id}` | `run`, `delete_sandbox`, `delete_snapshot` |
 | `read` | all `GET` | `list_sandboxes`, `inspect_sandbox`, `list_snapshots`, `list_profiles` |
 | `registry` | `POST`/`DELETE /registry/credentials` | *(none — operator action, no MCP tool)* |
+| `capture` | `GET /sandboxes/{id}/capture` | *(none — debug tooling)* — **default-deny; grant explicitly.** Packet capture exposes traffic payloads, so it is never implied by `read`. |
 
 `run` creates → execs → deletes in one call, so it needs `create`+`exec`+`delete`
 — a token lacking any of those won't be offered `run`.
