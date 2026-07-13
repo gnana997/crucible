@@ -57,6 +57,10 @@ func run(logger *slog.Logger) int {
 			logger.Error("init: mount pseudo-filesystems failed", "err", err)
 			return 1
 		}
+		// Standard /dev/fd + /dev/std{in,out,err} → /proc/self/fd symlinks, which a
+		// bare devtmpfs lacks; needed for bash process substitution and programs
+		// that write to /dev/stdout by name (common in container entrypoints).
+		linkStdFDs(logger)
 		bringUpLoopback(logger)
 	}
 

@@ -98,7 +98,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVar(&a.volumes, "volume", nil, "attach a persistent volume NAME:/path (repeatable); the app becomes single-writer (destroy-then-boot redeploy, stop/start sleep) and its data survives redeploys/sleep/restarts")
 	f.BoolVarP(&a.publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
-	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (needs the ingress proxy)")
+	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (wakes on the next request via the ingress proxy, or on the next TCP connection to a published port)")
 	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
 	f.IntVar(&a.maxScale, "max-scale", 0, "maximum instances for horizontal autoscaling; >min-scale enables it (0 = fixed at min-scale)")
 	f.IntVar(&a.targetConcurrency, "target-concurrency", 0, "autoscaler target: in-flight requests per instance (0 = default)")

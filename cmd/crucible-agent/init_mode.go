@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 
@@ -41,6 +42,36 @@ var pseudoMounts = []mountSpec{
 	{source: "tmpfs", target: "/dev/shm", fstype: "tmpfs", flags: unix.MS_NOSUID | unix.MS_NODEV, data: "mode=1777"},
 	{source: "tmpfs", target: "/run", fstype: "tmpfs", flags: unix.MS_NOSUID | unix.MS_NODEV, data: "mode=0755"},
 	{source: "cgroup2", target: "/sys/fs/cgroup", fstype: "cgroup2", flags: unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC, optional: true},
+}
+
+// devStdSymlinks are the standard /dev → /proc/self/fd symlinks a real init
+// (systemd, busybox) creates but a bare devtmpfs mount does not. Without
+// /dev/fd, bash process substitution (`<(...)`, which the shell backs with
+// /dev/fd/N) fails — breaking common container entrypoints (e.g. the postgres
+// image feeds initdb its password via `--pwfile=<(...)`). /dev/stdin|stdout|
+// stderr are the matching per-stream links many programs write to by name.
+var devStdSymlinks = []struct{ target, link string }{
+	{"/proc/self/fd", "/dev/fd"},
+	{"/proc/self/fd/0", "/dev/stdin"},
+	{"/proc/self/fd/1", "/dev/stdout"},
+	{"/proc/self/fd/2", "/dev/stderr"},
+}
+
+// linkStdFDs creates the standard /dev/fd and /dev/std{in,out,err} symlinks into
+// /proc/self/fd. Best-effort and idempotent: /proc and /dev are already mounted,
+// and a link an image happened to ship is left as-is. Non-fatal — a guest boots
+// without these; only process-substitution-style entrypoints need them.
+func linkStdFDs(log *slog.Logger) { linkStdFDsUnder(log, "") }
+
+// linkStdFDsUnder is linkStdFDs with a root prefix for the link paths (""=real
+// root); the prefix makes it testable without being PID 1. The symlink TARGET
+// (/proc/self/fd/…) is intentionally unprefixed — it resolves inside the guest.
+func linkStdFDsUnder(log *slog.Logger, root string) {
+	for _, s := range devStdSymlinks {
+		if err := os.Symlink(s.target, root+s.link); err != nil && !errors.Is(err, os.ErrExist) {
+			log.Warn("init: create dev symlink failed", "link", s.link, "err", err)
+		}
+	}
 }
 
 // bringUpLoopback brings the guest's loopback interface up (and ensures

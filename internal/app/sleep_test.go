@@ -64,6 +64,7 @@ func TestValidateSpecSleepPolicy(t *testing.T) {
 	base := func(sp *api.SleepPolicy) api.AppSpec {
 		s := nginxSpec("web", wire.RestartAlways)
 		s.Sleep = sp
+		s.Port = 80 // a wake trigger, so these cases test the numeric rules only
 		return s
 	}
 	cases := []struct {
@@ -91,6 +92,44 @@ func TestValidateSpecSleepPolicy(t *testing.T) {
 			}
 			if !tc.ok && err == nil {
 				t.Fatal("validateSpec: expected error, got nil")
+			}
+		})
+	}
+}
+
+// TestValidateSpecScaleToZeroWakeTrigger — a scale-to-zero app (min_scale 0 +
+// idle_timeout) is valid only if it can be woken: an HTTP --port (proxy) or a
+// published host port (-p, the L4 waking forwarder). With neither it is rejected,
+// so it can't be silently stranded always-on. Holds for volume apps too.
+func TestValidateSpecScaleToZeroWakeTrigger(t *testing.T) {
+	s2z := &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 30}
+	pub := []api.PortMapping{{HostPort: 5432, GuestPort: 5432}}
+	vol := []api.VolumeMount{{Name: "pgdata", Path: "/var/lib/postgresql/data"}}
+	spec := func(mut func(s *api.AppSpec)) api.AppSpec {
+		s := nginxSpec("web", wire.RestartAlways)
+		s.Sleep = s2z
+		mut(&s)
+		return s
+	}
+	cases := []struct {
+		name string
+		spec api.AppSpec
+		ok   bool
+	}{
+		{"proxy port", spec(func(s *api.AppSpec) { s.Port = 80 }), true},
+		{"published tcp port", spec(func(s *api.AppSpec) { s.Publish = pub }), true},
+		{"no wake trigger", spec(func(*api.AppSpec) {}), false},
+		{"volume + published port (serverless postgres)", spec(func(s *api.AppSpec) { s.Publish = pub; s.Volumes = vol }), true},
+		{"volume, no wake trigger", spec(func(s *api.AppSpec) { s.Volumes = vol }), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSpec(tc.spec)
+			if tc.ok && err != nil {
+				t.Fatalf("validateSpec: unexpected error: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("validateSpec: expected a wake-trigger error, got nil")
 			}
 		})
 	}
@@ -210,6 +249,7 @@ func (f fakeActivity) Activity(name string) (time.Time, int, bool) {
 func sleepableSpec(name string, idleSec, minScale int) api.AppSpec {
 	s := nginxSpec(name, wire.RestartAlways)
 	s.Sleep = &api.SleepPolicy{IdleTimeoutSec: idleSec, MinScale: minScale}
+	s.Port = 80 // a wake trigger (proxy); required for a valid scale-to-zero app
 	return s
 }
 

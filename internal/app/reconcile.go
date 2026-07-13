@@ -769,9 +769,11 @@ func (m *Manager) idleLoop(ctx context.Context) {
 }
 
 // idleCheck sleeps every scale-to-zero app (sleep.min_scale==0, idle_timeout>0)
-// that is running, not unhealthy, has zero in-flight requests, and has been idle
-// at least its idle_timeout. Proxy-only: an app never reached through the proxy
-// has no activity record and is left alone.
+// that is running, not unhealthy, has zero in-flight requests/connections, and
+// has been idle at least its idle_timeout. Activity comes from whichever front
+// serves the app — the L7 ingress proxy (per request) or the L4 waking forwarder
+// (per TCP connection); an app fronted by neither has no activity record and is
+// left alone.
 //
 // Known v1 limitation: a request arriving between the zero-in-flight check and
 // the snapshot is not drained (it may see a brief 502/reset and retry, which
@@ -1778,17 +1780,20 @@ func validateSpec(spec api.AppSpec) error {
 		if sp.MaxScale > 0 && sp.MaxScale < sp.MinScale {
 			return fmt.Errorf("app: sleep max_scale (%d) must be >= min_scale (%d)", sp.MaxScale, sp.MinScale)
 		}
+		// Scale-to-zero (min_scale 0 + idle_timeout) needs a way to be woken. Two
+		// wake paths exist: an HTTP --port through the ingress proxy, or a published
+		// host port (-p) fronted by the L4 waking forwarder (v0.6.1). With neither,
+		// a slept app can never come back — reject it rather than silently strand it
+		// always-on. (PublishAll/-P is not a wake trigger: the forwarder needs an
+		// explicit host→guest mapping, so pair -P with an explicit -p or --port.)
+		if sp.MinScale == 0 && sp.IdleTimeoutSec > 0 && spec.Port == 0 && len(spec.Publish) == 0 {
+			return errors.New("app: a scale-to-zero app needs a wake trigger — set --port (HTTP proxy) or publish a host port with -p (TCP), or use --min-scale 1")
+		}
 		if len(spec.Volumes) > 0 {
 			// A volume app is single-writer: it can never run 2+ live instances,
 			// so scale-out is invalid.
 			if sp.MinScale > 1 || sp.MaxScale > 1 {
 				return errors.New("app: a volume-backed app cannot scale out (min_scale/max_scale > 1) — ext4 is single-writer")
-			}
-			// Idle-sleep needs a wake trigger. Wake-on-request works only through
-			// the ingress proxy, so a TCP-only volume app (no --port) cannot
-			// idle-sleep (TCP-wake arrives in v0.6.1); it must stay always-on.
-			if sp.MinScale == 0 && sp.IdleTimeoutSec > 0 && spec.Port == 0 {
-				return errors.New("app: a volume-backed app without --port cannot idle-sleep (no proxy to wake it; set --port or --min-scale 1)")
 			}
 		}
 		if sp.TargetConcurrency < 0 {
