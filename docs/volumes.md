@@ -137,7 +137,8 @@ durable than the disk you point it at.
 - **Instant wake** *(shipped v0.6.2)* — a volume app snapshot-sleeps and wakes in
   place in ~170 ms (reflink), no cold boot or DB recovery. See
   [benchmarks.md](benchmarks.md).
-- **Volume backups** *(next)* — a consistent point-in-time image of a volume
-  (fsfreeze + reflink) for backup, clone, and host-migration.
+- **Volume backups** *(shipped v0.6.3)* — a consistent point-in-time copy of a
+  volume for backup, clone, and off-host durability, including a no-downtime live
+  backup via fsfreeze. See [backups.md](backups.md).
 
 See the [ROADMAP](ROADMAP.md) for sequencing.

@@ -14,8 +14,55 @@ func newVolumeCmd(o *globalOpts) *cobra.Command {
 		Short:   "Manage persistent volumes (durable block devices attached to sandboxes)",
 		Aliases: []string{"vol"},
 	}
-	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o), newVolumeBackupCmd(o))
+	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o),
+		newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
 	return cmd
+}
+
+// newVolumeRestoreCmd is `volume restore --from <backup-id> --to <new-volume>`.
+func newVolumeRestoreCmd(o *globalOpts) *cobra.Command {
+	var from, to string
+	cmd := &cobra.Command{
+		Use:   "restore --from <backup-id> --to <new-volume>",
+		Short: "Restore a backup into a new volume (never overwrites an existing one)",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			v, err := o.client().RestoreBackup(cmd.Context(), from, to)
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), v)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), v.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&from, "from", "", "backup id to restore (required)")
+	cmd.Flags().StringVar(&to, "to", "", "name of the new volume to create (required)")
+	_ = cmd.MarkFlagRequired("from")
+	_ = cmd.MarkFlagRequired("to")
+	return cmd
+}
+
+// newVolumeCloneCmd is `volume clone <src> <dst>`.
+func newVolumeCloneCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "clone <src> <dst>",
+		Short: "Copy a quiescent volume into a new volume (detached or slept source)",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			v, err := o.client().CloneVolume(cmd.Context(), args[0], args[1])
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), v)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), v.Name)
+			return nil
+		},
+	}
 }
 
 // newVolumeBackupCmd is `volume backup <name>` (create a backup) plus `ls`/`rm`

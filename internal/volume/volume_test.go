@@ -267,6 +267,71 @@ func TestSetBackupDirOverrides(t *testing.T) {
 	}
 }
 
+func TestRestoreToNewVolume(t *testing.T) {
+	dir := t.TempDir()
+	m := newMgr(t, dir)
+	if _, err := m.Create("src", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b, err := m.Backup("src")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	rec, err := m.RestoreTo(b.ID, "restored")
+	if err != nil {
+		t.Fatalf("RestoreTo: %v", err)
+	}
+	if rec.Name != "restored" || rec.SizeBytes != testSize || !rec.Formatted {
+		t.Fatalf("restored record: %+v", rec)
+	}
+	// the restored backing file is byte-identical to the backup, and it lists.
+	got, _ := os.ReadFile(filepath.Join(dir, "restored.img"))
+	want, _ := os.ReadFile(b.Path)
+	if !bytes.Equal(got, want) {
+		t.Fatal("restored content differs from backup")
+	}
+	if _, err := m.Get("restored"); err != nil {
+		t.Fatalf("Get(restored): %v", err)
+	}
+	// never overwrites; unknown backup is ErrBackupNotFound.
+	if _, err := m.RestoreTo(b.ID, "restored"); !errors.Is(err, ErrExists) {
+		t.Fatalf("RestoreTo existing = %v, want ErrExists", err)
+	}
+	if _, err := m.RestoreTo("nope-1", "x"); !errors.Is(err, ErrBackupNotFound) {
+		t.Fatalf("RestoreTo unknown backup = %v, want ErrBackupNotFound", err)
+	}
+}
+
+func TestCloneVolume(t *testing.T) {
+	dir := t.TempDir()
+	m := newMgr(t, dir)
+	if _, err := m.Create("orig", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rec, err := m.Clone("orig", "copy")
+	if err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if rec.Name != "copy" || rec.SizeBytes != testSize {
+		t.Fatalf("clone record: %+v", rec)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "copy.img"))
+	want, _ := os.ReadFile(filepath.Join(dir, "orig.img"))
+	if !bytes.Equal(got, want) {
+		t.Fatal("clone content differs from source")
+	}
+	if _, err := m.Get("copy"); err != nil {
+		t.Fatalf("Get(copy): %v", err)
+	}
+	// never overwrites; unknown source is ErrNotFound.
+	if _, err := m.Clone("orig", "copy"); !errors.Is(err, ErrExists) {
+		t.Fatalf("Clone existing = %v, want ErrExists", err)
+	}
+	if _, err := m.Clone("nope", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Clone unknown src = %v, want ErrNotFound", err)
+	}
+}
+
 func TestNewManagerRequiresDir(t *testing.T) {
 	if _, err := NewManager("", 0, "", 0, 0); err == nil {
 		t.Fatal("NewManager(\"\") should error")

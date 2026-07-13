@@ -185,6 +185,10 @@ type Sandbox struct {
 	// same volumes into the restored chroot.
 	volumes []runner.VolumeAttach
 
+	// volumeMountpoints maps a volume name to its absolute guest mountpoint,
+	// so a live backup can FIFREEZE the right filesystem (Manager.Freeze).
+	volumeMountpoints map[string]string
+
 	// asleep, when non-nil, holds the snapshot artifacts captured by
 	// SleepInPlace to wake from: the VMM is stopped (RAM freed) but the record,
 	// netns, and workdir are kept. Cleared by WakeInPlace. In-memory only —
@@ -885,6 +889,12 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 	}
 	s.volumeNames = volNames
 	s.volumes = volSpecs
+	if len(volNames) > 0 {
+		s.volumeMountpoints = make(map[string]string, len(volNames))
+		for i, n := range volNames {
+			s.volumeMountpoints[n] = volMounts[i].Mountpoint
+		}
+	}
 
 	// Optional supervised service: push the spec and start it before the
 	// sandbox is registered, so a successful Create always returns with
@@ -1134,6 +1144,51 @@ func (m *Manager) Asleep(id string) (asleep, known bool) {
 		return false, false
 	}
 	return s.asleep != nil, true
+}
+
+// ErrFreezeUnsupported is returned by Freeze/Thaw when the guest agent predates
+// the /freeze endpoint — rebuild the app on the current crucible-agent.
+var ErrFreezeUnsupported = agentapi.ErrFreezeUnsupported
+
+// Freeze FIFREEZEs the guest filesystem where volName is mounted in sandbox
+// sandboxID, so the host can copy that volume's backing file consistently while
+// the sandbox keeps running. The caller MUST pair it with Thaw (the agent also
+// auto-thaws on a watchdog if the thaw is lost). ErrNotFound if the sandbox is
+// unknown; an error if volName is not mounted there or the agent is unreachable;
+// ErrFreezeUnsupported if the agent is too old.
+func (m *Manager) Freeze(ctx context.Context, sandboxID, volName string) error {
+	return m.freezeOp(ctx, sandboxID, volName, true)
+}
+
+// Thaw FITHAWs the guest filesystem where volName is mounted (undoes Freeze).
+func (m *Manager) Thaw(ctx context.Context, sandboxID, volName string) error {
+	return m.freezeOp(ctx, sandboxID, volName, false)
+}
+
+func (m *Manager) freezeOp(ctx context.Context, sandboxID, volName string, freeze bool) error {
+	m.mu.RLock()
+	s, ok := m.sandboxes[sandboxID]
+	var mp string
+	var client *agentapi.Client
+	if ok {
+		mp = s.volumeMountpoints[volName]
+		client = s.execClient
+	}
+	m.mu.RUnlock()
+	if !ok {
+		return ErrNotFound
+	}
+	if mp == "" {
+		return fmt.Errorf("sandbox %s: volume %q is not mounted here", sandboxID, volName)
+	}
+	if client == nil {
+		return fmt.Errorf("sandbox %s: no agent connection", sandboxID)
+	}
+	spec := wire.FreezeSpec{Mountpoint: mp}
+	if freeze {
+		return client.Freeze(ctx, spec)
+	}
+	return client.Thaw(ctx, spec)
 }
 
 // SnapshotCount returns the number of registered snapshots — fork snapshots
@@ -1650,6 +1705,12 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		done:             make(chan struct{}),
 		volumeNames:      volNames, // hold the re-acquired volume guard(s)
 		volumes:          volSpecs,
+	}
+	if len(volumes) > 0 {
+		s.volumeMountpoints = make(map[string]string, len(volumes))
+		for _, v := range volumes {
+			s.volumeMountpoints[v.Name] = v.Path
+		}
 	}
 	if s.VSockPath != "" {
 		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)

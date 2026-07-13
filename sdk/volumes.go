@@ -81,3 +81,25 @@ func (c *Client) DeleteBackup(ctx context.Context, id string) error {
 	}
 	return expectNoContent(resp)
 }
+
+// RestoreBackup materialises a backup into a new volume newName
+// (POST /volumes/{newName}/restore). Errors 409 if newName already exists, 404
+// if the backup is gone.
+func (c *Client) RestoreBackup(ctx context.Context, backupID, newName string) (api.Volume, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(newName)+"/restore", api.RestoreVolumeRequest{From: backupID})
+	if err != nil {
+		return api.Volume{}, err
+	}
+	return decodeInto[api.Volume](resp)
+}
+
+// CloneVolume copies a quiescent volume src into a new volume dst
+// (POST /volumes/{src}/clone). Errors 409 if dst exists or src is attached to a
+// running sandbox.
+func (c *Client) CloneVolume(ctx context.Context, src, dst string) (api.Volume, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(src)+"/clone", api.CloneVolumeRequest{To: dst})
+	if err != nil {
+		return api.Volume{}, err
+	}
+	return decodeInto[api.Volume](resp)
+}

@@ -146,6 +146,18 @@ type BackupListResponse struct {
 	Backups []Backup `json:"backups"`
 }
 
+// RestoreVolumeRequest is the body of POST /volumes/{name}/restore: create the
+// new volume {name} from backup From.
+type RestoreVolumeRequest struct {
+	From string `json:"from"` // backup id
+}
+
+// CloneVolumeRequest is the body of POST /volumes/{name}/clone: copy the
+// (quiescent) volume {name} into a new volume To.
+type CloneVolumeRequest struct {
+	To string `json:"to"` // new volume name
+}
+
 // PortMapping publishes one host port to one guest port.
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable

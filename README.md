@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.6.2](https://img.shields.io/badge/status-v0.6.2-orange)
+![Status: v0.6.3](https://img.shields.io/badge/status-v0.6.3-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -105,13 +105,13 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 **Fork is ~2.6× faster than a cold create on ext4, ~8× on reflink**: pay the ~1 s boot once, then branch cheaply. A slept app **wakes in ~125 ms** (~8× faster than a cold create, and barely storage-dependent), and we ran **320 concurrent microVMs** on the laptop with RAM to spare.
 
-> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 30 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
+> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 32 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 
 ## Roadmap
 
-crucible is at **v0.6.2**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.6.3**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
-- **v0.6.x: persistent volumes & serverless-any-TCP.** Headline: **durable data that outlives the sandbox**, attaching an fsync-honest block device to any sandbox or app (`--volume NAME:/path`), surviving destroy/re-create, a hard VM kill, an app redeploy, sleep, and a daemon restart. v0.6.1 adds **wake-on-TCP**: a scale-to-zero app's published port wakes it on the first connection, protocol-agnostic, so any volume-backed database (postgres, redis, …) becomes a *self-hosted serverless* service that costs zero RAM until someone connects, plus a `--keep-connections` mode for scale-to-zero pub/sub. v0.6.2 makes that wake **instant (~170 ms snapshot restore, no cold boot or WAL recovery)** for stateful apps ([docs/volumes.md](docs/volumes.md), [docs/serverless.md](docs/serverless.md)).
+- **v0.6.x: persistent volumes & serverless-any-TCP.** Headline: **durable data that outlives the sandbox**, attaching an fsync-honest block device to any sandbox or app (`--volume NAME:/path`), surviving destroy/re-create, a hard VM kill, an app redeploy, sleep, and a daemon restart. v0.6.1 adds **wake-on-TCP**: a scale-to-zero app's published port wakes it on the first connection, protocol-agnostic, so any volume-backed database (postgres, redis, …) becomes a *self-hosted serverless* service that costs zero RAM until someone connects, plus a `--keep-connections` mode for scale-to-zero pub/sub. v0.6.2 makes that wake **instant (~170 ms snapshot restore, no cold boot or WAL recovery)** for stateful apps. v0.6.3 adds **volume backups**: a point-in-time `volume backup` / `restore` / `clone`, consistency-aware (a live database is frozen with `fsfreeze` for the instant of the copy, so it is backed up with no downtime), kept on your own storage via `--backup-dir` ([docs/volumes.md](docs/volumes.md), [docs/backups.md](docs/backups.md), [docs/serverless.md](docs/serverless.md)).
 - **v0.5.x: apps as a platform.** Headline: **scale to zero**: an app *sleeps when idle and wakes on the next request in under a second* (same IP + identity, clock stepped to now), surviving a daemon restart while asleep ([docs/apps.md#scale-to-zero](docs/apps.md#scale-to-zero)). The line also adds **app→app networking**, **horizontal scale-out** (replicas warm-forked from a snapshot, autoscaled), and **observability** (per-app metrics + OTLP export + host-side packet capture).
 - **v0.4.x: durable apps you deploy.** Headline: **durable, self-healing apps**: `crucible app create` promotes a workload to a named app the daemon keeps alive (restart + backoff, health checks) and re-creates from spec after a restart or reboot ([docs/apps.md](docs/apps.md)). Plus reach-by-name (the **ingress proxy**), **zero-downtime `app update`**, and **private registries**.
 - **v0.3.x: the safe `docker run`.** Boot unmodified OCI images (`run` / `build`), drop code in with `crucible cp`, an interactive `crucible shell` + TUI, and the public Go SDK.

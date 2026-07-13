@@ -10,6 +10,16 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.6.3" title="Volume backups">
+
+A point-in-time backup of a volume, restorable to a new volume, plus a clone.
+
+- **`volume backup` / `restore` / `clone`** takes a consistent, point-in-time copy of a volume and restores it into a new volume (never overwrites), or clones a volume straight into a new, independent one. Backups reflink (O(1)) when the backup dir shares the volume filesystem, a full byte copy otherwise. See [backups](backups).
+- **Consistency by state.** A detached volume is copied directly; a slept app's volume is copied from its already-fsync'd backing file; a **live** database is frozen with `fsfreeze` (only the volume mount, never the guest root) for the instant of the copy, then thawed, with an agent-side watchdog that auto-thaws if the daemon fails to. A live backup needs a reflink filesystem (btrfs/XFS); on ext4 it is refused.
+- **`--backup-dir`** (default `<volume-dir>/backups`): point it at another disk or mount to keep backups off-host. New MCP tools `volume_backup` and `volume_restore` (32 total).
+
+</Update>
+
 <Update label="v0.6.2" title="Instant serverless-stateful">
 
 A volume-backed database now snapshot-sleeps and **wakes in place**, no cold boot.

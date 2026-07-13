@@ -129,7 +129,9 @@ func toolOps(name string) []policy.Operation {
 	switch name {
 	case "run":
 		return []policy.Operation{policy.OpCreate, policy.OpExec, policy.OpDelete}
-	case "create_sandbox", "volume_create":
+	case "create_sandbox", "volume_create", "volume_restore":
+		// volume_restore provisions a new volume — create-grade (matches the
+		// daemon's POST /volumes/{name}/restore gate).
 		return []policy.Operation{policy.OpCreate}
 	case "create_app", "update_app":
 		// An app configures an entrypoint the daemon runs — exec-grade
@@ -155,7 +157,9 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpExec}
 	case "logs", "app_logs":
 		return []policy.Operation{policy.OpRead}
-	case "snapshot":
+	case "snapshot", "volume_backup":
+		// A volume backup copies data out — snapshot-grade, like a sandbox
+		// snapshot (matches the daemon's POST /volumes/{name}/backups gate).
 		return []policy.Operation{policy.OpSnapshot}
 	case "fork":
 		return []policy.Operation{policy.OpFork}

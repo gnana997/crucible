@@ -67,6 +67,46 @@ func (h *handlers) deleteVolume(ctx context.Context, _ *mcp.CallToolRequest, in 
 	return nil, deletedOutput{Deleted: in.Name}, nil
 }
 
+// --- volume backups (volume_backup / volume_restore) ------------------------
+
+type backupToolOutput struct {
+	ID           string `json:"id"`
+	SourceVolume string `json:"source_volume"`
+	SizeBytes    int64  `json:"size_bytes"`
+	Consistency  string `json:"consistency,omitempty"`
+}
+
+type backupVolumeInput struct {
+	Name string `json:"name" jsonschema:"the volume to back up (must be detached or slept, not attached to a running sandbox)"`
+}
+
+func (h *handlers) backupVolume(ctx context.Context, _ *mcp.CallToolRequest, in backupVolumeInput) (*mcp.CallToolResult, backupToolOutput, error) {
+	if in.Name == "" {
+		return nil, backupToolOutput{}, errors.New("name is required")
+	}
+	b, err := h.cfg.Client.BackupVolume(ctx, in.Name)
+	if err != nil {
+		return nil, backupToolOutput{}, err
+	}
+	return nil, backupToolOutput{ID: b.ID, SourceVolume: b.SourceVolume, SizeBytes: b.SizeBytes, Consistency: b.Consistency}, nil
+}
+
+type restoreVolumeInput struct {
+	From string `json:"from" jsonschema:"the backup id to restore"`
+	To   string `json:"to" jsonschema:"name of the new volume to create (refused if it already exists)"`
+}
+
+func (h *handlers) restoreVolume(ctx context.Context, _ *mcp.CallToolRequest, in restoreVolumeInput) (*mcp.CallToolResult, volumeToolOutput, error) {
+	if in.From == "" || in.To == "" {
+		return nil, volumeToolOutput{}, errors.New("from and to are required")
+	}
+	v, err := h.cfg.Client.RestoreBackup(ctx, in.From, in.To)
+	if err != nil {
+		return nil, volumeToolOutput{}, err
+	}
+	return nil, volumeToolOutput{Name: v.Name, SizeBytes: v.SizeBytes, AttachedTo: v.AttachedTo, HostID: v.HostID}, nil
+}
+
 // --- image management (list_images / delete_image) --------------------------
 
 type imageOutput struct {

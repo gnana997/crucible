@@ -106,6 +106,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// default-deny volume_backup op lands in a later milestone).
 		case strings.HasSuffix(path, "/backups"):
 			return policy.OpSnapshot, true
+		// Restore/clone provision a new volume — create-grade.
+		case strings.HasSuffix(path, "/restore"), strings.HasSuffix(path, "/clone"):
+			return policy.OpCreate, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
 		// Writing files into a sandbox is exec-grade power over the guest.

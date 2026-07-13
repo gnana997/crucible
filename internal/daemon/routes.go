@@ -112,6 +112,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /volumes/{name}/backups", s.handleListBackups)
 	mux.HandleFunc("GET /backups", s.handleListBackups)
 	mux.HandleFunc("DELETE /backups/{id}", s.handleDeleteBackup)
+	// Restore/clone create a new volume — gate as `create`.
+	mux.HandleFunc("POST /volumes/{name}/restore", s.handleRestoreVolume)
+	mux.HandleFunc("POST /volumes/{name}/clone", s.handleCloneVolume)
 	return mux
 }
 

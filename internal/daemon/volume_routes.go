@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
+	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/volume"
 	"github.com/gnana997/crucible/sdk/api"
 )
@@ -103,37 +105,145 @@ func toAPIBackup(b volume.BackupRecord) api.Backup {
 	}
 }
 
+// volumeQuiescent reports whether a volume is safe to raw-copy: detached (no
+// writer) or attached to a slept sandbox (VMM stopped, backing file
+// host-fsync'd). A volume attached to a *running* sandbox is live — it must be
+// frozen (fsfreeze) before copying. The second return is the holder sandbox id
+// ("" when detached). Returns the Get error (ErrNotFound etc.) on lookup failure.
+func (s *Server) volumeQuiescent(name string) (bool, string, error) {
+	info, err := s.cfg.Volumes.Get(name)
+	if err != nil {
+		return false, "", err
+	}
+	if info.AttachedTo == "" {
+		return true, "", nil
+	}
+	if s.cfg.Manager == nil {
+		return false, info.AttachedTo, nil
+	}
+	asleep, known := s.cfg.Manager.Asleep(info.AttachedTo)
+	return known && asleep, info.AttachedTo, nil
+}
+
+var errBackupNeedsReflink = errors.New(
+	"volume is attached to a running sandbox and the backup filesystem is not reflink-capable; " +
+		"sleep the app first, or put the backup dir on a btrfs/XFS filesystem")
+
+// withFrozen freezes the live holder's volName filesystem (so a copy is
+// filesystem-consistent), runs fn, then ALWAYS thaws. Refused when the backup
+// filesystem is not reflink-capable — freezing the guest for a full byte copy is
+// too disruptive, so only the O(1) reflink case is allowed live.
+func (s *Server) withFrozen(ctx context.Context, volName, holder string, fn func() error) error {
+	if !s.cfg.Volumes.BackupReflinks() {
+		return errBackupNeedsReflink
+	}
+	if s.cfg.Manager == nil {
+		return errBackupNeedsReflink
+	}
+	if err := s.cfg.Manager.Freeze(ctx, holder, volName); err != nil {
+		return err
+	}
+	// Thaw on a fresh context so a cancelled request still unfreezes the guest
+	// (the agent's watchdog is the last-resort backstop).
+	defer func() { _ = s.cfg.Manager.Thaw(context.Background(), holder, volName) }()
+	return fn()
+}
+
+// backupErrStatus maps live-copy errors to statuses, falling back to the volume
+// error map.
+func backupErrStatus(err error) int {
+	switch {
+	case errors.Is(err, errBackupNeedsReflink), errors.Is(err, sandbox.ErrFreezeUnsupported):
+		return http.StatusConflict
+	default:
+		return volumeErrStatus(err)
+	}
+}
+
 // handleBackupVolume — POST /volumes/{name}/backups. Takes a consistent
-// point-in-time copy. Refuses (409) a volume attached to a *running* sandbox: a
-// detached or slept (VMM stopped) volume is quiescent and safe to copy, but a
-// live one is still writing — a no-downtime live backup needs the fsfreeze agent
-// op, which lands in a later milestone.
+// point-in-time copy: a detached/slept volume is copied directly; a live one is
+// FIFREEZEd for the O(1) reflink copy (409 if the backup FS can't reflink).
 func (s *Server) handleBackupVolume(w http.ResponseWriter, r *http.Request) {
 	if !s.volumesEnabled(w) {
 		return
 	}
 	name := r.PathValue("name")
-	info, err := s.cfg.Volumes.Get(name)
+	q, holder, err := s.volumeQuiescent(name)
 	if err != nil {
 		writeError(w, volumeErrStatus(err), err)
 		return
 	}
-	if info.AttachedTo != "" {
-		asleep, known := false, false
-		if s.cfg.Manager != nil {
-			asleep, known = s.cfg.Manager.Asleep(info.AttachedTo)
-		}
-		if !known || !asleep {
-			writeError(w, http.StatusConflict, errors.New("volume is attached to a running sandbox; sleep the app first (no-downtime live backup lands in a later release)"))
-			return
-		}
+	var rec volume.BackupRecord
+	if q {
+		rec, err = s.cfg.Volumes.Backup(name)
+	} else {
+		err = s.withFrozen(r.Context(), name, holder, func() error {
+			var e error
+			rec, e = s.cfg.Volumes.Backup(name)
+			return e
+		})
 	}
-	rec, err := s.cfg.Volumes.Backup(name)
 	if err != nil {
-		writeError(w, volumeErrStatus(err), err)
+		writeError(w, backupErrStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toAPIBackup(rec))
+}
+
+// handleRestoreVolume — POST /volumes/{name}/restore. Materialises backup From
+// into the new volume {name}. 409 if {name} already exists (restore never
+// overwrites).
+func (s *Server) handleRestoreVolume(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.RestoreVolumeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rec, err := s.cfg.Volumes.RestoreTo(req.From, r.PathValue("name"))
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIVolume(volume.Info{Record: rec}))
+}
+
+// handleCloneVolume — POST /volumes/{name}/clone. Copies the (quiescent) volume
+// {name} into the new volume To. 409 if the source is live or To exists.
+func (s *Server) handleCloneVolume(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.CloneVolumeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	src := r.PathValue("name")
+	q, holder, err := s.volumeQuiescent(src)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	var rec volume.Record
+	if q {
+		rec, err = s.cfg.Volumes.Clone(src, req.To)
+	} else {
+		err = s.withFrozen(r.Context(), src, holder, func() error {
+			var e error
+			rec, e = s.cfg.Volumes.Clone(src, req.To)
+			return e
+		})
+	}
+	if err != nil {
+		writeError(w, backupErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIVolume(volume.Info{Record: rec}))
 }
 
 // handleListBackups — GET /volumes/{name}/backups (one volume) and GET /backups

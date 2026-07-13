@@ -2376,6 +2376,172 @@
         }
       }
     },
+    "/volumes/{name}/clone": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Clone a volume",
+        "description": "Copies the quiescent volume {name} into a new volume. 409 when the target exists or the source is attached to a running sandbox.",
+        "operationId": "cloneVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Source volume to clone (must be quiescent).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Source volume to clone (must be quiescent)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneVolReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Volume"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/volumes/{name}/restore": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Restore a backup to a new volume",
+        "description": "Materialises a backup into the new volume {name}. 409 when {name} already exists (restore never overwrites), 404 when the backup is gone.",
+        "operationId": "restoreVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Name of the new volume to create.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Name of the new volume to create."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreVolReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Volume"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/whoami": {
       "get": {
         "tags": [
@@ -2604,6 +2770,15 @@
               "$ref": "#/components/schemas/Backup"
             },
             "nullable": true
+          }
+        }
+      },
+      "CloneVolReq": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "string",
+            "description": "Name of the new volume to create."
           }
         }
       },
@@ -3191,6 +3366,15 @@
           },
           "username": {
             "type": "string"
+          }
+        }
+      },
+      "RestoreVolReq": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Backup id to restore."
           }
         }
       },

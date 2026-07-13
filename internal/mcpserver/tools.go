@@ -292,6 +292,10 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listVolumes) })
 	add("delete_volume", "Delete a persistent volume and its data by name. Refused while the volume is attached to a live sandbox.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteVolume) })
+	add("volume_backup", "Back up a volume: a consistent point-in-time copy, restorable to a new volume. Refused while the volume is attached to a running sandbox (sleep the app first).",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.backupVolume) })
+	add("volume_restore", "Restore a backup into a NEW volume (from = backup id, to = new volume name). Never overwrites an existing volume.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.restoreVolume) })
 }
 
 // handlers carries the operator policy (including the daemon client) the tool

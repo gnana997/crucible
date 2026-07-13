@@ -50,6 +50,14 @@ type volNameParam struct {
 type backupIDParam struct {
 	ID string `path:"id" description:"Backup id (<volume>-<timestamp>)."`
 }
+type restoreVolReq struct {
+	Name string `path:"name" description:"Name of the new volume to create."`
+	From string `json:"from" description:"Backup id to restore."`
+}
+type cloneVolReq struct {
+	Name string `path:"name" description:"Source volume to clone (must be quiescent)."`
+	To   string `json:"to" description:"Name of the new volume to create."`
+}
 type regHostParam struct {
 	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
 }
@@ -377,6 +385,16 @@ func buildReflector() *openapi3.Reflector {
 		"", nil, api.BackupListResponse{}, http.StatusOK, http.StatusNotImplemented)
 	jsonOp(http.MethodDelete, "/backups/{id}", "deleteBackup", "volumes", "Delete a backup",
 		"", backupIDParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodPost, "/volumes/{name}/restore", "restoreVolume", "volumes", "Restore a backup to a new volume",
+		"Materialises a backup into the new volume {name}. 409 when {name} already "+
+			"exists (restore never overwrites), 404 when the backup is gone.",
+		restoreVolReq{}, api.Volume{}, http.StatusCreated,
+		http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+	jsonOp(http.MethodPost, "/volumes/{name}/clone", "cloneVolume", "volumes", "Clone a volume",
+		"Copies the quiescent volume {name} into a new volume. 409 when the target "+
+			"exists or the source is attached to a running sandbox.",
+		cloneVolReq{}, api.Volume{}, http.StatusCreated,
+		http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 
 	return r
 }

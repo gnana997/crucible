@@ -6,6 +6,48 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.3] — 2026-07-14
+
+Volume backups. A persistent volume now has a point-in-time backup you can restore
+into a new volume, plus a clone. Backups are consistency-aware: a detached or slept
+volume is copied directly (quiescent), and a **running** database is frozen with
+`fsfreeze` for the instant of the copy, so it is backed up with no downtime. The
+copy reflinks (O(1)) when the backup directory shares the volume filesystem, so it
+is cheap; point `--backup-dir` at another disk or mount to keep backups off-host.
+
+### Added
+
+- **`volume backup`** takes a filesystem-consistent, point-in-time copy of a
+  volume, restorable to a new volume. `volume backup ls [<name>]` lists backups and
+  `volume backup rm <id>` deletes them. Backups are recorded durably (a second
+  bbolt bucket) and copied via reflink when the backup filesystem supports it, a
+  full byte copy otherwise.
+- **Consistency by state.** A detached volume is copied directly; a slept
+  scale-to-zero app's volume is copied from its already-fsync'd backing file; a
+  live volume is `FIFREEZE`d (only the volume mount, never the guest root),
+  copied, then `FITHAW`ed, with an agent-side watchdog that auto-thaws if the
+  daemon fails to, so a live backup can never leave a guest frozen.
+- **`volume restore --from <id> --to <name>`** materializes a backup into a new
+  volume (never overwrites an existing one), and **`volume clone <src> <dst>`**
+  copies a volume straight into a new, independent one (fork a database for a
+  preview or test environment).
+- **`--backup-dir`** daemon flag (default `<volume-dir>/backups`). A same-filesystem
+  backup dir reflinks; another disk or mount survives disk death but copies in full.
+- REST `POST /volumes/{name}/backups`, `GET /backups`, `POST
+  /volumes/{name}/restore`, `POST /volumes/{name}/clone`; SDK `BackupVolume` /
+  `ListBackups` / `DeleteBackup` / `RestoreBackup` / `CloneVolume`; MCP tools
+  `volume_backup` and `volume_restore` (**32 MCP tools** total). New guest agent
+  `POST /freeze` and `POST /thaw` ops. Docs: [backups.md](docs/backups.md).
+  Acceptance: `scripts/smoke_backups.sh`.
+
+### Notes
+
+- A **live** backup requires a reflink-capable backup filesystem (btrfs or XFS):
+  freezing a guest for a full byte copy would be too disruptive, so a live backup
+  on ext4 is refused (sleep the app, or back up a detached or slept volume, which
+  works on any filesystem). Off-host targets (S3, rsync) and incremental backups
+  are planned for a later release.
+
 ## [0.6.2] — 2026-07-14
 
 Instant serverless-stateful. A volume-backed app (the serverless postgres/redis

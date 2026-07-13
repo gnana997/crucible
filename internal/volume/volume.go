@@ -55,12 +55,13 @@ type Info struct {
 
 // Manager provisions and tracks volumes. Safe for concurrent use.
 type Manager struct {
-	dir         string
-	backupDir   string // where volume backups are written (default <dir>/backups)
-	defaultSize int64
-	hostID      string
-	uid, gid    int
-	st          *store
+	dir           string
+	backupDir     string // where volume backups are written (default <dir>/backups)
+	backupReflink bool   // a backup Clone into backupDir is O(1) reflink (not a byte copy)
+	defaultSize   int64
+	hostID        string
+	uid, gid      int
+	st            *store
 
 	mu       sync.Mutex
 	attached map[string]string // volume name -> sandbox id holding the single-writer claim
@@ -103,8 +104,22 @@ func NewManager(dir string, defaultSize int64, hostID string, uid, gid int) (*Ma
 		_ = st.close()
 		return nil, err
 	}
+	m.probeBackupReflink()
 	return m, nil
 }
+
+// probeBackupReflink records whether a backup Clone (volume dir → backup dir)
+// would be an O(1) reflink or a full byte copy, gating no-downtime live backups
+// (worth freezing the guest only for the O(1) case). Called at startup and when
+// the backup dir changes.
+func (m *Manager) probeBackupReflink() {
+	_ = os.MkdirAll(m.backupDir, 0o700)
+	m.backupReflink = fsutil.CanReflink(m.dir, m.backupDir)
+}
+
+// BackupReflinks reports whether backups into the configured backup dir use an
+// O(1) reflink. Live (fsfreeze) backups are only allowed when true.
+func (m *Manager) BackupReflinks() bool { return m.backupReflink }
 
 // Close releases the store's file lock.
 func (m *Manager) Close() error { return m.st.close() }
@@ -296,6 +311,7 @@ func (m *Manager) Sync(name string) error {
 func (m *Manager) SetBackupDir(dir string) {
 	if dir != "" {
 		m.backupDir = dir
+		m.probeBackupReflink()
 	}
 }
 
@@ -387,6 +403,81 @@ func (m *Manager) DeleteBackup(id string) error {
 		return fmt.Errorf("volume: remove backup file: %w", err)
 	}
 	return m.st.delBackup(id)
+}
+
+// RestoreTo materialises a backup into a NEW volume named newName, returning its
+// record. Refuses to overwrite an existing volume (ErrExists) — restore never
+// clobbers live data; use a fresh name. ErrBackupNotFound if the backup is gone.
+// The restored image mounts read-write in a guest and replays its journal.
+func (m *Manager) RestoreTo(backupID, newName string) (Record, error) {
+	if !nameRe.MatchString(newName) {
+		return Record{}, ErrInvalidName
+	}
+	brec, ok, err := m.st.getBackup(backupID)
+	if err != nil {
+		return Record{}, err
+	}
+	if !ok {
+		return Record{}, ErrBackupNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok, err := m.st.get(newName); err != nil {
+		return Record{}, err
+	} else if ok {
+		return Record{}, fmt.Errorf("%w: %s", ErrExists, newName)
+	}
+	return m.materialize(newName, brec.Path, brec.SizeBytes)
+}
+
+// Clone copies a quiescent source volume into a NEW volume dst, returning dst's
+// record. Refuses to overwrite an existing volume (ErrExists); ErrNotFound if src
+// doesn't exist. Like Backup, Clone does NOT verify src is quiescent — the daemon
+// handler refuses a live source (it copies the raw backing file).
+func (m *Manager) Clone(src, dst string) (Record, error) {
+	if !nameRe.MatchString(src) || !nameRe.MatchString(dst) {
+		return Record{}, ErrInvalidName
+	}
+	srcRec, ok, err := m.st.get(src)
+	if err != nil {
+		return Record{}, err
+	}
+	if !ok {
+		return Record{}, ErrNotFound
+	}
+	// Flush host-buffered writeback so the copy is durable (safe: caller vouched
+	// the source is quiescent). Sync takes m.mu, so call it before locking.
+	if err := m.Sync(src); err != nil {
+		return Record{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok, err := m.st.get(dst); err != nil {
+		return Record{}, err
+	} else if ok {
+		return Record{}, fmt.Errorf("%w: %s", ErrExists, dst)
+	}
+	return m.materialize(dst, filepath.Join(m.dir, src+".img"), srcRec.SizeBytes)
+}
+
+// materialize clones srcPath into a new volume named name (its backing file +
+// record), chowning the copy so a jailed firecracker can open it. Caller holds
+// m.mu and has verified name is free.
+func (m *Manager) materialize(name, srcPath string, sizeBytes int64) (Record, error) {
+	dstPath := filepath.Join(m.dir, name+".img")
+	if err := fsutil.Clone(srcPath, dstPath); err != nil {
+		return Record{}, fmt.Errorf("volume: materialize %s: %w", name, err)
+	}
+	if err := os.Chown(dstPath, m.uid, m.gid); err != nil {
+		_ = os.Remove(dstPath)
+		return Record{}, fmt.Errorf("volume: chown %s: %w", dstPath, err)
+	}
+	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
+	if err := m.st.put(rec); err != nil {
+		_ = os.Remove(dstPath)
+		return Record{}, err
+	}
+	return rec, nil
 }
 
 // provision creates + formats the backing file at sizeBytes on first use. mkfs

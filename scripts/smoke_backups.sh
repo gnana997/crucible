@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smoke_backups.sh — end-to-end check for volume backups (v0.6.3, B1).
+# smoke_backups.sh — end-to-end check for volume backups (v0.6.3).
 #
 # Boots a real daemon under jailer with a --volume-dir, then verifies:
 #   1. A DETACHED volume backs up, and the backup is a real, mountable ext4
@@ -35,13 +35,18 @@ BASE_URL="http://${LISTEN}"
 MOUNT="${MOUNT:-/var/lib/crucible-bkptest}"
 IMAGE="${IMAGE:-alpine:latest}"
 APP_IMAGE="${APP_IMAGE:-nginx:alpine}"
+# REFLINK=1 puts the work root on a btrfs loopback so the live (fsfreeze) backup
+# path is exercised; the default (host FS, usually ext4) exercises the refusal.
+REFLINK="${REFLINK:-0}"
+IMG="${IMG:-/var/lib/crucible-bkptest.img}"
+IMG_SIZE="${IMG_SIZE:-3G}"
 
 pass=0; fail=0
 ok()  { echo "  ✓ $*"; pass=$((pass+1)); }
 bad() { echo "  ✗ $*"; fail=$((fail+1)); }
 
 echo "==============================================================="
-echo " crucible volume-backups smoke (v0.6.3 B1)"
+echo " crucible volume-backups smoke (v0.6.3)"
 echo "==============================================================="
 
 # ---- preflight --------------------------------------------------------------
@@ -52,17 +57,31 @@ for b in "$FIRECRACKER_BIN" "$JAILER_BIN"; do [[ -x "$b" ]] || { echo "error: mi
 command -v mkfs.ext4 >/dev/null || { echo "error: mkfs.ext4 needed (e2fsprogs)" >&2; exit 2; }
 systemctl is-active --quiet crucible 2>/dev/null && { echo "error: stop the systemd crucible first" >&2; exit 2; }
 
-echo "== 01 prepare work root ($MOUNT)"
-rm -rf "$MOUNT"; mkdir -p "$MOUNT"/{run,jailer,volumes,images,logs}
+echo "== 01 prepare work root ($MOUNT; REFLINK=$REFLINK)"
+if [[ "$REFLINK" == 1 ]]; then
+  command -v mkfs.btrfs >/dev/null || { echo "error: mkfs.btrfs needed for REFLINK=1 (btrfs-progs)" >&2; exit 2; }
+  umount "$MOUNT" 2>/dev/null || true
+  truncate -s "$IMG_SIZE" "$IMG"; mkfs.btrfs -q -f "$IMG"
+  mkdir -p "$MOUNT"; mount -o loop "$IMG" "$MOUNT"
+  findmnt -no FSTYPE "$MOUNT" | grep -q btrfs || { echo "error: $MOUNT is not btrfs" >&2; exit 3; }
+else
+  rm -rf "$MOUNT"; mkdir -p "$MOUNT"
+fi
+mkdir -p "$MOUNT"/{run,jailer,volumes,images,logs}
 cp "$ROOTFS" "$MOUNT/rootfs.ext4"
 DAEMON_LOG="$MOUNT/daemon.log"
+FS="$(findmnt -no FSTYPE "$MOUNT" 2>/dev/null || stat -f -c %T "$MOUNT")"
+echo "   work root filesystem: $FS"
 
 DAEMON_PID=""
 cleanup() {
   umount "$MOUNT/mp" 2>/dev/null || true
   [[ -n "$DAEMON_PID" ]] && kill -TERM "$DAEMON_PID" 2>/dev/null && wait "$DAEMON_PID" 2>/dev/null
   pkill -9 -f 'firecracker --id' 2>/dev/null || true
-  [[ "${KEEP:-0}" == "1" ]] || rm -rf "$MOUNT"
+  if [[ "${KEEP:-0}" != "1" ]]; then
+    [[ "$REFLINK" == 1 ]] && { umount "$MOUNT" 2>/dev/null || true; rm -f "$IMG"; }
+    rm -rf "$MOUNT"
+  fi
 }
 trap cleanup EXIT
 
@@ -149,21 +168,62 @@ else
   bad "volume app never booted"
 fi
 
-# ---- 06 live (running) volume app REFUSES a backup -------------------------
-echo "== 06 a LIVE volume app refuses a backup (needs fsfreeze, a later release)"
+# ---- 06 live volume app backup: fsfreeze on reflink FS, refused otherwise ---
+echo "== 06 back up a LIVE volume app (fsfreeze on a reflink FS; refused on ext4)"
 run app wake bkpapp >/dev/null 2>&1
 if wait_phase bkpapp running 200; then
-  if run volume backup appdata >/dev/null 2>&1; then
-    bad "live backup was NOT refused (should 409 until fsfreeze lands)"
+  # write a fresh marker so a successful live backup proves it captured the
+  # current (frozen) state, not the older slept snapshot.
+  run app exec bkpapp -- sh -c 'echo live-ok > /data/marker && sync' >/dev/null 2>&1
+  if LB=$(run volume backup appdata 2>/dev/null | tr -d '\r\n') && [[ -n "$LB" ]]; then
+    LIMG=$(newest_img appdata)
+    if [[ -n "$LIMG" ]] && verify_marker "$LIMG" "live-ok"; then
+      ok "live backup via fsfreeze captured the current data ($LB)"
+    else
+      bad "live backup image missing/wrong data"
+    fi
+    wait_phase bkpapp running 100 && ok "app still running after freeze/thaw" \
+      || bad "app not running after freeze/thaw"
   else
-    ok "live backup refused while the app is running"
+    # non-reflink backup FS: freezing for a full byte copy is refused by design.
+    ok "live backup refused (backup filesystem is not reflink-capable)"
   fi
 else
-  bad "app did not wake for the live-refusal check"
+  bad "app did not wake for the live-backup check"
 fi
 
-# ---- 07 backup rm removes the file + record --------------------------------
-echo "== 07 backup rm removes the backup file and record"
+# ---- 07 restore a backup into a NEW volume; the data is there --------------
+echo "== 07 restore a backup into a new volume (data intact, mounts in a guest)"
+if [[ -n "${SBID:-}" ]]; then
+  run volume restore --from "$SBID" --to restored >/dev/null 2>&1 \
+    && ok "volume restore --from $SBID --to restored" || bad "restore"
+  RSB=$(run sandbox create --image "$IMAGE" --volume restored:/r 2>/dev/null)
+  GOT=$(run sandbox exec "$RSB" -- cat /r/marker 2>/dev/null | tr -d '\r\n')
+  [[ "$GOT" == "slept-ok" ]] && ok "restored volume mounts with the data intact" \
+    || bad "restored marker='$GOT' want 'slept-ok'"
+  run rm "$RSB" >/dev/null 2>&1 || true
+  # restore never overwrites an existing volume.
+  run volume restore --from "$SBID" --to restored >/dev/null 2>&1 \
+    && bad "restore overwrote an existing volume" || ok "restore refuses an existing target"
+fi
+
+# ---- 08 clone a detached volume; the copy is independent --------------------
+echo "== 08 clone a detached volume; the clone is an independent copy"
+run volume clone data dataclone >/dev/null 2>&1 && ok "volume clone data dataclone" || bad "clone"
+CSB=$(run sandbox create --image "$IMAGE" --volume dataclone:/c 2>/dev/null)
+GOT=$(run sandbox exec "$CSB" -- cat /c/marker 2>/dev/null | tr -d '\r\n')
+[[ "$GOT" == "detached-ok" ]] && ok "clone has the source's data" || bad "clone marker='$GOT' want 'detached-ok'"
+# mutate the clone, then confirm the source is untouched.
+run sandbox exec "$CSB" -- sh -c 'echo mutated > /c/marker && sync' >/dev/null 2>&1
+run rm "$CSB" >/dev/null 2>&1 || true
+OSB=$(run sandbox create --image "$IMAGE" --volume data:/d 2>/dev/null)
+GOT=$(run sandbox exec "$OSB" -- cat /d/marker 2>/dev/null | tr -d '\r\n')
+[[ "$GOT" == "detached-ok" ]] && ok "source volume unchanged after mutating the clone" \
+  || bad "source marker='$GOT' want 'detached-ok' (clone not independent)"
+run rm "$OSB" >/dev/null 2>&1 || true
+
+# ---- 09 backup rm removes the file + record --------------------------------
+echo "== 09 backup rm removes the backup file and record"
 if [[ -n "${BID:-}" ]]; then
   run volume backup rm "$BID" >/dev/null 2>&1 && ok "volume backup rm $BID" || bad "backup rm"
   [[ -z "$(newest_img data)" ]] && ok "backup file gone after rm" || bad "backup file still present"

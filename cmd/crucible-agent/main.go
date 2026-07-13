@@ -98,6 +98,8 @@ func run(logger *slog.Logger) int {
 	mux.HandleFunc("POST /identity/refresh", handleIdentityRefresh)
 	mux.HandleFunc("POST /wake", handleWake)
 	mux.HandleFunc("POST /quiesce", handleQuiesce)
+	mux.HandleFunc("POST /freeze", handleFreeze)
+	mux.HandleFunc("POST /thaw", handleThaw)
 	mux.HandleFunc("POST /mount", handleMount)
 	mux.HandleFunc("PUT /files", handleFilesPut)
 	mux.HandleFunc("GET /files", handleFilesGet)

@@ -15,11 +15,11 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.2 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer). The core runtime
+**Status:** v0.6.3 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
-an MCP server (30 tools), daemon API-key auth with scoped/policy tokens, and a
+an MCP server (32 tools), daemon API-key auth with scoped/policy tokens, and a
 TUI. Two durability tiers: **sandboxes** are ephemeral (a daemon restart drops
 the VM), while **apps** (`crucible app`) are durable — the daemon re-creates a
 healthy instance from persisted desired state. The v0.4 line built apps out:
@@ -70,8 +70,13 @@ VMM (RAM freed, single-writer guard held, backing file host-fsync'd for durabili
 while asleep); wake restores in place (~170 ms, same instance + IP, volume
 re-attached, no cold boot / WAL recovery), and a wake after a daemon restart forks a
 fresh instance from the durable snapshot re-acquiring the guard, with an automatic
-stop/start cold-create fallback so a wake never fails. See the ROADMAP for what's
-next (v0.6.3 = volume backups).
+stop/start cold-create fallback so a wake never fails. **v0.6.3** adds volume
+backups: `volume backup`/`restore`/`clone` (a point-in-time copy restorable to a new
+volume), consistency-aware (a detached/slept volume is copied directly; a live one is
+FIFREEZE'd via new guest `/freeze`+`/thaw` agent ops, only the volume mount, with a
+watchdog auto-thaw), reflink (O(1)) when the `--backup-dir` shares the volume
+filesystem; a live backup requires a reflink FS (btrfs/XFS). See the ROADMAP for
+what's next (off-host + incremental backups).
 
 ## Working style
 

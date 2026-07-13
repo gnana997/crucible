@@ -75,6 +75,29 @@ func Clone(src, dst string) error {
 	return closeWithError(dstF, nil)
 }
 
+// CanReflink reports whether a Clone from a file in srcDir to a file in dstDir
+// would use an O(1) FICLONE reflink (same filesystem + reflink support) rather
+// than a full byte copy. It probes with tiny temp files and the real ioctl,
+// cleaning them up. Used to gate work that is only worthwhile when reflink is
+// available — e.g. a live volume backup, which freezes the guest only for the
+// duration of the copy (acceptable when that copy is O(1), not a full byte copy).
+func CanReflink(srcDir, dstDir string) bool {
+	src, err := os.CreateTemp(srcDir, ".reflink-probe-*")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = os.Remove(src.Name()); _ = src.Close() }()
+	if _, err := src.Write([]byte("probe")); err != nil {
+		return false
+	}
+	dst, err := os.CreateTemp(dstDir, ".reflink-probe-*")
+	if err != nil {
+		return false
+	}
+	defer func() { _ = os.Remove(dst.Name()); _ = dst.Close() }()
+	return unix.IoctlFileClone(int(dst.Fd()), int(src.Fd())) == nil
+}
+
 // closeWithError closes f and returns either the pre-existing err or a
 // new one from Close (whichever is non-nil, preferring the original).
 // Written out because `defer dstF.Close()` would hide Close errors on
