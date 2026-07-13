@@ -517,6 +517,83 @@
         }
       }
     },
+    "/backups": {
+      "get": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "List all volume backups",
+        "operationId": "listBackups",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/backups/{id}": {
+      "delete": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Delete a backup",
+        "operationId": "deleteBackup",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Backup id (\u003cvolume\u003e-\u003ctimestamp\u003e).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Backup id (\u003cvolume\u003e-\u003ctimestamp\u003e)."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -2194,6 +2271,111 @@
         }
       }
     },
+    "/volumes/{name}/backups": {
+      "get": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "List a volume's backups",
+        "operationId": "listVolumeBackups",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Back up a volume",
+        "description": "Takes a consistent point-in-time backup of the volume, restorable to a new volume. 409 when the volume is attached to a running sandbox (sleep it first).",
+        "operationId": "backupVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Backup"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/whoami": {
       "get": {
         "tags": [
@@ -2385,6 +2567,43 @@
           },
           "sleep_count": {
             "type": "integer"
+          }
+        }
+      },
+      "Backup": {
+        "type": "object",
+        "properties": {
+          "consistency": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "host_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source_volume": {
+            "type": "string"
+          }
+        }
+      },
+      "BackupListResponse": {
+        "type": "object",
+        "properties": {
+          "backups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Backup"
+            },
+            "nullable": true
           }
         }
       },

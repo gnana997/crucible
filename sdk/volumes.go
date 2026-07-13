@@ -46,3 +46,38 @@ func (c *Client) DeleteVolume(ctx context.Context, name string) error {
 	}
 	return expectNoContent(resp)
 }
+
+// BackupVolume takes a point-in-time backup of a volume
+// (POST /volumes/{name}/backups). Errors 409 if the volume is attached to a
+// running sandbox (sleep it first).
+func (c *Client) BackupVolume(ctx context.Context, name string) (api.Backup, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(name)+"/backups", nil)
+	if err != nil {
+		return api.Backup{}, err
+	}
+	return decodeInto[api.Backup](resp)
+}
+
+// ListBackups returns volume backups (GET /backups, or GET
+// /volumes/{name}/backups when volumeName is non-empty).
+func (c *Client) ListBackups(ctx context.Context, volumeName string) (Page[api.Backup], error) {
+	path := "/backups"
+	if volumeName != "" {
+		path = "/volumes/" + url.PathEscape(volumeName) + "/backups"
+	}
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return Page[api.Backup]{}, err
+	}
+	out, err := decodeInto[api.BackupListResponse](resp)
+	return Page[api.Backup]{Items: out.Backups}, err
+}
+
+// DeleteBackup removes a backup and its backing file (DELETE /backups/{id}).
+func (c *Client) DeleteBackup(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/backups/"+url.PathEscape(id), nil)
+	if err != nil {
+		return err
+	}
+	return expectNoContent(resp)
+}

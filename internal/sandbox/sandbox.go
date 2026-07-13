@@ -1122,6 +1122,20 @@ func (m *Manager) Get(id string) (*Sandbox, error) {
 	return s, nil
 }
 
+// Asleep reports whether the sandbox is currently snapshot-asleep (VMM stopped,
+// its durable snapshot on disk). The second return is false if the sandbox is
+// unknown. Used to tell a quiescent (safe-to-back-up) volume holder from a live
+// one that is still writing.
+func (m *Manager) Asleep(id string) (asleep, known bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.sandboxes[id]
+	if !ok {
+		return false, false
+	}
+	return s.asleep != nil, true
+}
+
 // SnapshotCount returns the number of registered snapshots — fork snapshots
 // plus the durable per-instance sleep snapshots. Read as a Prometheus gauge for
 // storage/scale-to-zero visibility.

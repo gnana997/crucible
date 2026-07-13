@@ -16,9 +16,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gnana997/crucible/internal/fsutil"
 )
 
 // DefaultSize is the size a volume's backing file is created at when no
@@ -40,6 +43,8 @@ var (
 	ErrExists = errors.New("volume: already exists")
 	// ErrNotFound means no volume of that name exists.
 	ErrNotFound = errors.New("volume: not found")
+	// ErrBackupNotFound means no backup of that id exists.
+	ErrBackupNotFound = errors.New("volume: backup not found")
 )
 
 // Info is a volume record annotated with its live attachment.
@@ -51,6 +56,7 @@ type Info struct {
 // Manager provisions and tracks volumes. Safe for concurrent use.
 type Manager struct {
 	dir         string
+	backupDir   string // where volume backups are written (default <dir>/backups)
 	defaultSize int64
 	hostID      string
 	uid, gid    int
@@ -85,6 +91,7 @@ func NewManager(dir string, defaultSize int64, hostID string, uid, gid int) (*Ma
 	}
 	m := &Manager{
 		dir:         dir,
+		backupDir:   filepath.Join(dir, "backups"),
 		defaultSize: defaultSize,
 		hostID:      hostID,
 		uid:         uid,
@@ -282,6 +289,104 @@ func (m *Manager) Sync(name string) error {
 		return fmt.Errorf("volume: fsync %s: %w", name, err)
 	}
 	return nil
+}
+
+// SetBackupDir overrides where backups are written (default <volume-dir>/backups).
+// Call once at startup, before serving requests. An empty dir keeps the default.
+func (m *Manager) SetBackupDir(dir string) {
+	if dir != "" {
+		m.backupDir = dir
+	}
+}
+
+// Backup takes a point-in-time copy of a volume's backing file into the backup
+// dir and records it, returning the backup metadata. The copy is O(1) via reflink
+// when the backup dir shares the volume dir's filesystem, else a byte-copy.
+//
+// The result is filesystem-consistent only if the volume is quiescent — detached
+// (no writer) or slept (VMM stopped, backing file already host-fsync'd). Backup
+// itself does NOT verify that: the caller (the daemon handler) classifies the
+// volume's holder run-state and refuses a live backup (live/frozen backup lands
+// with the fsfreeze agent op in a later milestone). ErrNotFound if the volume
+// doesn't exist.
+func (m *Manager) Backup(name string) (BackupRecord, error) {
+	if !nameRe.MatchString(name) {
+		return BackupRecord{}, ErrInvalidName
+	}
+	rec, ok, err := m.st.get(name)
+	if err != nil {
+		return BackupRecord{}, err
+	}
+	if !ok {
+		return BackupRecord{}, ErrNotFound
+	}
+	// Flush any writeback still buffered host-side so the copy is durable.
+	if err := m.Sync(name); err != nil {
+		return BackupRecord{}, err
+	}
+	id := name + "-" + time.Now().UTC().Format("20060102T150405.000Z")
+	destDir := filepath.Join(m.backupDir, name)
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: create backup dir %s: %w", destDir, err)
+	}
+	dst := filepath.Join(destDir, id+".img")
+	if err := fsutil.Clone(filepath.Join(m.dir, name+".img"), dst); err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: backup %s: %w", name, err)
+	}
+	brec := BackupRecord{
+		ID: id, SourceVolume: name, SizeBytes: rec.SizeBytes,
+		CreatedAt: time.Now().UTC(), Consistency: "filesystem", HostID: m.hostID, Path: dst,
+	}
+	if err := m.st.putBackup(brec); err != nil {
+		_ = os.Remove(dst)
+		return BackupRecord{}, err
+	}
+	return brec, nil
+}
+
+// ListBackups returns backups (newest first), filtered to one source volume when
+// sourceVol is non-empty (all backups when empty).
+func (m *Manager) ListBackups(sourceVol string) ([]BackupRecord, error) {
+	recs, err := m.st.listBackups()
+	if err != nil {
+		return nil, err
+	}
+	out := recs[:0]
+	for _, r := range recs {
+		if sourceVol == "" || r.SourceVolume == sourceVol {
+			out = append(out, r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
+// GetBackup returns one backup by id. ErrBackupNotFound if absent.
+func (m *Manager) GetBackup(id string) (BackupRecord, error) {
+	rec, ok, err := m.st.getBackup(id)
+	if err != nil {
+		return BackupRecord{}, err
+	}
+	if !ok {
+		return BackupRecord{}, ErrBackupNotFound
+	}
+	return rec, nil
+}
+
+// DeleteBackup removes a backup's backing file and record. ErrBackupNotFound if
+// absent.
+func (m *Manager) DeleteBackup(id string) error {
+	rec, ok, err := m.st.getBackup(id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrBackupNotFound
+	}
+	if err := os.Remove(rec.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("volume: remove backup file: %w", err)
+	}
+	return m.st.delBackup(id)
 }
 
 // provision creates + formats the backing file at sizeBytes on first use. mkfs

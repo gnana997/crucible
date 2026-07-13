@@ -47,6 +47,9 @@ type appNameParam struct {
 type volNameParam struct {
 	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
 }
+type backupIDParam struct {
+	ID string `path:"id" description:"Backup id (<volume>-<timestamp>)."`
+}
 type regHostParam struct {
 	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
 }
@@ -362,6 +365,18 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodDelete, "/volumes/{name}", "deleteVolume", "volumes", "Delete a volume",
 		"Deletes the volume and its data. 409 when it is attached to a live sandbox.",
 		volNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes/{name}/backups", "backupVolume", "volumes", "Back up a volume",
+		"Takes a consistent point-in-time backup of the volume, restorable to a new volume. "+
+			"409 when the volume is attached to a running sandbox (sleep it first).",
+		volNameParam{}, api.Backup{}, http.StatusCreated,
+		http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/volumes/{name}/backups", "listVolumeBackups", "volumes", "List a volume's backups",
+		"", volNameParam{}, api.BackupListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/backups", "listBackups", "volumes", "List all volume backups",
+		"", nil, api.BackupListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/backups/{id}", "deleteBackup", "volumes", "Delete a backup",
+		"", backupIDParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
 
 	return r
 }

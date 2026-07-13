@@ -20,7 +20,24 @@ type Record struct {
 	HostID    string    `json:"host_id"`   // host-pin (P5 placement); recorded at create
 }
 
-var volumesBucket = []byte("volumes")
+// BackupRecord is the persisted metadata of one volume backup, keyed by ID. A
+// backup is a point-in-time copy of a volume's backing file (see Manager.Backup),
+// restorable to a new volume. Kept in its own bucket because a volume has many
+// backups, each with its own id, timestamp, and consistency level.
+type BackupRecord struct {
+	ID           string    `json:"id"`            // "<source>-<UTC-compact-ms>"
+	SourceVolume string    `json:"source_volume"` // the volume this was taken from
+	SizeBytes    int64     `json:"size_bytes"`    // logical size (same as the source)
+	CreatedAt    time.Time `json:"created_at"`
+	Consistency  string    `json:"consistency"` // "filesystem" (detached/slept/frozen)
+	HostID       string    `json:"host_id"`
+	Path         string    `json:"path"` // host path of the backup backing file (internal)
+}
+
+var (
+	volumesBucket = []byte("volumes")
+	backupsBucket = []byte("backups")
+)
 
 // store is a durable, transactional volume-record store backed by a single
 // bbolt file — same shape as internal/app/store.go (pure Go, single file,
@@ -35,7 +52,10 @@ func openStore(path string) (*store, error) {
 		return nil, fmt.Errorf("volume: open store %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(volumesBucket)
+		if _, e := tx.CreateBucketIfNotExists(volumesBucket); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(backupsBucket)
 		return e
 	}); err != nil {
 		_ = db.Close()
@@ -88,5 +108,51 @@ func (s *store) list() ([]Record, error) {
 func (s *store) del(name string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(volumesBucket).Delete([]byte(name))
+	})
+}
+
+func (s *store) putBackup(rec BackupRecord) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := json.Marshal(rec)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(backupsBucket).Put([]byte(rec.ID), b)
+	})
+}
+
+func (s *store) getBackup(id string) (BackupRecord, bool, error) {
+	var rec BackupRecord
+	found := false
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(backupsBucket).Get([]byte(id))
+		if v == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(v, &rec)
+	})
+	return rec, found, err
+}
+
+// listBackups returns every backup record; the Manager filters by source volume.
+func (s *store) listBackups() ([]BackupRecord, error) {
+	var out []BackupRecord
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(backupsBucket).ForEach(func(_, v []byte) error {
+			var r BackupRecord
+			if err := json.Unmarshal(v, &r); err != nil {
+				return err
+			}
+			out = append(out, r)
+			return nil
+		})
+	})
+	return out, err
+}
+
+func (s *store) delBackup(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(backupsBucket).Delete([]byte(id))
 	})
 }

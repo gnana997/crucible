@@ -102,6 +102,10 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// Creating a persistent volume — create-grade.
 		case path == "/volumes":
 			return policy.OpCreate, true
+		// Backing up a volume copies its data out — snapshot-grade (a dedicated
+		// default-deny volume_backup op lands in a later milestone).
+		case strings.HasSuffix(path, "/backups"):
+			return policy.OpSnapshot, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
 		// Writing files into a sandbox is exec-grade power over the guest.

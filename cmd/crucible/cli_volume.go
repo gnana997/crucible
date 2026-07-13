@@ -14,8 +14,78 @@ func newVolumeCmd(o *globalOpts) *cobra.Command {
 		Short:   "Manage persistent volumes (durable block devices attached to sandboxes)",
 		Aliases: []string{"vol"},
 	}
-	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o))
+	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o), newVolumeBackupCmd(o))
 	return cmd
+}
+
+// newVolumeBackupCmd is `volume backup <name>` (create a backup) plus `ls`/`rm`
+// subcommands. A first arg that isn't a subcommand is the volume to back up.
+func newVolumeBackupCmd(o *globalOpts) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backup <name>",
+		Short: "Back up a volume (point-in-time copy; restore to a new volume with `volume restore`)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			b, err := o.client().BackupVolume(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), b)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), b.ID)
+			return nil
+		},
+	}
+	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o))
+	return cmd
+}
+
+func newVolumeBackupLsCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:     "ls [<volume>]",
+		Short:   "List volume backups (optionally for one volume)",
+		Aliases: []string{"list"},
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var vol string
+			if len(args) == 1 {
+				vol = args[0]
+			}
+			page, err := o.client().ListBackups(cmd.Context(), vol)
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), page.Items)
+			}
+			tw := newTable(cmd.OutOrStdout())
+			_, _ = fmt.Fprintln(tw, "ID\tVOLUME\tSIZE\tCONSISTENCY\tAGE")
+			for _, b := range page.Items {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", b.ID, b.SourceVolume, humanSize(b.SizeBytes), b.Consistency, age(b.CreatedAt))
+			}
+			return tw.Flush()
+		},
+	}
+}
+
+func newVolumeBackupRmCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:     "rm <id>...",
+		Short:   "Remove volume backups by id",
+		Aliases: []string{"delete"},
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl := o.client()
+			for _, id := range args {
+				if err := cl.DeleteBackup(cmd.Context(), id); err != nil {
+					return fmt.Errorf("delete %s: %w", id, err)
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), id)
+			}
+			return nil
+		},
+	}
 }
 
 func newVolumeCreateCmd(o *globalOpts) *cobra.Command {

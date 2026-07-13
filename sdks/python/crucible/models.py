@@ -13,6 +13,19 @@ class AppExecReq(BaseModel):
     timeout_s: int | None = None
 
 
+class Backup(BaseModel):
+    consistency: str | None = None
+    created_at: AwareDatetime | None = None
+    host_id: str | None = None
+    id: str | None = None
+    size_bytes: int | None = None
+    source_volume: str | None = None
+
+
+class BackupListResponse(BaseModel):
+    backups: list[Backup] | None = None
+
+
 class CreateVolumeRequest(BaseModel):
     name: str | None = None
     size_bytes: int | None = None

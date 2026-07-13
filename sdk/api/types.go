@@ -131,6 +131,21 @@ type VolumeListResponse struct {
 	Volumes []Volume `json:"volumes"`
 }
 
+// Backup is a point-in-time copy of a volume, restorable to a new volume.
+type Backup struct {
+	ID           string    `json:"id"`
+	SourceVolume string    `json:"source_volume"`
+	SizeBytes    int64     `json:"size_bytes"`
+	CreatedAt    time.Time `json:"created_at"`
+	Consistency  string    `json:"consistency,omitempty"` // "filesystem"
+	HostID       string    `json:"host_id,omitempty"`
+}
+
+// BackupListResponse is the body of GET /backups and GET /volumes/{name}/backups.
+type BackupListResponse struct {
+	Backups []Backup `json:"backups"`
+}
+
 // PortMapping publishes one host port to one guest port.
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable

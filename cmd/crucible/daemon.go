@@ -148,6 +148,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		jailGID    = fs.Uint("jail-gid", defaultJailGID(), "unprivileged gid jailer drops to before exec'ing firecracker (defaults to the kvm group so the jailed firecracker can open /dev/kvm)")
 		volumeDir  = fs.String("volume-dir", "", "directory for persistent volume backing files; enables --volume when set (must be on the same filesystem as --chroot-base so volumes hardlink into the jail)")
 		volumeSize = fs.Int64("volume-default-size", 2<<30, "size in bytes a volume's backing file is created at on first use (2 GiB default; per-volume sizing lands in a later release)")
+		backupDir  = fs.String("backup-dir", "", "directory for volume backups (default <volume-dir>/backups); point at another disk/mount for off-host durability. Backups reflink (O(1)) only when this shares the volume-dir filesystem, else a full copy")
 		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
 		// pids.max) for each sandbox's VMM from its vCPU/memory request.
 		// Only takes effect under jailer mode; the direct-exec runner has
@@ -491,6 +492,7 @@ Required flags:
 			return 1
 		}
 		volMgr = vm
+		volMgr.SetBackupDir(*backupDir)
 		defer func() { _ = volMgr.Close() }()
 		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize, "host_id", hostID)
 	}

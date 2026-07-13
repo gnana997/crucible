@@ -1,6 +1,7 @@
 package volume
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -186,6 +187,83 @@ func TestBackfillAdoptsBareImg(t *testing.T) {
 	}
 	if got.Name != "legacy" {
 		t.Fatalf("backfill name = %q", got.Name)
+	}
+}
+
+func TestBackupCreatesListsAndDeletes(t *testing.T) {
+	dir := t.TempDir()
+	m := newMgr(t, dir)
+	if _, err := m.Create("data", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b, err := m.Backup("data")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if b.SourceVolume != "data" || b.SizeBytes != testSize || b.Consistency != "filesystem" {
+		t.Fatalf("unexpected record: %+v", b)
+	}
+	// default backup dir is <dir>/backups/<vol>/…
+	if !strings.HasPrefix(b.Path, filepath.Join(dir, "backups", "data")) {
+		t.Fatalf("backup path %q not under default backup dir", b.Path)
+	}
+	// the backup file is byte-identical to the source backing file.
+	src, _ := os.ReadFile(filepath.Join(dir, "data.img"))
+	dst, err := os.ReadFile(b.Path)
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if !bytes.Equal(src, dst) {
+		t.Fatal("backup content differs from source")
+	}
+	// listing (all + filtered) returns it; a bogus filter returns none.
+	if all, err := m.ListBackups(""); err != nil || len(all) != 1 || all[0].ID != b.ID {
+		t.Fatalf("ListBackups(all) = %v, %v", all, err)
+	}
+	if got, _ := m.ListBackups("data"); len(got) != 1 {
+		t.Fatalf("ListBackups(data) len = %d, want 1", len(got))
+	}
+	if got, _ := m.ListBackups("other"); len(got) != 0 {
+		t.Fatalf("ListBackups(other) len = %d, want 0", len(got))
+	}
+	// GetBackup round-trips; delete removes both the record and the file.
+	if _, err := m.GetBackup(b.ID); err != nil {
+		t.Fatalf("GetBackup: %v", err)
+	}
+	if err := m.DeleteBackup(b.ID); err != nil {
+		t.Fatalf("DeleteBackup: %v", err)
+	}
+	if _, err := m.GetBackup(b.ID); !errors.Is(err, ErrBackupNotFound) {
+		t.Fatalf("GetBackup after delete = %v, want ErrBackupNotFound", err)
+	}
+	if _, err := os.Stat(b.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("backup file not removed on delete")
+	}
+}
+
+func TestBackupUnknownVolume(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	if _, err := m.Backup("nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Backup(unknown) = %v, want ErrNotFound", err)
+	}
+	if err := m.DeleteBackup("nope-123"); !errors.Is(err, ErrBackupNotFound) {
+		t.Fatalf("DeleteBackup(unknown) = %v, want ErrBackupNotFound", err)
+	}
+}
+
+func TestSetBackupDirOverrides(t *testing.T) {
+	dir, alt := t.TempDir(), t.TempDir()
+	m := newMgr(t, dir)
+	m.SetBackupDir(alt)
+	if _, err := m.Create("v", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b, err := m.Backup("v")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if !strings.HasPrefix(b.Path, alt) {
+		t.Fatalf("backup path %q not under override dir %q", b.Path, alt)
 	}
 }
 
