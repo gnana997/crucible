@@ -34,6 +34,10 @@
 #      sandbox's writes — the rootfs template is clean, not reused dirty
 #   12 deleted app: a removed app serves nothing residual (published port dead,
 #      proxy → 404)
+#   13 volume-app stop/start sleep: a volume app's sleep DESTROYS its instance
+#      (unlike a snapshot sleep) — the VM, netns, and IP must all be released
+#      while asleep, and wake cold-creates a fresh instance with the volume
+#      re-attached (data intact); app rm then detaches so `volume rm` cleans up
 #
 # FINAL: after all cleanup, zero VMs and zero sandbox records remain.
 #
@@ -70,7 +74,10 @@ SMOKE_ROOT="${SMOKE_ROOT:-/tmp/crucible-smoke-leaks-$(date +%Y%m%d-%H%M%S)}"
 IMAGE_DIR="$SMOKE_ROOT/images"; WORK_BASE="$SMOKE_ROOT/run"
 LOG_DIR="$SMOKE_ROOT/logs"; APP_DB="$SMOKE_ROOT/apps.db"
 DAEMON_LOG="$SMOKE_ROOT/daemon.log"
-mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR"
+# Volumes must share a filesystem with --chroot-base (they hardlink into the
+# jail), so this lives next to CHROOT_BASE, not under SMOKE_ROOT (often /tmp).
+VOLUME_DIR="${VOLUME_DIR:-$(dirname "$CHROOT_BASE")/crucible-smoke-vols}"
+mkdir -p "$IMAGE_DIR" "$WORK_BASE" "$LOG_DIR" "$VOLUME_DIR"
 exec > >(tee -a "$SMOKE_ROOT/session.log") 2>&1
 
 echo "==============================================================="
@@ -137,6 +144,7 @@ start_daemon() {
     --chroot-base "$CHROOT_BASE" --kernel "$KERNEL" --rootfs "$KERNEL" \
     --work-base "$WORK_BASE" --image-dir "$IMAGE_DIR" --log-dir "$LOG_DIR" \
     --app-db "$APP_DB" --network-egress-iface "$EGRESS_IFACE" \
+    --volume-dir "$VOLUME_DIR" \
     --proxy-listen "127.0.0.1:$PROXY_PORT" --proxy-domain "$DOMAIN" \
     --internal-networking \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
@@ -149,9 +157,10 @@ start_daemon() {
   echo "daemon never healthy"; tail -30 "$DAEMON_LOG"; exit 3
 }
 cleanup() {
-  for a in web webb up sleeper resid; do cli app rm "$a" >/dev/null 2>&1 || true; done
+  for a in web webb up sleeper resid voldb; do cli app rm "$a" >/dev/null 2>&1 || true; done
   sleep 1
   [[ -n "$DAEMON_PID" ]] && kill -TERM "$DAEMON_PID" 2>/dev/null && wait "$DAEMON_PID" 2>/dev/null
+  [[ "${KEEP:-0}" == "1" ]] || rm -rf "$VOLUME_DIR"
 }
 trap cleanup EXIT
 
@@ -402,7 +411,59 @@ fi
 wait_fc 0 20 >/dev/null || true
 
 # =============================================================================
-echo "== 13 FINAL: no orphaned VMs or sandbox records after everything"
+echo "== 13 volume-app stop/start sleep leaks no VM, netns, or IP"
+FC0="$(fc_count)"
+cli app create voldb --image "$IMAGE" --pull missing --port 80 --restart always \
+  --health "http:80:/" --memory 256 --volume voldbdata:/data >/dev/null 2>&1
+if wait_phase voldb running >/dev/null && wait_fc $((FC0+1)); then
+  pass "volume app booted (1 VM)"
+  IP1="$(guest_ip "$(app_inst voldb)")"
+  exec_app voldb sh -c 'echo v > /data/x && sync' >/dev/null 2>&1
+  # A volume app sleeps stop/start (quiesce → destroy): the VM AND its netns/IP
+  # must be released, not kept warm like a snapshot sleep.
+  cli app sleep voldb >/dev/null 2>&1
+  if wait_phase voldb asleep >/dev/null && wait_fc "$FC0" 20; then
+    pass "stop/start sleep freed the VM + its netns/IP (0 extra VMs while asleep)"
+  else
+    fail "volume-app sleep leaked a VM/netns: phase=$(phase voldb) fc=$(fc_count) want $FC0"
+  fi
+  # Wake → cold-create a FRESH instance (new IP), volume re-attached.
+  cli app wake voldb >/dev/null 2>&1
+  if wait_phase voldb running >/dev/null && wait_fc $((FC0+1)) 30; then
+    IP2="$(guest_ip "$(app_inst voldb)")"
+    DATA="$(exec_app voldb cat /data/x 2>/dev/null | tr -d '\r\n')"
+    [[ "$DATA" == "v" ]] \
+      && pass "woke to a fresh instance, volume re-attached, data intact (IP $IP1 → $IP2)" \
+      || fail "wake lost volume data: got '$DATA' want 'v'"
+  else
+    fail "wake did not restore exactly one VM: fc=$(fc_count) want $((FC0+1))"
+  fi
+  cli app rm voldb >/dev/null 2>&1; wait_fc "$FC0" 20 >/dev/null || true
+  [[ "$(fc_count)" -eq "$FC0" ]] && pass "app rm left no VM" || fail "app rm leaked a VM: fc=$(fc_count)"
+  # The single-writer guard is released inside Delete *after* the VMM shuts
+  # down, so wait_fc (VM gone) can win the race before the guard drops; retry
+  # the rm briefly rather than flaking on ErrInUse.
+  # `volume rm` prints the name to stdout on success, so key off the exit code,
+  # not captured output. Retry briefly: the single-writer guard is released
+  # inside Delete *after* the VMM shuts down, so wait_fc (VM gone) can win the
+  # race before the guard drops — retry rather than flaking on ErrInUse.
+  rmok=0; rmerr=""
+  for _ in $(seq 1 15); do
+    if rmerr="$(cli volume rm voldbdata 2>&1 >/dev/null)"; then rmok=1; break; fi
+    sleep 0.5
+  done
+  if [[ "$rmok" -eq 1 && ! -f "$VOLUME_DIR/voldbdata.img" ]]; then
+    pass "volume detached on app rm; volume rm removed the backing file"
+  elif [[ "$rmok" -ne 1 ]]; then
+    fail "volume rm refused after app rm: ${rmerr:-unknown}"
+  else
+    fail "volume rm succeeded but backing file remains: $VOLUME_DIR/voldbdata.img"
+  fi
+else
+  fail "volume app never reached running (fc=$(fc_count) want $((FC0+1))): $(cli app get voldb 2>/dev/null | head -c 300)"
+fi
+
+echo "== 14 FINAL: no orphaned VMs or sandbox records after everything"
 FC="$(fc_count)"; SBX_N="$(sbx_total)"
 if [[ "$FC" -eq 0 && "$SBX_N" -eq 0 ]]; then
   pass "clean exit: 0 firecracker VMs, 0 sandbox records"

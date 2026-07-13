@@ -127,7 +127,7 @@ Close the sharp edges the scale-out and app→app work surfaced: no leaked VMs, 
 - [x] **Agent-fresh image cache** — converted OCI images are keyed by the injected agent's digest, so a daemon upgrade re-converts instead of booting a stale baked agent (the cause of `wake` failing on an image an older daemon cached).
 - [x] **Publish coexists with app→app** — the `<app>.internal` VIP and a published host port on the same number no longer clash (`SO_REUSEPORT` + a host-port registry that preserves one-owner-per-port).
 
-### v0.5.4 — Observability *(current)*
+### v0.5.4 — Observability
 
 Make a running app legible — per-app metrics, OTLP export of metrics and logs, daemon profiling, and on-demand packet capture — while keeping the in-daemon surface small: crucible emits open standards and delegates routing to your collector.
 
@@ -136,15 +136,23 @@ Make a running app legible — per-app metrics, OTLP export of metrics and logs,
 - [x] **Daemon pprof** — `--pprof-listen` serves Go `net/http/pprof` (off by default; loopback-guarded).
 - [x] **On-demand packet capture** — `sandbox capture` / `app capture` streams host-side pcap (no in-guest tcpdump; distroless-safe), gated by a default-deny `capture` scoped op and audited; MCP `capture`/`list_images`/`delete_image` tools (24→27).
 
+### v0.6.0 — Persistent volumes *(current)*
+
+Data that outlives the sandbox. A named, fsync-honest block device you attach to a database's data directory, a browser profile, or an upload folder — surviving destroy/re-create, a hard VM kill, an app redeploy, sleep, and a daemon restart. Stateless workloads keep the snapshot/fork magic; stateful ones trade it for single-writer correctness ([volumes.md](volumes.md)).
+
+- [x] **Volumes on sandboxes** — `run --volume NAME:/path` attaches a durable ext4 block device (created + formatted on first use, reattached by name), backed by a sparse file under the daemon's `--volume-dir` and mounted `cache_type=Writeback` so a guest `fsync` reaches the host: committed data survives a hard kill of the VM.
+- [x] **Volume lifecycle** — `volume create --size` / `ls` / `rm` (rm refused while attached), a durable bbolt record store that survives restarts, REST `/volumes`, and MCP `volume_create` / `list_volumes` / `delete_volume` (27→30 tools).
+- [x] **Volume-backed apps** — `app create --volume`; single-writer, so redeploy is destroy-then-boot (not the zero-downtime flip) and sleep is stop/start (quiesce → destroy → cold-create on wake, not a snapshot). Data survives `app update`, sleep, and daemon restarts.
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, horizontal scale-out, and observability exist (v0.4.0–v0.5.4); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, horizontal scale-out, observability, and persistent volumes exist (v0.4.0–v0.6.0); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
-- • **Volumes.** Persistent block storage decoupled from an instance, so stateful apps (postgres, sqlite) survive a redeploy — the real ceiling of today's stateless re-create model.
+- • **Serverless over TCP.** A wake-on-connection forwarder so a scaled-to-zero postgres (or any TCP service) wakes on the incoming connection, not just an HTTP request — the piece that makes a volume-backed database truly serverless.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it — Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.
 - • **Growable live disk + accounting.** `--disk` sizes the writable rootfs at create today; this adds growing a live sandbox's disk and per-sandbox disk accounting.

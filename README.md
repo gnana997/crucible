@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.5.4](https://img.shields.io/badge/status-v0.5.4-orange)
+![Status: v0.6.0](https://img.shields.io/badge/status-v0.6.0-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -32,6 +32,7 @@ Full motivation and design: [docs/VISION.md](docs/VISION.md).
 - **Scale to zero.** An app **sleeps when idle and wakes on the next request in under a second** — same IP, same identity, clock stepped to now — and **survives a daemon restart** while asleep. `app create --idle-timeout <dur> --min-scale 0` auto-sleeps an idle app to ~zero RAM through the ingress proxy; the next request wakes it **in place** (a request herd coalesces into one wake) ([docs/apps.md#scale-to-zero](docs/apps.md#scale-to-zero)).
 - **Apps talk to each other by name.** Deploy your frontend and API as separate apps; the frontend reaches the API at `http://backend.internal/`, routed through the ingress proxy — **default-deny** (`app create web --can-call backend`), and a scaled-to-zero callee **wakes on the internal call**. Through the proxy VIP, not a guest-to-guest mesh, so per-sandbox isolation stays intact ([docs/apps.md#app-to-app-networking](docs/apps.md#app-to-app-networking)).
 - **Scale out — k8s-style, but the VM tradeoffs invert.** `app create --min-scale N` runs N replicas behind the proxy, **P2C-balanced**; `--max-scale M` autoscales on request concurrency (fast up, slow down). Each replica is **forked warm from a snapshot in milliseconds** — not cold-booted — so scale-up is cheap where containers repay a cold start every time ([docs/apps.md#horizontal-scale-out](docs/apps.md#horizontal-scale-out)).
+- **Persistent volumes.** Attach a durable, fsync-honest block device to any sandbox or app (`--volume NAME:/path`): data survives destroy/re-create, a hard VM kill, an app redeploy, sleep, and a daemon restart. A volume-backed app (postgres, sqlite) is single-writer — it redeploys destroy-then-boot and sleeps stop/start — so **stateless stays magic, stateful gets durable** ([docs/volumes.md](docs/volumes.md)).
 - **Private registries.** Pull authenticated images: `crucible registry login <host>` stores a per-registry credential on the daemon, so `run`, `app create`, and an app's re-pull on restart can fetch private images (Docker Hub, GHCR, GitLab, Quay, self-hosted, static GCP/ACR). Credentials live on the daemon — a durable app on a private image survives a reboot — and are never read from your local `~/.docker/config.json` ([docs/registry.md](docs/registry.md)).
 - **Clone-safety.** Each fork wakes with a fresh kernel RNG seed, a rotated `machine-id`, and its own hostname, ordered *before* the fork is reachable, so no two forks silently share UUIDs, secrets, or entropy.
 - **Default-deny networking, opt-in wider.** No egress unless you allowlist hostnames; resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. A trusted app can opt into full public egress (`--net-full-egress`) or public CIDRs (`--net-allow-cidr`) — still public-unicast only, never metadata/RFC1918. Enforced in host nftables + a DNS proxy the guest is forced through.
@@ -107,8 +108,9 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 ## Roadmap
 
-crucible is at **v0.5.4**. One highlight per release line below — the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.6.0**. One highlight per release line below — the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
+- **v0.6.x — persistent volumes.** Headline: **durable data that outlives the sandbox** — attach an fsync-honest block device to any sandbox or app (`--volume NAME:/path`) and its data survives destroy/re-create, a hard VM kill, an app redeploy, sleep, and a daemon restart. Volume-backed apps (postgres, sqlite) are single-writer — *stateless stays magic, stateful gets durable* ([docs/volumes.md](docs/volumes.md)).
 - **v0.5.x — apps as a platform.** Headline: **scale to zero** — an app *sleeps when idle and wakes on the next request in under a second* (same IP + identity, clock stepped to now), surviving a daemon restart while asleep ([docs/apps.md#scale-to-zero](docs/apps.md#scale-to-zero)). The line also adds **app→app networking**, **horizontal scale-out** (replicas warm-forked from a snapshot, autoscaled), and **observability** (per-app metrics + OTLP export + host-side packet capture).
 - **v0.4.x — durable apps you deploy.** Headline: **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart + backoff, health checks) and re-creates from spec after a restart or reboot ([docs/apps.md](docs/apps.md)). Plus reach-by-name (the **ingress proxy**), **zero-downtime `app update`**, and **private registries**.
 - **v0.3.x — the safe `docker run`.** Boot unmodified OCI images (`run` / `build`), drop code in with `crucible cp`, an interactive `crucible shell` + TUI, and the public Go SDK.

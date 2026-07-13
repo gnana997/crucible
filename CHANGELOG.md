@@ -6,6 +6,41 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.0] — 2026-07-13
+
+Persistent volumes. Data that outlives the sandbox: a named, fsync-honest block
+device you attach to a database's data directory, a browser profile, or an
+upload folder — surviving destroy/re-create, a hard VM kill, an app redeploy,
+sleep, and a daemon restart. Stateless workloads keep the snapshot/fork magic;
+stateful ones trade it for single-writer correctness.
+
+### Added
+
+- **Volumes on sandboxes.** `crucible run --volume NAME:/path` (and
+  `sandbox create --volume`) attaches a durable block device, created and
+  formatted ext4 on first use and reattached by name thereafter. Backed by a
+  sparse file under the daemon's new `--volume-dir`, attached as a second
+  Firecracker drive with `cache_type=Writeback` so a guest `fsync` reaches the
+  host — committed data survives a hard kill of the VM.
+- **Volume lifecycle.** `crucible volume create <name> [--size 5G]` / `ls` / `rm`
+  (rm refused while attached); a durable bbolt record store that survives daemon
+  restarts; REST `/volumes` (`POST`/`GET`/`DELETE`); and MCP tools
+  `volume_create` / `list_volumes` / `delete_volume` (**30 MCP tools** total).
+- **Volume-backed apps.** `crucible app create --volume NAME:/path` gives a
+  durable app a volume. Being single-writer, a volume app redeploys via
+  **destroy-then-boot** (not the zero-downtime flip), sleeps via **stop/start**
+  (quiesce → destroy → cold-create on wake, not a snapshot), and cannot scale
+  out. Its data survives `app update`, sleep, and daemon restarts.
+- **Daemon flags** `--volume-dir` (enables volumes; must share a filesystem with
+  `--chroot-base`) and `--volume-default-size` (default 2 GiB).
+- Docs: [volumes.md](docs/volumes.md). Acceptance: `scripts/smoke_volumes.sh`.
+
+### Notes
+
+- A volume app without `--port` cannot idle-sleep yet (wake-on-connection over
+  TCP is a later release); it runs always-on. Volume-app redeploy and wake are
+  **not** zero-downtime — an inherent cost of single-writer storage.
+
 ## [0.5.4] — 2026-07-13
 
 Observability. A running app is now legible — per-app metrics, OTLP export of

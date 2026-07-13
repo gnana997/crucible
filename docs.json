@@ -74,7 +74,8 @@
           "pages": [
             "apps",
             "proxy",
-            "registry"
+            "registry",
+            "volumes"
           ]
         },
         {
