@@ -95,31 +95,24 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 | | ext4 (common default) | btrfs / XFS (reflink) |
 |---|---|---|
-| Fork (warm → child) | ~690 ms | **~207 ms** |
-| Fork throughput (64-way) | 3.7/s | **45/s** |
-| 128 forks, host RAM | 4.9 GB | **1.2 GB** (vs 64 GB naïve copy) |
-| Exec roundtrip | ~3 ms | ~3 ms |
+| Fork (warm → child), p50 | ~695 ms | **~210 ms** |
+| Fork throughput (64-way) | 3.7/s | **27/s** |
+| **Proxy wake (request → served), p50** | 248 ms | **157 ms** |
+| 64 forks, host RAM | 1.1 GiB | **~0** (pages shared, vs 32 GiB naïve) |
+| Exec roundtrip | ~4 ms | ~3 ms |
 
-Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
+**Fork is ~2× faster than a cold create on ext4, ~5× on reflink** — pay the ~1 s boot once, then branch cheaply. A slept app **wakes in ~157 ms** (~7× faster than a cold create, and barely storage-dependent), and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
 
 > **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 27 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 
 ## Roadmap
 
-- **v0.5.4** (current): **observability** — per-app metrics on `/metrics` (RPS, latency, replicas, `app_asleep`) + a reference Grafana dashboard; **OTLP export** of metrics and logs via one `--otlp-endpoint` flag (an OpenTelemetry Prometheus bridge, so `/metrics` is unchanged); daemon **pprof** (`--pprof-listen`); and **on-demand packet capture** (`app capture` → host-side pcap, no in-guest tcpdump, gated by a default-deny `capture` op). ([CHANGELOG](CHANGELOG.md#054--2026-07-13)).
-- **v0.5.3**: **reliability & isolation hardening** — no orphaned VMs across app-lifecycle edges (a rolling update's old instance is always reaped, even on delete/re-update/sleep mid-drain); a daemon upgrade no longer boots a **stale guest agent** from a cached image (conversions are keyed by the injected agent too); and a published host port now **coexists** with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`). ([CHANGELOG](CHANGELOG.md#053--2026-07-13)).
-- **v0.5.2**: **scale out** — `app create --min-scale N` runs N replicas behind the proxy, **P2C load-balanced**; `--max-scale M --target-concurrency C` autoscales on concurrency (fast up, slow down). Each replica is **forked warm from a golden snapshot in milliseconds**, self-healed by the reconciler — k8s-style horizontal scaling where the VM properties (snapshot/restore) make scale-up cheap ([docs/apps.md#horizontal-scale-out](docs/apps.md#horizontal-scale-out)).
-- **v0.5.1**: **app→app networking** — deploy web + backend as separate apps and let them talk: `web` reaches `http://backend.internal/` through the ingress proxy, **default-deny** (`app create web --can-call backend`), and a scaled-to-zero backend **wakes on the internal call**. Through the proxy VIP (not a guest-to-guest mesh), so per-sandbox isolation holds. Experimental, off by default (`--internal-networking`) ([docs/apps.md](docs/apps.md)).
-- **v0.5.0**: **scale to zero** — an app **sleeps when idle and wakes on the next request in under a second**. `crucible app sleep`/`app wake` snapshot a running app and stop its VMM to free RAM+CPU, then restore it **in place** (same IP, same identity, clock stepped to now); `app create --idle-timeout <dur> --min-scale 0` does it automatically — the ingress proxy sleeps an idle app and the next request wakes it, buffered until it's ready (a request herd coalesces into one wake). A slept app **survives a daemon restart** (durable snapshot, re-adopted on start) ([docs/apps.md](docs/apps.md)).
-- **v0.4.4**: **private registries** — `crucible registry login <host>` stores a per-registry credential on the daemon so `run`, `app create`, and an app's re-pull on restart can fetch private images (Docker Hub, GHCR, GitLab, Quay, self-hosted, static GCP/ACR); plus a one-shot `run --registry-auth` for CI. Never reads your `~/.docker/config.json` ([docs/registry.md](docs/registry.md)).
-- **v0.4.3**: **operate & safe-update** — `crucible app update` rolls a new instance out **zero-downtime** (boot → readiness gate → flip the ingress route → drain the old one; a failed update keeps the old instance serving), and you drive a running app **by name** — `app exec`/`logs`/`shell` plus MCP `app_exec`/`app_logs` — resolved to the live instance per call, so it survives a self-heal or redeploy ([docs/apps.md](docs/apps.md)).
-- **v0.4.2**: **reach an app by name** — a daemon-owned ingress proxy routes inbound traffic to an app's *current* instance by name (`web.<domain>`, Host-header L7 or SNI passthrough L4), the route following the app across self-heal and redeploy; plus in-place `crucible app update` and health seeded from an image's Docker `HEALTHCHECK` ([docs/proxy.md](docs/proxy.md)).
-- **v0.4.1**: **apps you can actually deploy** — `-e/--env` config, exec (`--health-cmd`) health checks, `-P` publish-all from the image's `EXPOSE`, and real egress for trusted workloads (`--net-full-egress` + `--net-allow-cidr`, public-hosts-only).
-- **v0.4.0**: **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart + backoff + crash-loop guard, http/tcp health) and **re-creates from spec after a daemon restart or reboot** ([docs/apps.md](docs/apps.md)); plus fork with `-p` port publish. Sandboxes stay the ephemeral primitive.
-- **v0.3.x**: the safe `docker run` for untrusted/AI code — OCI image boot + `crucible build`, `crucible cp` + MCP `write_files`/`read_file`, an interactive `crucible shell`, a TUI logs view, `--disk` sizing, top-level `stop`/`rm`, durable logs, and the public Go SDK.
-- **Next (planned):** TLS termination at the proxy, native cloud-registry auth, a PTY for full-terminal sessions, volumes for stateful apps, and an observability/OpenTelemetry pipeline (v0.5.x).
+crucible is at **v0.5.4**. One highlight per release line below — the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
-Full shipped-vs-planned capability matrix: [docs/ROADMAP.md](docs/ROADMAP.md).
+- **v0.5.x — apps as a platform.** Headline: **scale to zero** — an app *sleeps when idle and wakes on the next request in under a second* (same IP + identity, clock stepped to now), surviving a daemon restart while asleep ([docs/apps.md#scale-to-zero](docs/apps.md#scale-to-zero)). The line also adds **app→app networking**, **horizontal scale-out** (replicas warm-forked from a snapshot, autoscaled), and **observability** (per-app metrics + OTLP export + host-side packet capture).
+- **v0.4.x — durable apps you deploy.** Headline: **durable, self-healing apps** — `crucible app create` promotes a workload to a named app the daemon keeps alive (restart + backoff, health checks) and re-creates from spec after a restart or reboot ([docs/apps.md](docs/apps.md)). Plus reach-by-name (the **ingress proxy**), **zero-downtime `app update`**, and **private registries**.
+- **v0.3.x — the safe `docker run`.** Boot unmodified OCI images (`run` / `build`), drop code in with `crucible cp`, an interactive `crucible shell` + TUI, and the public Go SDK.
+- **Next (planned):** TLS termination at the ingress proxy, native cloud-registry auth, and volumes for stateful apps.
 
 ## Security
 

@@ -39,8 +39,9 @@ rotation fails, the fork fails rather than coming up with duplicated entropy.
 Forks resume with **lazy memory** (`userfaultfd`): a child pages in only the
 working set it actually touches, so its cost is O(pages used), not O(guest RAM),
 and the host never copies the whole memory image per fork. On the reference box a
-fork is **~9× faster than a cold boot**, and hundreds of forks run concurrently,
-bounded by RAM rather than by copying — see [benchmarks.md](benchmarks.md).
+fork is **~5× faster than a cold create** on reflink (~2× even on ext4), and
+hundreds of forks run concurrently, bounded by RAM rather than by copying — see
+[benchmarks.md](benchmarks.md).
 
 ## Do it yourself
 

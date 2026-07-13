@@ -33,7 +33,7 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 | CPU | AMD Ryzen AI 9 HX 370 (24 threads) |
 | Kernel | 7.0 · Free RAM ~12–15 GiB (other workloads paused) |
 | Sandbox | 1 vCPU / 512 MiB, default (1 GiB) rootfs, no network |
-| Daemon | v0.5.0 under jailer, `CRUCIBLE_MAX_FORK=128`+ |
+| Daemon | measured on v0.5.0 under jailer, `CRUCIBLE_MAX_FORK=128`+ (the fork / snapshot / wake hot paths these numbers cover are unchanged through v0.5.4) |
 | Samples | 30 per latency op (3 warmup discarded) |
 | FS | ext4 (host root) and btrfs (60 GiB loopback) — the daemon's `--work-base`/`--chroot-base` on each; reproduce both with `scripts/bench_reflink.sh` (`FS=btrfs`/`FS=ext4`) |
 
