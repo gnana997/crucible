@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: What shipped in each crucible release.
-date: "2026-07-11"
+date: "2026-07-14"
 ---
 
 # Changelog
@@ -9,6 +9,48 @@ date: "2026-07-11"
 Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
+
+<Update label="v0.6.2" title="Instant serverless-stateful">
+
+A volume-backed database now snapshot-sleeps and **wakes in place**, no cold boot.
+
+- **Snapshot wake for volume apps** — a scale-to-zero postgres/redis on a volume sleeps by snapshotting its instance (RAM freed, the single-writer guard held, backing file host-fsync'd) and wakes with the volume re-attached: same instance + IP, **~170 ms** (reflink), no cold boot and no WAL recovery — the DB process is already running in the restored memory. A wake after a daemon restart forks a fresh instance from the durable snapshot. See [benchmarks](benchmarks).
+- **Durable while asleep** — the volume backing file is host-fsync'd before the VMM stops, so a host crash while a volume app is asleep can't lose committed rows.
+- **Wake never fails** — a restore failure falls back to a stop/start cold-create, so a wake always succeeds (just not instant that once).
+
+</Update>
+
+<Update label="v0.6.1" title="Wake-on-TCP: serverless for any TCP service">
+
+Scale-to-zero for **any** self-hosted TCP service, not just HTTP.
+
+- **Wake-on-TCP** — a scale-to-zero app that publishes a port (`-p HOST:GUEST --min-scale 0 --idle-timeout <dur>`) is fronted by an L4 forwarder that **wakes it on the first TCP connection** and sleeps it on inactivity, with no proxy in the path, protocol-agnostic. Any database, cache, or broker (postgres, mysql, redis, mongo, your own daemon) becomes a self-hosted serverless service. See [serverless](serverless).
+- **Idle-connection reaping** (`--connection-idle-timeout`) — closes a byte-idle pooled connection so a connection-pooled client still drains to zero and sleeps; the client's pool reconnects on its next query. This is what makes serverless work for pooled databases, not just connect-per-request clients.
+- **Connection-scoped mode** (`--keep-connections`) — reaping off for pub/sub, `LISTEN/NOTIFY`, and streaming: awake while any client is subscribed, asleep when the last one disconnects.
+- **Guest `/dev/fd`** — the guest init now provides `/dev/fd` + `/dev/std{in,out,err}`, so bash process-substitution entrypoints (like the postgres image's password init, `initdb --pwfile=<(…)`) work.
+
+</Update>
+
+<Update label="v0.6.0" title="Persistent volumes">
+
+Data that outlives the sandbox — durable, fsync-honest block storage for stateful workloads.
+
+- **Volumes** — `crucible run --volume NAME:/path` (and `sandbox`/`app create --volume`) attaches a named block device, formatted ext4 on first use and reattached by name thereafter. Backed by a sparse file under the daemon's new `--volume-dir`, attached with `cache_type=Writeback` so a guest `fsync` reaches the host — committed data survives a hard kill, destroy/re-create, redeploy, sleep, and a daemon restart.
+- **Volume lifecycle** — `volume create [--size 5G]` / `ls` / `rm` (refused while attached), a durable bbolt record store, REST `/volumes`, and MCP `volume_create` / `list_volumes` / `delete_volume` (**30 MCP tools**).
+- **Volume-backed apps** — single-writer, so a volume app redeploys destroy-then-boot and (at first) slept via stop/start; snapshot wake for volume apps landed in v0.6.2.
+
+</Update>
+
+<Update label="v0.5.4" title="Observability">
+
+A running app is now legible — open standards out, routing delegated to your collector.
+
+- **Per-app metrics** — request rate, latency, and status class per app on `/metrics`, plus lifecycle gauges (`app_replicas`, `app_up`, `app_asleep`, `app_last_wake_latency_ms`, …), with a reference **Grafana dashboard**.
+- **OTLP export** — one `--otlp-endpoint` flag pushes the same series over OTLP (via an OpenTelemetry Prometheus **bridge**, so `/metrics` is unchanged) and streams app logs as OTLP records, honoring the standard `OTEL_*` env. Point it at any collector (Grafana/Tempo/Loki, SigNoz, Datadog, Honeycomb).
+- **Profiling + packet capture** — `--pprof-listen` serves Go pprof for the daemon; `sandbox capture` / `app capture` streams a **host-side pcap** (no in-guest tcpdump, so distroless/scratch works), gated by a default-deny `capture` scoped-token op.
+- MCP tools **24 → 27**.
+
+</Update>
 
 <Update label="v0.5.3" title="Reliability & isolation hardening">
 
