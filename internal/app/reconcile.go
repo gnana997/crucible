@@ -555,12 +555,12 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 	}
 
 	var snapID string
-	// F3: all apps — volume-backed included — snapshot-sleep. The instance keeps
+	// all apps — volume-backed included — snapshot-sleep. The instance keeps
 	// its identity + netns/IP, its single-writer volume guard stays HELD (the
 	// snapshot path never Destroys), and its volume backing file is host-fsync'd
 	// before the VMM stops, so a slept volume app wakes in place (~125 ms) with
-	// data durable. (v0.6.1 stop/start-destroyed a volume app; F3 replaces it.
-	// A restore-failure fallback to stop/start is F3-M4.)
+	// data durable. (v0.6.1 stop/start-destroyed a volume app; v0.6.2 replaces it.
+	// A restore-failure fallback to stop/start is handled below.)
 	var serr error
 	snapID, serr = m.inst.Sleep(ctx, instanceID)
 	if serr != nil {
@@ -625,12 +625,12 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	switch {
 	case instanceID != "" && m.inst.Exists(instanceID):
 		// Same daemon lifetime (volume-backed or not): the slept instance is still
-		// live — restore in place. F3 makes this a ~125 ms snapshot-wake for volume
+		// live — restore in place, a ~170 ms snapshot-wake for volume
 		// apps too: the instance survived sleep with its single-writer volume guard
 		// still held, so WakeInPlace re-attaches the same volume.
 		werr = m.inst.Wake(ctx, instanceID)
 	case len(rec.Spec.Volumes) > 0 && rec.AsleepSnapshotID != "" && m.inst.SnapshotExists(rec.AsleepSnapshotID):
-		// F3-M3: volume app after a daemon restart — fast-wake from the durable
+		// volume app after a daemon restart — fast-wake from the durable
 		// snapshot, re-attaching the volume into a fresh instance (~125 ms, no cold
 		// boot / recovery). The restored guest resumes with the volume already
 		// mounted; WakeFromSnapshot re-acquires the single-writer guard the restart
@@ -649,7 +649,7 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 		werr = fmt.Errorf("no live instance and no durable snapshot to wake from")
 	}
 
-	// F3-M4: a volume app's snapshot-wake (in-place or from-snapshot) must never
+	// a volume app's snapshot-wake (in-place or from-snapshot) must never
 	// leave it stuck asleep — a persistently-bad snapshot would otherwise loop.
 	// On any restore failure, fall back to the v0.6.1 stop/start cold-create: tear
 	// down the slept instance if it's still around (releasing its single-writer
@@ -1392,7 +1392,7 @@ func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, 
 // can't be bound by two instances simultaneously.
 func canRoll(rec Record) bool {
 	// A volume app is single-writer: the flip's incoming instance and the
-	// current one would both mount one ext4 device = corruption (and the V-M1
+	// current one would both mount one ext4 device = corruption (and the volume
 	// guard would refuse the incoming attach anyway). So a volume app — even
 	// proxy-fronted — redeploys via destroy-then-boot (a brief blip), never the
 	// zero-downtime flip.

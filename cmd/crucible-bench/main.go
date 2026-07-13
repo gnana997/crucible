@@ -49,12 +49,13 @@ func main() {
 		fanoutS  = flag.String("fanout", "1,4,16,64,128", "fork fan-out sizes")
 		memForks = flag.Int("mem-forks", 64, "forks for the memory-efficiency test")
 		density  = flag.Int("density", 0, "density target (0 = skip); forks until this many live or a failure")
-		phases   = flag.String("phases", "latency,fanout,memory,density", "phases to run (add 'proxywake' for the end-to-end wake number)")
+		phases   = flag.String("phases", "latency,fanout,memory,density", "phases to run (add 'proxywake' for the end-to-end wake number, 'volumewake' for the volume-app snapshot-wake)")
 		jsonOut  = flag.String("json", "", "write machine-readable results to this path")
 
 		proxyAddr   = flag.String("proxy-addr", "", "ingress proxy address for the proxywake phase, e.g. 127.0.0.1:7879")
 		proxyDomain = flag.String("proxy-domain", "apps.local", "ingress proxy domain suffix")
 		wakeImage   = flag.String("wake-image", "nginx:alpine", "OCI image for the proxywake phase app (must serve HTTP on :80)")
+		volWakeImg  = flag.String("volwake-image", "redis:alpine", "OCI image for the volumewake phase app (long-running; a volume is mounted at /data)")
 		reflinkPath = flag.String("reflink-path", "", "filesystem path to probe for reflink support (default: OS temp dir; point at the daemon's --work-base for an accurate stamp)")
 	)
 	flag.Parse()
@@ -115,6 +116,9 @@ func main() {
 		} else {
 			b.proxyWake(ctx, *proxyAddr, *proxyDomain, *wakeImage)
 		}
+	}
+	if run("volumewake") {
+		b.volumeWake(ctx, *volWakeImg)
 	}
 
 	if *jsonOut != "" {

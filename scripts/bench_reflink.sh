@@ -93,8 +93,8 @@ else
 fi
 echo "   $MOUNT is $(findmnt -no FSTYPE "$MOUNT" 2>/dev/null || stat -f -c %T "$MOUNT") ($(df -h --output=avail "$MOUNT" | tail -1 | tr -d ' ') free)"
 
-WORK="$MOUNT/run"; CHROOT="$MOUNT/jailer"; IMAGES="$MOUNT/images"; LOGS="$MOUNT/logs"
-mkdir -p "$WORK" "$CHROOT" "$IMAGES" "$LOGS"
+WORK="$MOUNT/run"; CHROOT="$MOUNT/jailer"; IMAGES="$MOUNT/images"; LOGS="$MOUNT/logs"; VOLUMES="$MOUNT/volumes"
+mkdir -p "$WORK" "$CHROOT" "$IMAGES" "$LOGS" "$VOLUMES"
 cp "$ROOTFS" "$MOUNT/rootfs.ext4"   # staged on the target FS so clones behave per-FS
 DAEMON_LOG="$MOUNT/daemon.log"
 
@@ -115,6 +115,7 @@ CRUCIBLE_MAX_FORK="${CRUCIBLE_MAX_FORK:-$((DENSITY > 0 ? DENSITY + 16 : 144))}" 
   --firecracker-bin "$FIRECRACKER_BIN" --jailer-bin "$JAILER_BIN" \
   --chroot-base "$CHROOT" --kernel "$KERNEL" --rootfs "$MOUNT/rootfs.ext4" \
   --work-base "$WORK" --image-dir "$IMAGES" --log-dir "$LOGS" \
+  --volume-dir "$VOLUMES" \
   --app-db "$MOUNT/apps.db" --network-egress-iface "$EGRESS_IFACE" \
   --proxy-listen "127.0.0.1:$PROXY_PORT" --proxy-domain "$DOMAIN" \
   --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &

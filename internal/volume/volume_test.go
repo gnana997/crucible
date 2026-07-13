@@ -175,7 +175,7 @@ func TestRecordsPersistAcrossReopen(t *testing.T) {
 
 func TestBackfillAdoptsBareImg(t *testing.T) {
 	dir := t.TempDir()
-	// A bare backing file with no record (simulates a V-M1 volume).
+	// A bare backing file with no record (simulates a pre-store volume).
 	if err := os.WriteFile(filepath.Join(dir, "legacy.img"), make([]byte, 4096), 0o600); err != nil {
 		t.Fatalf("write bare img: %v", err)
 	}

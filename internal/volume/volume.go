@@ -4,9 +4,9 @@
 // it attaches to; an in-memory single-writer guard prevents two live sandboxes
 // from mounting the same volume (ext4 corrupts under two writers).
 //
-// V-M1 shipped attach/mount/format + the guard. V-M2 adds a durable bbolt
+// v0.6.0 shipped attach/mount/format + the guard, plus a durable bbolt
 // record store (survives restart), explicit lifecycle (Create/List/Remove),
-// and a host-pin. Fast snapshot-wake with a volume is F3-full (v0.6.2).
+// and a host-pin. Fast snapshot-wake with a volume shipped in v0.6.2.
 package volume
 
 import (
@@ -62,7 +62,7 @@ type Manager struct {
 
 // NewManager opens (creating if absent) the volume directory + record store,
 // preflights mkfs.ext4, and back-fills records for any pre-existing backing
-// files (V-M1 volumes). uid/gid are the user firecracker runs as (jailer
+// files (volumes created before the record store). uid/gid are the user firecracker runs as (jailer
 // uid/gid under jailer; the daemon's own for direct-exec) so backing files are
 // openable. hostID is the daemon's host identity (host-pin). defaultSize <= 0
 // falls back to DefaultSize.
@@ -103,7 +103,7 @@ func NewManager(dir string, defaultSize int64, hostID string, uid, gid int) (*Ma
 func (m *Manager) Close() error { return m.st.close() }
 
 // backfill inserts a record for any *.img backing file that has none — so
-// volumes created before the store existed (V-M1) still appear in List.
+// volumes created before the store existed still appear in List.
 func (m *Manager) backfill() error {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {

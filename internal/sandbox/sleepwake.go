@@ -39,7 +39,7 @@ type sleepState struct {
 	netns      string
 	vcpus      int
 	memMiB     int
-	volumes    []runner.VolumeAttach // F3: re-staged into the wake chroot
+	volumes    []runner.VolumeAttach // re-staged into the wake chroot
 }
 
 // SleepInPlace snapshots a running sandbox, then stops its VMM to free RAM while
@@ -92,7 +92,7 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 		_ = os.RemoveAll(snapDir)
 		return "", fmt.Errorf("sleep: pause %s: %w", id, err)
 	}
-	// F3: fsync each attached volume's backing file so committed data is durable
+	// fsync each attached volume's backing file so committed data is durable
 	// on disk before the VMM stops. Firecracker does not flush drive backing
 	// files on snapshot, and cache_type=Writeback may leave writes in the host
 	// page cache — so a host crash while asleep could otherwise lose rows. The
@@ -220,7 +220,7 @@ func (m *Manager) WakeInPlace(ctx context.Context, id string) error {
 		LazyMem:    true,
 		NetNS:      st.netns,
 		Quotas:     m.quotasFor(st.vcpus, st.memMiB),
-		Volumes:    st.volumes, // F3: re-attach the volume drive(s) on wake
+		Volumes:    st.volumes, // re-attach the volume drive(s) on wake
 	}
 	restoreStart := time.Now()
 	handle, err := m.cfg.Runner.Restore(ctx, spec)

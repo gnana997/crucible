@@ -23,6 +23,7 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 | Snapshot, p50 | 644 ms | **466 ms** |
 | 64 forks, host RAM | 1.0 GiB | **813 MiB** |
 | Proxy wake, p50 | 252 ms | **125 ms** — 2.0× |
+| Volume wake, p50 | 240 ms | **178 ms** — 1.3× |
 
 **If you fork a lot, put `--work-base` on btrfs or XFS.** The rest of this page reports both, so you can see the floor (ext4) and the ceiling (reflink). Note that **wake barely cares about the filesystem** (2.0×) — it restores against the live rootfs with lazy memory and copies nothing on the timed path — while **fork/fan-out care enormously** (up to ~18×), because each ext4 child byte-copies a full ~1 GiB rootfs. Marginal *RAM* per fork is similar on both filesystems (~12–16 MiB) — guest pages are shared via `userfaultfd` regardless of the disk; reflink's win is wall-time and I/O, not memory.
 
@@ -33,7 +34,7 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 | CPU | AMD Ryzen AI 9 HX 370 (24 threads) |
 | Kernel | 7.0 · Free RAM ~11.6 GiB (btrfs) / ~19 GiB (ext4) at start, other workloads paused |
 | Sandbox | 1 vCPU / 512 MiB, default (1 GiB) rootfs, no network |
-| Daemon | measured on **v0.5.4** under jailer, `CRUCIBLE_MAX_FORK` auto-sized to the density target |
+| Daemon | measured on **v0.5.4** under jailer, `CRUCIBLE_MAX_FORK` auto-sized to the density target; the **volume wake** row/section re-measured on **v0.6.2**, same host, `redis:alpine` on a volume |
 | Samples | 30 per latency op (3 warmup discarded) |
 | FS | ext4 (host root) and btrfs (60 GiB loopback) — the daemon's `--work-base`/`--chroot-base` on each; reproduce both with `scripts/bench_reflink.sh` (`FS=btrfs`/`FS=ext4`) |
 
@@ -46,6 +47,7 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 | Snapshot (running → on disk) | 644 ms | **466 ms** | 2.16 s / 2.40 s |
 | Fork (warm snapshot → child) | 530 ms | **125 ms** | 143 / 157 ms |
 | **Proxy wake (request → served)** | **252 ms** | **125 ms** | 153 / 156 ms |
+| **Volume wake (asleep → running)** | **240 ms** | **178 ms** | 219 / 257 ms |
 
 **Fork is ~2.6× faster than a cold create even on ext4, and ~8× faster on reflink** — pay the ~1 s boot once, then branch cheaply. **Wake beats a cold create ~8×** (125 ms vs 1.03 s on btrfs) and is nearly storage-independent (see below). Exec overhead is ~2–3 ms (a vsock roundtrip), essentially filesystem-independent. Snapshot's median is ~0.5 s with occasional multi-second tails from writing the 512 MiB memory image through writeback.
 
@@ -62,6 +64,19 @@ The v0.5.0 headline: a slept app costs ~zero RAM and wakes on the next request. 
 **Wake is ~8× faster than a cold create** (125 ms vs 1.03 s, btrfs) and, unlike fork, only mildly depends on the filesystem (2.0×). That's because wake restores in place against the *live* rootfs with lazy (`userfaultfd`) memory — no rootfs clone, no memory copy on the timed path, cost O(working set) not O(guest RAM). The ext4 penalty is only the page-cache pressure left by the untimed sleep-snapshot. Either way it's comfortably sub-second.
 
 > There is also a `wake` phase (`--phases wake`) that times the bare *sandbox-level* restore-in-place mechanism; it needs a rootfs whose guest agent has `/wake` (OCI images used by `proxywake` always do). Every JSON result carries an `env` block — host, CPU, kernel, memory, and a **live FICLONE reflink probe** of `--reflink-path` — so nobody compares an ext4 number against a btrfs one.
+
+### Stateful (volume) wake — v0.6.2
+
+Before v0.6.2 a volume-backed app woke by **cold boot**: destroy the instance, re-create it, boot the service, run recovery — seconds for a database. v0.6.2 makes a volume app snapshot-sleep and restore in place exactly like a stateless one — the running process comes back from the snapshot with its volume re-attached, nothing copied on the timed path. `redis:alpine` on a volume, `volumewake` phase (`app sleep → app wake → running`):
+
+| Volume wake (asleep → running) | ext4 | **btrfs** |
+|---|---|---|
+| p50 | 240 ms | **178 ms** |
+| p90 | 262 ms | 219 ms |
+| p99 | 272 ms | 257 ms |
+| daemon restore, p50 (`last_wake_latency_ms`) | 237 ms | **170 ms** |
+
+The volume adds no meaningful overhead over a stateless wake — ~170 ms pure restore on reflink, the same ballpark as the 125 ms non-volume proxy wake — and, like every wake, it barely depends on the filesystem (1.3×), because the restore reads the *live* rootfs + volume drive with lazy (`userfaultfd`) memory instead of copying them. So a self-hosted serverless **postgres** or **redis** comes back in well under a quarter-second on the first connection after it slept, with **no cold boot and no WAL recovery**: the database process is already running in the restored memory, attached to its volume.
 
 ## Fork fan-out
 
@@ -109,4 +124,6 @@ sudo FIRECRACKER_BIN=… JAILER_BIN=… KERNEL=… ROOTFS=… \
 sudo … FS=ext4  scripts/bench_reflink.sh      # ext4 numbers   → bench-ext4-*.json
 ```
 
-Knobs: `DENSITY`, `SAMPLES`, `PHASES`, `IMG_SIZE`, `KEEP=1` (keep the loopback for repeat runs). To drive an existing daemon by hand instead, point `crucible-bench --addr … --reflink-path <daemon work-base>` and add `--phases proxywake --proxy-addr … --proxy-domain …` for the wake number. `crucible-bench --help` lists every knob.
+Knobs: `DENSITY`, `SAMPLES`, `PHASES`, `IMG_SIZE`, `KEEP=1` (keep the loopback for repeat runs). Add `volumewake` to `PHASES` for the volume-app snapshot-wake number (the daemon runs with a `--volume-dir`). To drive an existing daemon by hand instead, point `crucible-bench --addr … --reflink-path <daemon work-base>` and add `--phases proxywake --proxy-addr … --proxy-domain …` for the wake number. `crucible-bench --help` lists every knob.
+
+The end-to-end serverless story — a **postgres** on a volume, snapshot-wake vs cold-boot, timed from the wake trigger to a query answering — is a separate one-command run: `sudo … scripts/bench_serverless.sh` (boots its own daemon, needs `psql` on the host).

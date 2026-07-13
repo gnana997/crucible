@@ -135,7 +135,7 @@ func TestValidateSpecScaleToZeroWakeTrigger(t *testing.T) {
 	}
 }
 
-// TestVolumeAppWakeFallsBackToColdCreate (F3-M4): when a volume app's
+// TestVolumeAppWakeFallsBackToColdCreate: when a volume app's
 // snapshot-wake fails (a bad restore), the wake must not leave it stuck asleep —
 // it falls back to tearing down the slept instance and cold-creating a fresh one.
 func TestVolumeAppWakeFallsBackToColdCreate(t *testing.T) {
@@ -225,7 +225,7 @@ func TestAppSleepWakeLifecycle(t *testing.T) {
 	}
 }
 
-// TestVolumeAppSnapshotSleepsAndWakesInPlace (F3): a volume-backed app
+// TestVolumeAppSnapshotSleepsAndWakesInPlace: a volume-backed app
 // snapshot-sleeps — NOT stop/start — so its instance keeps its identity + volume
 // guard, and a same-lifetime wake restores it in place rather than cold-creating.
 func TestVolumeAppSnapshotSleepsAndWakesInPlace(t *testing.T) {
@@ -243,7 +243,7 @@ func TestVolumeAppSnapshotSleepsAndWakesInPlace(t *testing.T) {
 	}
 	inst := got.Status.InstanceID
 
-	// F3: a volume app snapshot-sleeps — no inst.Quiesce, no inst.Destroy (the
+	// a volume app snapshot-sleeps — no inst.Quiesce, no inst.Destroy (the
 	// instance survives, guard held); it's the same path a non-volume app takes.
 	qBefore, dBefore := len(f.quiesces), len(f.destroys)
 	if err := m.Sleep(ctx(), "db"); err != nil {
@@ -259,7 +259,7 @@ func TestVolumeAppSnapshotSleepsAndWakesInPlace(t *testing.T) {
 		t.Fatalf("phase after sleep = %q, want asleep", got.Status.Phase)
 	}
 
-	// F3: same-lifetime wake restores in place (inst.Wake) — no cold-create, same
+	// same-lifetime wake restores in place (inst.Wake) — no cold-create, same
 	// instance id (the fake's Wake only succeeds if the instance was inst.Sleep'd).
 	cBefore := f.createCount()
 	if err := m.Wake(ctx(), "db"); err != nil {

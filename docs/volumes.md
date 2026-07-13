@@ -32,9 +32,10 @@ Everything else about volumes follows from that:
   N replicas would be N writers.
 - A volume-backed app **redeploys via destroy-then-boot** (a brief blip), not the
   zero-downtime flip, because the flip runs two instances at once.
-- A volume-backed app **sleeps via stop/start** (~1 s cold wake), not the
-  ~125 ms snapshot wake, because a snapshot of a volume VM is the hard part
-  (coming in a later release).
+- A volume-backed app **snapshot-sleeps and wakes in place** (~170 ms on reflink),
+  just like a stateless app: sleep snapshots the instance and stops the VMM (RAM
+  freed, the volume host-fsync'd), wake restores it with the volume re-attached —
+  no cold boot, no DB recovery (v0.6.2).
 
 This is the honest trade: **stateless stays magic; stateful gets durable.**
 
@@ -93,7 +94,7 @@ app:
 | | Stateless app | **Volume app** |
 |---|---|---|
 | Redeploy (`app update`) | zero-downtime flip | **destroy-then-boot** (brief blip) |
-| Sleep / wake | snapshot, ~125 ms wake | **stop/start**, ~1 s cold wake |
+| Sleep / wake | snapshot, ~125 ms wake | **snapshot**, ~170 ms wake (reflink) |
 | Scale out (`--max-scale`) | yes | **no** (single writer) |
 | Idle-sleep without `--port` | n/a | **rejected** (needs the proxy to wake) |
 
@@ -129,10 +130,14 @@ durable than the disk you point it at.
 
 ## What's next
 
-- **Serverless over TCP** — a wake-on-connection forwarder so a scaled-to-zero
-  postgres (or any TCP service) wakes on the incoming connection, not just an
-  HTTP request. Then a volume app can be TCP-only *and* idle-sleeping.
-- **Instant wake** — fast snapshot-wake with a volume (fsfreeze + same-slot
-  reattach) drops the cold ~1 s wake back to ~125 ms with a warm cache.
+- **Serverless over TCP** *(shipped v0.6.1)* — a wake-on-connection forwarder wakes
+  a scaled-to-zero postgres (or any TCP service) on the incoming connection, not
+  just an HTTP request, so a volume app can be TCP-only *and* idle-sleeping. See
+  [serverless.md](serverless.md).
+- **Instant wake** *(shipped v0.6.2)* — a volume app snapshot-sleeps and wakes in
+  place in ~170 ms (reflink), no cold boot or DB recovery. See
+  [benchmarks.md](benchmarks.md).
+- **Volume backups** *(next)* — a consistent point-in-time image of a volume
+  (fsfreeze + reflink) for backup, clone, and host-migration.
 
 See the [ROADMAP](ROADMAP.md) for sequencing.

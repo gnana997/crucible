@@ -107,15 +107,18 @@ the proxy; one with neither is rejected (nothing could wake it).
 | App | Sleep mode | Wake |
 |---|---|---|
 | **Non-volume** (stateless cache, ephemeral redis) | snapshot | **~125-170 ms**: restore in place, same IP |
-| **Volume-backed** (postgres, redis with persistence) | snapshot | **~125 ms**: restore in place, same IP, volume re-attached |
+| **Volume-backed** (postgres, redis with persistence) | snapshot | **~170 ms (reflink) – ~240 ms (ext4)**: restore in place, same IP, volume re-attached |
 
 Both wake by snapshot restore, so a serverless **postgres** comes back **without a
 cold boot or WAL recovery**: the database process is already running in the
-restored memory, attached to its volume, in about 125 ms. A same-lifetime wake is
-in place (same instance and IP); a wake after a **daemon restart** restores a fresh
-instance from the durable snapshot (new IP, still no cold boot), with the volume
-re-attached and data intact. If a restore ever fails, the app falls back to a cold
-boot so a wake never fails; it just isn't instant that once.
+restored memory, attached to its volume, in about 170 ms on a reflink filesystem
+(btrfs / XFS) and ~240 ms on ext4 — the volume adds no meaningful overhead over a
+stateless wake. A same-lifetime wake is in place (same instance and IP); a wake
+after a **daemon restart** restores a fresh instance from the durable snapshot
+(new IP, still no cold boot), with the volume re-attached and data intact. If a
+restore ever fails, the app falls back to a cold boot so a wake never fails; it
+just isn't instant that once. See [benchmarks.md](benchmarks.md#stateful-volume-wake--v062)
+for the measured distribution.
 
 ## What fits and what doesn't
 
@@ -130,7 +133,7 @@ boot so a wake never fails; it just isn't instant that once.
 
 **Doesn't fit** (inherent to scale-to-zero, not a limitation we can remove):
 
-- a service that cannot tolerate the ~125 ms snapshot-restore pause on the first
+- a service that cannot tolerate the ~170 ms snapshot-restore pause on the first
   request after it has gone idle (that wake is fast, but not zero);
 - durable message delivery to a *disconnected* subscriber; a slept pub/sub app is
   not holding the connection, so fire-and-forget messages published while it is

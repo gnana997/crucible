@@ -411,7 +411,7 @@ fi
 wait_fc 0 20 >/dev/null || true
 
 # =============================================================================
-echo "== 13 volume-app snapshot sleep/wake-in-place leaks no VM (F3)"
+echo "== 13 volume-app snapshot sleep/wake-in-place leaks no VM"
 FC0="$(fc_count)"
 cli app create voldb --image "$IMAGE" --pull missing --port 80 --restart always \
   --health "http:80:/" --memory 256 --volume voldbdata:/data >/dev/null 2>&1
@@ -420,7 +420,7 @@ if wait_phase voldb running >/dev/null && wait_fc $((FC0+1)); then
   IP1="$(guest_ip "$(app_inst voldb)")"
   INST1="$(app_inst voldb)"
   exec_app voldb sh -c 'echo v > /data/x && sync' >/dev/null 2>&1
-  # F3: a volume app snapshot-sleeps — the VMM stops (RAM freed, 0 VMs) but the
+  # a volume app snapshot-sleeps — the VMM stops (RAM freed, 0 VMs) but the
   # netns/IP reservation + single-writer volume guard are KEPT for wake-in-place.
   cli app sleep voldb >/dev/null 2>&1
   if wait_phase voldb asleep >/dev/null && wait_fc "$FC0" 20; then

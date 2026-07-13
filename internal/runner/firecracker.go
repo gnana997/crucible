@@ -274,7 +274,7 @@ func (f *Firecracker) configureAndLoad(ctx context.Context, h *fcHandle, spec Re
 		return fmt.Errorf("runner: patch rootfs drive: %w", err)
 	}
 
-	// F3: re-point each volume drive to its (persistent) backing file. Unlike the
+	// re-point each volume drive to its (persistent) backing file. Unlike the
 	// jailer runner, the direct runner has no chroot, so it re-attaches by patching
 	// the absolute path the way it does for the rootfs.
 	for _, v := range spec.Volumes {

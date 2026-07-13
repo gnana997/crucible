@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smoke_volumes.sh — end-to-end check for persistent volumes (V-M1).
+# smoke_volumes.sh — end-to-end check for persistent volumes.
 #
 # Boots a real daemon under jailer with a --volume-dir, then verifies:
 #   1. A volume attaches, mounts, and data written to it survives destroying
@@ -45,7 +45,7 @@ ok()   { echo "  ✓ $*"; pass=$((pass+1)); }
 bad()  { echo "  ✗ $*"; fail=$((fail+1)); }
 
 echo "==============================================================="
-echo " crucible volumes smoke (V-M1..V-M3)"
+echo " crucible volumes smoke"
 echo "==============================================================="
 
 # ---- preflight --------------------------------------------------------------
@@ -138,29 +138,29 @@ if [[ -n "${SBX3:-}" ]]; then
 fi
 
 # ---- 06 explicit lifecycle: create --size, ls, duplicate, rm ---------------
-echo "== 06 volume create/ls/rm lifecycle (V-M2)"
+echo "== 06 volume create/ls/rm lifecycle"
 run volume create sized --size 128M >/dev/null 2>&1 && ok "volume create --size 128M" || bad "volume create --size"
 run volume ls 2>/dev/null | grep -qw sized && ok "volume ls shows 'sized'" || bad "volume ls missing 'sized'"
 if run volume create sized --size 128M >/dev/null 2>&1; then bad "duplicate create NOT refused"; else ok "duplicate create refused"; fi
 run volume rm sized >/dev/null 2>&1 && ok "volume rm (detached)" || bad "volume rm"
 
 # ---- 07 rm refused while attached, allowed after detach --------------------
-echo "== 07 volume rm refused while attached (V-M2)"
+echo "== 07 volume rm refused while attached"
 SBX5=$(run sandbox create --image "$IMAGE" --volume held:/vol)
 if run volume rm held >/dev/null 2>&1; then bad "rm NOT refused while attached"; else ok "rm refused while attached"; fi
 run sandbox rm "${SBX5:-}" >/dev/null 2>&1 || true
 run volume rm held >/dev/null 2>&1 && ok "rm succeeds after detach" || bad "rm after detach"
 
 # ---- 08 records survive a daemon restart -----------------------------------
-echo "== 08 volume records survive a daemon restart (V-M2)"
+echo "== 08 volume records survive a daemon restart"
 run volume create persist --size 128M >/dev/null 2>&1 || bad "create persist"
 kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
 start_daemon
 run volume ls 2>/dev/null | grep -qw persist && ok "volume survived daemon restart (durable store)" || bad "volume gone after restart"
 run volume rm persist >/dev/null 2>&1 || true
 
-# ---- 09 durable app with a volume survives a daemon restart (V-M3) ---------
-echo "== 09 app + volume survives a daemon restart (V-M3)"
+# ---- 09 durable app with a volume survives a daemon restart ---------
+echo "== 09 app + volume survives a daemon restart"
 app_phase() { curl -s "$BASE_URL/apps/appvoltest" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1; }
 wait_app_running() { for _ in $(seq 1 200); do [[ "$(app_phase)" == '"phase":"running"' ]] && return 0; sleep 0.5; done; return 1; }
 
@@ -183,18 +183,18 @@ else
   bad "durable app never reached running (is $APP_IMAGE pullable?)"
 fi
 
-# ---- 10 slept volume app fast-wakes from its snapshot after a restart (F3-M3) ----
-echo "== 10 slept volume app fast-wakes from its snapshot after a daemon restart (F3-M3)"
+# ---- 10 slept volume app fast-wakes from its snapshot after a restart ----
+echo "== 10 slept volume app fast-wakes from its snapshot after a daemon restart"
 phase_of() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1; }
 wait_ph() { for _ in $(seq 1 200); do [[ "$(phase_of "$1")" == "\"phase\":\"$2\"" ]] && return 0; sleep 0.5; done; return 1; }
 
 run app create dbr --image "$APP_IMAGE" --volume dbrdata:/data --restart always >/dev/null 2>&1
 if wait_ph dbr running; then
   run app exec dbr -- sh -c 'echo m3-marker > /data/m && sync' >/dev/null 2>&1
-  # F3: manual sleep snapshots the instance (keeps the durable snapshot + guard).
+  # manual sleep snapshots the instance (keeps the durable snapshot + guard).
   run app sleep dbr >/dev/null 2>&1
   if wait_ph dbr asleep; then
-    ok "volume app snapshot-slept (F3)"
+    ok "volume app snapshot-slept"
     # Restart the daemon: the slept app must re-adopt as asleep from its snapshot.
     kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
     start_daemon

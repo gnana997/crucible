@@ -251,7 +251,7 @@ type RestoreSpec struct {
 	Quotas Quotas
 
 	// Volumes are the persistent volume drives to re-attach on restore
-	// (wake-in-place of a volume-backed app, F3). The snapshot recorded
+	// (wake-in-place of a volume-backed app). The snapshot recorded
 	// each at its chroot-relative path, so the runner must re-stage the
 	// same backing file (by DriveID → chroot path) before LoadSnapshot;
 	// the backing file persists in --volume-dir across the sleep. Empty

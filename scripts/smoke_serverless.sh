@@ -12,7 +12,7 @@
 #      - the published host port stays bound while asleep, and the next TCP
 #        connection WAKES the app in place (snapshot restore) and forwards.
 #
-#   B. Volume snapshot-wake path (serverless postgres — the north-star, F3):
+#   B. Volume snapshot-wake path (serverless postgres — the north-star):
 #      - a scale-to-zero postgres on a persistent volume, published on :5432;
 #      - manual `app sleep` snapshots the instance and stops the VMM (VM freed,
 #        snapshot kept, single-writer guard held);
@@ -248,7 +248,7 @@ if wait_phase pg running 400 && wait_fc $((FC0+1)) 60; then
     fi
   fi
 
-  echo "== 08 manual sleep snapshots the instance and stops the VMM (F3)"
+  echo "== 08 manual sleep snapshots the instance and stops the VMM"
   inst_before="$(app_inst pg)"
   run app sleep pg >/dev/null 2>&1
   if wait_phase pg asleep 60 && wait_fc "$FC0" 40; then
@@ -262,8 +262,8 @@ if wait_phase pg running 400 && wait_fc $((FC0+1)) 60; then
   if wait_phase pg running 120 && wait_fc $((FC0+1)) 60; then
     inst_after="$(app_inst pg)"
     [[ -n "$inst_after" && "$inst_after" == "$inst_before" ]] \
-      && ok "wake-on-connect restored IN PLACE (same instance $inst_after — F3 snapshot-wake, not cold boot)" \
-      || bad "wake was not in-place (F3): instance $inst_before → $inst_after"
+      && ok "wake-on-connect restored IN PLACE (same instance $inst_after — snapshot-wake, not cold boot)" \
+      || bad "wake was not in-place: instance $inst_before → $inst_after"
     # Postgres is already running in restored memory (no cold boot, no WAL
     # recovery), so the query should answer on the first try; the retry is just a
     # safety net for the connect-during-wake window.

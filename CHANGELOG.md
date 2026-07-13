@@ -12,8 +12,9 @@ Instant serverless-stateful. A volume-backed app (the serverless postgres/redis
 from v0.6.1) used to cold-boot on wake: sleep destroyed the instance and wake
 booted a fresh one, so the database ran recovery (seconds). Now it snapshot-sleeps
 and snapshot-wakes like a stateless app: the process is already running in the
-restored memory, attached to its volume, so wake takes about 125 ms with no cold
-boot and no WAL recovery. The cold-start wart on serverless postgres is gone.
+restored memory, attached to its volume, so wake takes about 170 ms (reflink;
+~240 ms on ext4) with no cold boot and no WAL recovery. The cold-start wart on
+serverless postgres is gone.
 
 ### Changed
 
@@ -21,11 +22,12 @@ boot and no WAL recovery. The cold-start wart on serverless postgres is gone.
   volume now sleeps by snapshotting its instance and stopping the VMM (RAM freed,
   the single-writer volume guard held) instead of destroying it, and wakes by
   restoring the snapshot with the volume re-attached: same instance and IP,
-  ~125 ms, data intact. A wake after a **daemon restart** restores a fresh
+  ~170 ms (reflink), data intact. A wake after a **daemon restart** restores a fresh
   instance from the durable snapshot (new IP, still no cold boot), re-acquiring
   the volume guard.
 - The published-port latency table in [serverless.md](docs/serverless.md) now
-  reads ~125 ms for volume-backed wake (was cold boot).
+  reads ~170 ms for volume-backed wake (was cold boot); see
+  [benchmarks.md](docs/benchmarks.md) for the measured distribution.
 
 ### Added
 

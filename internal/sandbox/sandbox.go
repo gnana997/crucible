@@ -181,7 +181,7 @@ type Sandbox struct {
 	volumeNames []string
 
 	// volumes are the runner-level volume attachments (drive id + host backing
-	// path) captured at Create, so a wake-in-place restore (F3) can re-stage the
+	// path) captured at Create, so a wake-in-place restore can re-stage the
 	// same volumes into the restored chroot.
 	volumes []runner.VolumeAttach
 
@@ -1573,7 +1573,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		}
 	}()
 
-	// F3-M3: re-attach the app's volumes for a wake-from-snapshot (post-restart).
+	// re-attach the app's volumes for a wake-from-snapshot (post-restart).
 	// Attach claims the single-writer guard for this fresh instance (a restart
 	// dropped the previous claim) and returns the persistent backing path; the
 	// drive is re-staged at the same chroot path so LoadSnapshot re-opens it, and
@@ -1634,7 +1634,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		Network:          netHandle,
 		handle:           handle,
 		done:             make(chan struct{}),
-		volumeNames:      volNames, // F3-M3: hold the re-acquired volume guard(s)
+		volumeNames:      volNames, // hold the re-acquired volume guard(s)
 		volumes:          volSpecs,
 	}
 	if s.VSockPath != "" {
@@ -1751,7 +1751,7 @@ func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publi
 	if err := m.admitWake(); err != nil {
 		return nil, err
 	}
-	// F3-M3: a volume-backed app re-attaches its volume(s) into the fresh instance
+	// a volume-backed app re-attaches its volume(s) into the fresh instance
 	// (re-acquiring the single-writer guard, which a daemon restart dropped). No
 	// re-mount is needed — the guest resumed with the volume already mounted in the
 	// restored memory; forkOne only re-stages the drive at the same device.

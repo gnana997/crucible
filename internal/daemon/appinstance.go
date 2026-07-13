@@ -295,7 +295,7 @@ func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string
 	if err != nil {
 		return "", err
 	}
-	// F3-M3: re-attach the app's volumes into the fresh instance (the restored
+	// re-attach the app's volumes into the fresh instance (the restored
 	// guest resumes with them already mounted, so only the drive is re-staged).
 	var volumes []sandbox.VolumeMount
 	for _, v := range spec.Volumes {

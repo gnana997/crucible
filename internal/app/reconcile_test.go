@@ -30,7 +30,7 @@ type fakeInstantiator struct {
 	onSleep     func()           // if set, called (outside f.mu) mid-Sleep — a test gate
 	snapshots   int              // count of SnapshotInstance calls (golden captures)
 	forks       int              // count of ForkInstance calls (warm extras)
-	wakeErr     error            // if set, Wake returns it (exercises the F3-M4 fallback)
+	wakeErr     error            // if set, Wake returns it (exercises the wake fallback)
 }
 
 func (f *fakeInstantiator) SnapshotInstance(_ context.Context, instanceID string) (string, error) {

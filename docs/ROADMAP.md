@@ -154,11 +154,11 @@ Scale-to-zero for **any** self-hosted TCP service: databases, caches, brokers. A
 - [x] **Serverless postgres & redis:** a volume-backed database sleeps (stop/start, VM freed) and cold-wakes on the next connection with data intact; a redis scales to zero between requests or stays awake for a live subscriber.
 - [x] **Guest `/dev/fd`:** the init now creates the standard `/dev/fd` + `/dev/std{in,out,err}` → `/proc/self/fd` symlinks, so bash process substitution `<(…)` works (postgres's password init and other entrypoints depend on it).
 
-### v0.6.2: Instant serverless-stateful (F3) *(current)*
+### v0.6.2: Instant serverless-stateful *(current)*
 
 A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wake booted a fresh one and the database ran recovery). Now it snapshot-sleeps and snapshot-wakes like a stateless app, so a serverless postgres comes back in about 125 ms with **no cold boot and no WAL recovery** ([serverless.md](serverless.md)).
 
-- [x] **Snapshot-sleep + wake-in-place for volume apps:** sleep snapshots the instance and stops the VMM (RAM freed, single-writer guard held); wake restores it in place with the volume re-attached, same instance and IP, ~125 ms, data intact. The process is already running in the restored memory.
+- [x] **Snapshot-sleep + wake-in-place for volume apps:** sleep snapshots the instance and stops the VMM (RAM freed, single-writer guard held); wake restores it in place with the volume re-attached, same instance and IP, ~170 ms (reflink), data intact. The process is already running in the restored memory.
 - [x] **Fast wake after a daemon restart:** a slept volume app re-adopts as asleep and wakes from its durable snapshot into a fresh instance (new IP, still no cold boot), re-acquiring the volume guard.
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
@@ -167,7 +167,7 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 
 ### Next: Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, and instant (~125 ms) snapshot-wake for stateful apps exist (v0.4.0–v0.6.2); next is volume backups and the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, and instant (~170 ms) snapshot-wake for stateful apps exist (v0.4.0–v0.6.2); next is volume backups and the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy**: ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth**: ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
