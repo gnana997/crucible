@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gnana997/crucible/internal/app"
+	"github.com/gnana997/crucible/internal/ingress"
 	"github.com/gnana997/crucible/internal/network"
 	"github.com/gnana997/crucible/internal/oci"
 	"github.com/gnana997/crucible/internal/sandbox"
@@ -41,6 +42,16 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 		Service:    spec.Service,
 		Volumes:    spec.Volumes,
 	}
+	// A scale-to-zero published app's host port is owned by the app-scoped waking
+	// forwarder — it must outlive this instance (survive the app's sleep) and wake
+	// the app on connect, so the instance itself must NOT bind the port (both
+	// claiming it would fight). The guest still binds its guest port; the forwarder
+	// reaches it over the veth.
+	wakeOnTCP := ingress.WakesOnTCP(spec)
+	if wakeOnTCP {
+		req.Publish = nil
+		req.PublishAll = false
+	}
 	pull, err := validatePull(req.Pull)
 	if err != nil {
 		return "", err
@@ -49,11 +60,12 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 	if ierr != nil {
 		return "", ierr.err
 	}
-	// A proxied app (Port set) needs a NIC so the ingress proxy can reach the
-	// guest over its veth — even with no published ports or egress. Synthesize a
-	// deny-all network (ingress-reachable, egress-denied), mirroring the publish
-	// path in buildCreateConfig.
-	if cfg.Network == nil && spec.Port > 0 {
+	// A proxied app (Port set), or a wake-on-TCP app whose publish we just
+	// suppressed, needs a NIC so the ingress proxy / the waking forwarder can
+	// reach the guest over its veth — even with no published ports or egress.
+	// Synthesize a deny-all network (ingress-reachable, egress-denied), mirroring
+	// the publish path in buildCreateConfig.
+	if cfg.Network == nil && (spec.Port > 0 || wakeOnTCP) {
 		denyAll, derr := network.New(nil)
 		if derr != nil {
 			return "", fmt.Errorf("app %s: deny-all network: %w", appID, derr)
@@ -271,7 +283,15 @@ func (a appInstantiator) SnapshotExists(snapshotID string) bool {
 // (post-restart wake), returning the new sandbox id. Publish mappings come from
 // the app spec, mirroring create.
 func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string, spec api.AppSpec) (string, error) {
-	publish, err := validatePublish(spec.Publish)
+	// A wake-on-TCP app's host port is owned by the app-scoped forwarder, so the
+	// restored instance must not re-bind it (mirrors the suppression in Create).
+	// forkOne always provisions a fresh NIC regardless, so the guest is still
+	// reachable over its veth.
+	pubSpec := spec.Publish
+	if ingress.WakesOnTCP(spec) {
+		pubSpec = nil
+	}
+	publish, err := validatePublish(pubSpec)
 	if err != nil {
 		return "", err
 	}

@@ -606,6 +606,7 @@ Required flags:
 	// (appMgr is declared earlier so the DNS authorizer can close over it.)
 	var appStore *app.Store
 	var activityTracker *ingress.ActivityTracker
+	var wakeForwarders *ingress.WakeForwarderSet
 	if *appDB != "" {
 		as, aerr := app.Open(*appDB)
 		if aerr != nil {
@@ -614,12 +615,18 @@ Required flags:
 			appStore = as
 			appMgr = app.NewManager(as, srv.NewAppInstantiator(), logger)
 			srv.SetAppManager(appMgr)
-			// When the proxy runs, wire request-activity tracking BEFORE Start so
-			// the idle monitor launches and can auto-sleep idle scale-to-zero apps.
-			if *proxyListen != "" || *proxyTLSListen != "" {
-				activityTracker = ingress.NewActivityTracker()
-				appMgr.SetActivitySource(activityTracker)
-			}
+			// Wire request-activity tracking + the L4 waking forwarders BEFORE Start
+			// so the idle monitor and wake-on-connect path are live from the first
+			// reconcile. Both work whether or not the HTTP proxy is enabled — a TCP
+			// app (postgres, redis) is reached through a published port, invisible to
+			// the L7 proxy, so its wake + idle detection live here, not in the proxy.
+			activityTracker = ingress.NewActivityTracker()
+			appMgr.SetActivitySource(activityTracker)
+			// The forwarder resolves an app by name → its current instance; domain /
+			// internal-zone are irrelevant to ResolveName, so a bare resolver suffices.
+			l4Resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, "", "", time.Second)
+			wakeForwarders = ingress.NewWakeForwarderSet(l4Resolver, appMgr, activityTracker, logger)
+			appMgr.SetPortReconciler(wakeForwarders)
 			if serr := appMgr.Start(context.Background()); serr != nil {
 				logger.Warn("app reconciler start failed", "err", serr)
 			} else {
@@ -761,6 +768,10 @@ Required flags:
 	// drain tear instances down.
 	if proxy != nil {
 		proxy.Stop(drainCtx)
+	}
+	// Close the app-scoped waking TCP forwarders too (free their host ports).
+	if wakeForwarders != nil {
+		wakeForwarders.Close()
 	}
 	// Stop the app reconcile loop before draining sandboxes so it doesn't
 	// try to "heal" instances the drain is tearing down. Desired state

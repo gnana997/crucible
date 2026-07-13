@@ -101,6 +101,15 @@ type ActivitySource interface {
 	Activity(appName string) (last time.Time, inflight int, ok bool)
 }
 
+// PortReconciler keeps app-scoped host-port listeners in sync with the apps that
+// need them — the L4 waking forwarders that front a scale-to-zero app's published
+// port, wake it on connect, and survive its sleep (unlike per-instance publish,
+// which dies with the VM). Called on each reconcile pass with the current
+// desired-running specs; the implementation diffs and binds/closes as needed.
+type PortReconciler interface {
+	ReconcilePorts(specs []api.AppSpec)
+}
+
 // observed is an app's runtime (never persisted) state, rebuilt from
 // scratch on Start: an empty observed map plus persisted desired state is
 // what drives re-creation after a daemon restart.
@@ -236,6 +245,12 @@ type Manager struct {
 	// scale-to-zero apps). Nil disables auto-sleep — manual sleep still works.
 	activity ActivitySource
 
+	// ports, when set, keeps app-scoped host-port listeners in sync with the set
+	// of apps that need them (the L4 waking forwarders for scale-to-zero published
+	// apps). Called at the end of each reconcile pass with the current
+	// desired-running specs. Nil disables app-scoped publishing.
+	ports PortReconciler
+
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
 	obs         map[string]*observed
@@ -297,6 +312,10 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 // tracker) so the idle monitor can auto-sleep idle scale-to-zero apps. Call
 // before Start; nil leaves auto-sleep disabled.
 func (m *Manager) SetActivitySource(a ActivitySource) { m.activity = a }
+
+// SetPortReconciler wires the app-scoped host-port publisher (the L4 waking
+// forwarders). Call before Start; nil leaves app-scoped publishing disabled.
+func (m *Manager) SetPortReconciler(p PortReconciler) { m.ports = p }
 
 // transitionLock returns the per-app mutex that serializes sleep/wake
 // transitions for appID, creating it on first use.
@@ -864,6 +883,20 @@ func (m *Manager) reconcile(ctx context.Context) {
 		if rec.DesiredRunning {
 			m.reconcileApp(ctx, rec, now)
 		}
+	}
+
+	// 3. Keep app-scoped host-port listeners in sync with desired state: the L4
+	// waking forwarders front a scale-to-zero app's published port and must exist
+	// while it is asleep (DesiredRunning stays true when slept) and vanish when it
+	// is deleted or stopped. Diff-based, so an unchanged set is a cheap no-op.
+	if m.ports != nil {
+		specs := make([]api.AppSpec, 0, len(recs))
+		for _, r := range recs {
+			if r.DesiredRunning {
+				specs = append(specs, r.Spec)
+			}
+		}
+		m.ports.ReconcilePorts(specs)
 	}
 }
 

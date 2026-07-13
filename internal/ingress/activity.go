@@ -62,6 +62,20 @@ func (t *ActivityTracker) end(name string) {
 	t.mu.Unlock()
 }
 
+// Seen records activity for name without opening a request — it stamps last=now
+// and creates the entry so Activity reports ok=true. The L4 waking forwarder
+// calls it when it starts fronting a scale-to-zero app, so an app that has never
+// had a connection still becomes idle-monitor-eligible and sleeps after its
+// idle_timeout from readiness (rather than staying awake forever, unseen).
+func (t *ActivityTracker) Seen(name string) {
+	if name == "" {
+		return
+	}
+	t.mu.Lock()
+	t.get(name).last = t.now()
+	t.mu.Unlock()
+}
+
 // Activity reports the last-seen time and in-flight count for name. ok is false
 // when the app has never been seen through the proxy (so the idle monitor leaves
 // it alone rather than sleeping an app it can't observe).

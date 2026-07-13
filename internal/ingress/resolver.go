@@ -144,6 +144,15 @@ func (r *Resolver) ResolveInternal(host string) (Target, error) {
 	return r.resolve(r.AppNameInternal(host))
 }
 
+// ResolveName resolves an app directly by name (not a request host) to its
+// current instance target. Used by the L4 waking forwarder, which already knows
+// which app it fronts and only needs the live guest IP (it supplies its own
+// guest port from the publish mapping). Same phase semantics as Resolve —
+// ErrAsleep for a slept/waking app (the forwarder wakes and re-resolves).
+func (r *Resolver) ResolveName(name string) (Target, error) {
+	return r.resolve(name)
+}
+
 // ResolveSet maps an external request host to the app's full endpoint set — the
 // live guest IP:port of every running instance (primary + replicas) — for the
 // load balancer to pick from. Same phase semantics as Resolve (ErrAsleep for a
