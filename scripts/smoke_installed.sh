@@ -10,10 +10,12 @@
 # health, full-egress + its SSRF tripwire, --net-allow-cidr, and -P), the
 # v0.4.2 surface (app update, image-HEALTHCHECK seeding, and — opt-in — the
 # ingress proxy), the v0.4.3 surface (operate an app by name — app exec /
-# app logs — plus, through the proxy, a zero-downtime rolling update), and the
+# app logs — plus, through the proxy, a zero-downtime rolling update), the
 # v0.5 surface (scale-to-zero `app sleep`/`wake`, opt-in app→app networking, and
-# horizontal scale-out via `--min-scale N`). It answers one question: "will
-# someone who installs the release hit a wall?"
+# horizontal scale-out via `--min-scale N`), and the v0.6 surface (persistent
+# volumes — `--volume`, durable across re-create, single-writer, plus a
+# volume-backed app whose data survives a redeploy; opt-in, needs `--volume-dir`).
+# It answers one question: "will someone who installs the release hit a wall?"
 #
 # Safe by construction:
 #   - runs UNPRIVILEGED (the CLI is just a client; the root daemon does the work)
@@ -69,6 +71,7 @@ HOST_PORT_C="${HOST_PORT_C:-8082}"   # durable-app instance
 HOST_PORT_D="${HOST_PORT_D:-8083}"   # v0.4.1 app (env + exec health)
 HOST_PORT_E="${HOST_PORT_E:-8084}"   # v0.4.2 app update
 HOST_PORT_F="${HOST_PORT_F:-8085}"   # v0.5.0 sleep/wake app
+HOST_PORT_G="${HOST_PORT_G:-8086}"   # v0.6.0 volume-backed app
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -87,11 +90,12 @@ skip() { SKIP=$((SKIP+1)); echo "   SKIP: $*"; }
 cli()  { "$CRUCIBLE_BIN" --addr "$ADDR" "$@"; }
 
 # --- own-resource tracking + safe cleanup ------------------------------------
-CREATED_SBX=(); CREATED_SNAP=(); CREATED_IMG=(); CREATED_APP=()
+CREATED_SBX=(); CREATED_SNAP=(); CREATED_IMG=(); CREATED_APP=(); CREATED_VOL=()
 track_sbx()  { CREATED_SBX+=("$1"); }
 track_snap() { CREATED_SNAP+=("$1"); }
 track_img()  { CREATED_IMG+=("$1"); }
 track_app()  { CREATED_APP+=("$1"); }
+track_vol()  { CREATED_VOL+=("$1"); }
 
 cleanup() {
   echo "== cleanup (only what this smoke created)"
@@ -99,6 +103,12 @@ cleanup() {
   for id in "${CREATED_SBX[@]:-}"; do [[ -n "$id" ]] && cli sandbox rm "$id" >/dev/null 2>&1 || true; done
   for id in "${CREATED_SNAP[@]:-}"; do [[ -n "$id" ]] && cli snapshot rm "$id" >/dev/null 2>&1 || true; done
   for id in "${CREATED_IMG[@]:-}"; do [[ -n "$id" ]] && cli image rm "$id" >/dev/null 2>&1 || true; done
+  # Volumes last: the single-writer guard is dropped only once the holder's VM is
+  # gone, so retry briefly in case a just-removed sandbox is still shutting down.
+  for name in "${CREATED_VOL[@]:-}"; do
+    [[ -z "$name" ]] && continue
+    for _ in 1 2 3 4 5 6; do cli volume rm "$name" >/dev/null 2>&1 && break; sleep 0.5; done
+  done
   [[ -n "${MCP_TMP:-}" ]] && rm -rf "$MCP_TMP" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -115,14 +125,14 @@ hit() {
 }
 
 # ---- 00 preflight: daemon up + version --------------------------------------
-echo "== 00 daemon reachable and on v0.3.x/v0.4.x/v0.5.x"
+echo "== 00 daemon reachable and on v0.3.x/v0.4.x/v0.5.x/v0.6.x"
 if ! curl -sf "$BASE_URL/healthz" >/dev/null 2>&1; then
   echo "error: no daemon at $BASE_URL — start it: sudo systemctl start crucible" >&2
   exit 3
 fi
 VER="$(cli version 2>&1)"
-if [[ "$VER" == *"v0.5."* || "$VER" == *"v0.4."* || "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
-else fail "unexpected version: $VER (want v0.3.x, v0.4.x, or v0.5.x)"; fi
+if [[ "$VER" == *"v0.6."* || "$VER" == *"v0.5."* || "$VER" == *"v0.4."* || "$VER" == *"v0.3."* ]]; then pass "daemon healthy, CLI is $VER"
+else fail "unexpected version: $VER (want v0.3.x, v0.4.x, v0.5.x, or v0.6.x)"; fi
 
 # ---- 01 boot an image + publish a port + reach it from the host -------------
 echo "== 01 run $IMAGE -p $HOST_PORT_A:80 (long-lived) and curl it"
@@ -403,6 +413,12 @@ if {"app_exec","app_logs"}.issubset(tools):
 else:
     print("MCP-APPOPS-SKIP (app_exec/app_logs not advertised)")
 
+# v0.6.0: the volume lifecycle tools must be advertised in the catalog.
+if {"volume_create","list_volumes","delete_volume"}.issubset(tools):
+    print("MCP-VOL-OK")
+else:
+    print("MCP-VOL-SKIP (volume tools not advertised)")
+
 p.stdin.close()
 try: p.wait(timeout=10)
 except Exception: p.kill()
@@ -424,6 +440,11 @@ PY
     pass "MCP v0.4.3: app_exec/app_logs advertised in the catalog"
   elif [[ "$MCP_OUT" == *"MCP-APPOPS-SKIP"* ]]; then
     skip "MCP app_exec/app_logs not advertised (pre-v0.4.3 daemon)"
+  fi
+  if [[ "$MCP_OUT" == *"MCP-VOL-OK"* ]]; then
+    pass "MCP v0.6.0: volume_create/list_volumes/delete_volume advertised in the catalog"
+  elif [[ "$MCP_OUT" == *"MCP-VOL-SKIP"* ]]; then
+    skip "MCP volume tools not advertised (pre-v0.6.0 daemon)"
   fi
 fi
 
@@ -815,6 +836,98 @@ else
     cli app rm "$SOAPP" >/dev/null 2>&1
   else
     skip "scale-out unsupported (pre-v0.5.2 daemon? --min-scale/--max-scale): $(head -1 "$SOERR" 2>/dev/null)"; rm -f "$SOERR"
+  fi
+fi
+
+# ---- 21 v0.6.0: persistent volumes — durable across re-create + volume app ---
+echo "== 21 persistent volumes (v0.6.0): durable across re-create + lifecycle + volume app"
+# Volumes are opt-in: the daemon needs --volume-dir. A client can't set that, so
+# PROBE — GET /volumes answers 501 when volumes aren't enabled → SKIP (not a fail).
+# We attach to an alpine IMAGE (not a profile) so the freshly-injected embedded
+# agent has the /mount RPC; an old profile rootfs would predate it.
+if ! curl -sf "$BASE_URL/volumes" >/dev/null 2>&1; then
+  skip "volumes not enabled (daemon needs --volume-dir) — GET /volumes → 501"
+else
+  VOL="crucible-smoke-vol"
+  cli volume rm "$VOL" >/dev/null 2>&1 || true
+  if [[ "$(cli volume create "$VOL" --size 1G 2>/dev/null)" == "$VOL" ]]; then
+    track_vol "$VOL"
+    cli volume ls 2>/dev/null | grep -q "$VOL" && pass "volume create + ls surfaces $VOL" \
+      || fail "volume ls did not list $VOL after create"
+    # attach to a sandbox, write a marker, then re-create a NEW sandbox on the
+    # SAME volume and read it back — proves the data outlives the sandbox.
+    SBXV1="$(cli sandbox create --image "$ALPINE" --memory 256 --volume "$VOL:/data" 2>/dev/null)"
+    if [[ "$SBXV1" == sbx_* ]]; then
+      track_sbx "$SBXV1"
+      cli sandbox exec "$SBXV1" -- sh -c 'echo crucible-vol-marker > /data/marker && sync' >/dev/null 2>&1
+      # single-writer guard: rm MUST be refused while a live sandbox holds it.
+      if cli volume rm "$VOL" >/dev/null 2>&1; then
+        fail "volume rm succeeded while attached — single-writer guard not enforced"
+      else
+        pass "volume rm refused while attached (single-writer guard holds)"
+      fi
+      cli sandbox rm "$SBXV1" >/dev/null 2>&1   # synchronous: releases the guard
+      SBXV2="$(cli sandbox create --image "$ALPINE" --memory 256 --volume "$VOL:/data" 2>/dev/null)"
+      if [[ "$SBXV2" == sbx_* ]]; then
+        track_sbx "$SBXV2"
+        M="$(cli sandbox exec "$SBXV2" -- cat /data/marker 2>/dev/null | tr -d '\r\n')"
+        [[ "$M" == "crucible-vol-marker" ]] && pass "data persisted across re-create (re-attached the same volume)" \
+          || fail "volume data lost across re-create: read '${M:-<empty>}'"
+        cli sandbox rm "$SBXV2" >/dev/null 2>&1
+      else
+        fail "could not re-attach $VOL to a second sandbox: $SBXV2"
+      fi
+    else
+      fail "attach failed: $SBXV1 (is --volume-dir on the SAME filesystem as --chroot-base? hardlink needs it)"
+    fi
+  else
+    fail "volume create returned no name (volumes enabled but create failed)"
+  fi
+
+  # 21b — a volume-backed app: its data must survive a redeploy (destroy-then-boot,
+  # since a single-writer volume app can't do the zero-downtime flip).
+  if curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+    VAPP="crucible-smoke-volapp"; VAPPVOL="crucible-smoke-volapp-data"
+    cli app rm "$VAPP" >/dev/null 2>&1 || true
+    track_vol "$VAPPVOL"   # auto-created by --volume; freed in cleanup
+    VAERR="$(mktemp)"
+    OUT="$(cli app create "$VAPP" --image "$IMAGE" -p "$HOST_PORT_G:80" --restart always \
+             --health "http:80:/" --memory 256 --volume "$VAPPVOL:/data" 2>"$VAERR")"
+    if [[ "$OUT" == "$VAPP" ]]; then
+      track_app "$VAPP"; rm -f "$VAERR"
+      if hit "http://localhost:$HOST_PORT_G/" "html" || hit "http://localhost:$HOST_PORT_G/" "nginx"; then
+        pass "volume-backed app booted and served on :$HOST_PORT_G"
+      else
+        fail "volume-backed app never served on :$HOST_PORT_G"
+      fi
+      cli app exec "$VAPP" -- sh -c 'echo app-vol-marker > /data/m && sync' >/dev/null 2>&1
+      VINST1="$(curl -s "$BASE_URL/apps/$VAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+      # redeploy via a spec change (memory bump) — volume apps destroy-then-boot.
+      if [[ "$(cli app update "$VAPP" --image "$IMAGE" -p "$HOST_PORT_G:80" --restart always --health "http:80:/" --memory 320 --volume "$VAPPVOL:/data" 2>/dev/null)" == "$VAPP" ]]; then
+        REDEPLOYED=0; VINST2=""
+        for _ in $(seq 1 60); do
+          VINST2="$(curl -s "$BASE_URL/apps/$VAPP" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+          if [[ "$VINST2" == sbx_* && "$VINST2" != "$VINST1" ]] && curl -sf "http://localhost:$HOST_PORT_G/" >/dev/null 2>&1; then
+            REDEPLOYED=1; break
+          fi
+          sleep 1
+        done
+        if [[ "$REDEPLOYED" -eq 1 ]]; then
+          VM="$(cli app exec "$VAPP" -- cat /data/m 2>/dev/null | tr -d '\r\n')"
+          [[ "$VM" == "app-vol-marker" ]] && pass "volume data survived redeploy ($VINST1 → $VINST2)" \
+            || fail "volume data lost across redeploy: read '${VM:-<empty>}'"
+        else
+          fail "volume-backed app did not redeploy ($VINST1 → ${VINST2:-none})"
+        fi
+      else
+        skip "app update on the volume app failed (pre-v0.6.0 daemon?)"
+      fi
+      cli app rm "$VAPP" >/dev/null 2>&1
+    else
+      fail "volume-backed app create failed: $(head -1 "$VAERR" 2>/dev/null)"; rm -f "$VAERR"
+    fi
+  else
+    skip "daemon has no /apps endpoint — skipping the volume-backed app check"
   fi
 fi
 

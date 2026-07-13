@@ -28,7 +28,7 @@
 #   --with-deps         (daemon) also fetch firecracker+jailer, a rootfs, and a guest kernel — opt-in, checksum-verified
 #   --no-egress-auto    (daemon) don't auto-wire the host's egress NIC into a fresh config
 #   --no-proxy          (daemon) don't enable the ingress proxy (reach apps by name) by default
-#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --registry-store / --network-egress-iface / proxy flags to an existing config
+#   --upgrade-config    (daemon) apply missing --image-dir / --log-dir / --app-db / --registry-store / --volume-dir / --network-egress-iface / proxy flags to an existing config
 #   --connect-token     (daemon) mint a scoped token and print a ready-to-paste MCP config + client one-liner
 #   --token-name NAME   (daemon) name for --connect-token's key (default: remote-client)
 #   --version TAG       release tag (default: latest; download mode)
@@ -61,6 +61,12 @@ BINDIR="$PREFIX/bin"
 UNITDIR="${UNITDIR:-/etc/systemd/system}"
 CONFDIR="${CONFDIR:-/etc/crucible}"
 STATEDIR="${STATEDIR:-/var/lib/crucible}"
+# Persistent-volume backing files (v0.6). They HARDLINK into each VM's jailer
+# chroot, so this MUST share a filesystem with --chroot-base (default
+# /srv/jailer) — a sibling under /srv guarantees that, whereas a dir under
+# /var/lib/crucible would EXDEV-fail on hosts where /var and /srv are separate
+# mounts. Override VOLUME_DIR if you run a custom --chroot-base.
+VOLUME_DIR="${VOLUME_DIR:-/srv/crucible-volumes}"
 
 # --with-deps pins (override via env). Firecracker v1.15+ is required.
 FC_VERSION="${FC_VERSION:-v1.16.1}"
@@ -543,7 +549,8 @@ for t in mkfs.ext4 fsck.ext4 debugfs resize2fs; do
 done
 if [[ -n "$missing_tools" ]]; then
     warn "missing e2fsprogs tools:$missing_tools"
-    warn "  booting OCI images (\`crucible run <image>\`) and \`--disk\` will fail."
+    warn "  booting OCI images (\`crucible run <image>\`) and \`--disk\` will fail,"
+    warn "  and persistent volumes (--volume-dir) stay off (the daemon needs mkfs.ext4)."
     warn "  install with:  apt-get install -y e2fsprogs   # or: dnf install e2fsprogs"
 fi
 
@@ -676,6 +683,13 @@ apply_config_flags() {
     add_cfg_flag "$cfg" "--log-dir"        "$STATEDIR/logs"   && changed=1
     add_cfg_flag "$cfg" "--app-db"         "$STATEDIR/apps.db" && changed=1
     add_cfg_flag "$cfg" "--registry-store" "$STATEDIR/registry.json" && changed=1
+    # Enable persistent volumes (v0.6), but only when mkfs.ext4 is present — the
+    # daemon REFUSES TO START if --volume-dir is set without it, so a profile-only
+    # install lacking e2fsprogs must stay bootable (volumes just off). Sibling of
+    # --chroot-base so backing files hardlink into the jail; daemon mkdirs it.
+    if command -v mkfs.ext4 >/dev/null 2>&1; then
+        add_cfg_flag "$cfg" "--volume-dir" "$VOLUME_DIR" && changed=1
+    fi
     [[ -n "$egress" && "$NO_EGRESS_AUTO" -eq 0 ]] && { add_cfg_flag "$cfg" "--network-egress-iface" "$egress" && changed=1; }
     seed_proxy_flags "$cfg" && changed=1
     seed_internal_flags "$cfg" && changed=1
@@ -782,6 +796,14 @@ if [[ -n "$INTERNAL_ENABLED" && "$INTERNAL_ENABLED" != "(already configured)" ]]
     echo "==> app→app networking on (v0.5.1) — apps reach each other by name, default-deny"
     kv grant  "crucible app create web --image … --port 80 --can-call backend"
     kv reach  "from web's guest: curl http://backend.internal/   (ungranted peers get 403/NXDOMAIN)"
+fi
+
+# Persistent volumes (v0.6): apply_config_flags seeds --volume-dir when mkfs.ext4
+# is present, so a fresh install with e2fsprogs has durable storage on.
+if command -v mkfs.ext4 >/dev/null 2>&1; then
+    echo
+    echo "==> persistent volumes on (v0.6) at $VOLUME_DIR — durable storage that outlives the sandbox"
+    kv use   "crucible run alpine --volume data:/data   ·   crucible app create db --image … --volume pgdata:/var/lib/postgresql/data"
 fi
 
 # A plain install mints nothing: just show how to use it locally and how to open
