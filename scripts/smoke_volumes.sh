@@ -36,13 +36,16 @@ MOUNT="${MOUNT:-/var/lib/crucible-voltest}"
 # rootfs, rebuild it with the current crucible-agent first (make rootfs). alpine
 # must be pullable (or pre-present in the image store).
 IMAGE="${IMAGE:-alpine:latest}"
+# A long-running image for the durable-app section (step 09) — its entrypoint
+# must stay up (nginx does). Must be pullable or pre-present.
+APP_IMAGE="${APP_IMAGE:-nginx:alpine}"
 
 pass=0; fail=0
 ok()   { echo "  ✓ $*"; pass=$((pass+1)); }
 bad()  { echo "  ✗ $*"; fail=$((fail+1)); }
 
 echo "==============================================================="
-echo " crucible volumes smoke (V-M1)"
+echo " crucible volumes smoke (V-M1..V-M3)"
 echo "==============================================================="
 
 # ---- preflight --------------------------------------------------------------
@@ -77,6 +80,7 @@ start_daemon() {
     --chroot-base "$MOUNT/jailer" --kernel "$KERNEL" --rootfs "$MOUNT/rootfs.ext4" \
     --work-base "$MOUNT/run" --image-dir "$MOUNT/images" --log-dir "$MOUNT/logs" \
     --volume-dir "$MOUNT/volumes" --volume-default-size $((256*1024*1024)) \
+    --app-db "$MOUNT/apps.db" \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
   for _ in {1..150}; do
@@ -154,6 +158,30 @@ kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
 start_daemon
 run volume ls 2>/dev/null | grep -qw persist && ok "volume survived daemon restart (durable store)" || bad "volume gone after restart"
 run volume rm persist >/dev/null 2>&1 || true
+
+# ---- 09 durable app with a volume survives a daemon restart (V-M3) ---------
+echo "== 09 app + volume survives a daemon restart (V-M3)"
+app_phase() { curl -s "$BASE_URL/apps/appvoltest" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1; }
+wait_app_running() { for _ in $(seq 1 200); do [[ "$(app_phase)" == '"phase":"running"' ]] && return 0; sleep 0.5; done; return 1; }
+
+run app create appvoltest --image "$APP_IMAGE" --volume appdata:/data --restart always >/dev/null 2>&1
+if wait_app_running; then
+  ok "durable app booted with its volume"
+  run app exec appvoltest -- sh -c 'echo app-marker > /data/m && sync' >/dev/null 2>&1 && ok "wrote marker via app exec" || bad "app exec write"
+  # Restart the daemon; the reconciler must re-create the app from spec with the
+  # volume re-attached (stop/start durability, not a snapshot).
+  kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
+  start_daemon
+  if wait_app_running; then
+    GOT=$(run app exec appvoltest -- cat /data/m 2>/dev/null | tr -d '\r\n')
+    [[ "$GOT" == "app-marker" ]] && ok "app volume data survived the daemon restart" || bad "expected 'app-marker', got '$GOT'"
+  else
+    bad "app did not come back running after restart"
+  fi
+  run app rm appvoltest >/dev/null 2>&1 || true
+else
+  bad "durable app never reached running (is $APP_IMAGE pullable?)"
+fi
 
 echo "==============================================================="
 echo " volumes smoke: $pass passed, $fail failed"

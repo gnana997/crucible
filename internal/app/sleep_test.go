@@ -150,6 +150,50 @@ func TestAppSleepWakeLifecycle(t *testing.T) {
 	}
 }
 
+// TestVolumeAppSleepsViaStopStart: a volume-backed app sleeps by quiescing +
+// destroying its instance (never a snapshot) and wakes by cold-creating a fresh
+// one (V-M3 stop/start).
+func TestVolumeAppSleepsViaStopStart(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+
+	spec := sleepableSpec("db", 30, 0) // idle-sleep, min_scale 0
+	spec.Port = 8080                   // proxy-fronted so idle-sleep is permitted
+	spec.Volumes = []api.VolumeMount{{Name: "data", Path: "/data"}}
+	mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	if got, _ := m.GetByName("db"); got.Status == nil || got.Status.Phase != "running" {
+		t.Fatalf("phase after boot = %v, want running", got.Status)
+	}
+
+	// Sleep a volume app: quiesce (sync) + destroy, NEVER a snapshot.
+	qBefore, dBefore := len(f.quiesces), len(f.destroys)
+	if err := m.Sleep(ctx(), "db"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	if len(f.quiesces) <= qBefore {
+		t.Error("volume-app sleep did not quiesce (sync) the instance")
+	}
+	if len(f.destroys) <= dBefore {
+		t.Error("volume-app sleep did not destroy the instance (stop/start)")
+	}
+	if got, _ := m.GetByName("db"); got.Status.Phase != "asleep" {
+		t.Fatalf("phase after sleep = %q, want asleep", got.Status.Phase)
+	}
+
+	// Wake a volume app: cold-create a fresh instance (no snapshot to restore).
+	cBefore := f.createCount()
+	if err := m.Wake(ctx(), "db"); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if f.createCount() != cBefore+1 {
+		t.Errorf("volume-app wake did not cold-create: creates %d→%d", cBefore, f.createCount())
+	}
+	if got, _ := m.GetByName("db"); got.Status.Phase != "running" {
+		t.Fatalf("phase after wake = %q, want running", got.Status.Phase)
+	}
+}
+
 // fakeActivity is an ActivitySource backed by a static map, for idle-monitor tests.
 type fakeActivity map[string]activityRec
 

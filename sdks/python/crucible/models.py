@@ -272,6 +272,7 @@ class CreateAppRequest(BaseModel):
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     vcpus: int | None = None
+    volumes: list[VolumeMount] | None = None
 
 
 class CreateSandboxRequest(BaseModel):
@@ -334,6 +335,7 @@ class UpdateAppReq(BaseModel):
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     vcpus: int | None = None
+    volumes: list[VolumeMount] | None = None
 
 
 class WireExecResult(BaseModel):
@@ -386,6 +388,7 @@ class AppResponse(BaseModel):
     status: AppStatus | None = None
     updated_at: AwareDatetime | None = None
     vcpus: int | None = None
+    volumes: list[VolumeMount] | None = None
 
 
 class AppListResponse(BaseModel):

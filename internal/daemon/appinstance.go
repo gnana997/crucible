@@ -39,6 +39,7 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 		Publish:    spec.Publish,
 		PublishAll: spec.PublishAll,
 		Service:    spec.Service,
+		Volumes:    spec.Volumes,
 	}
 	pull, err := validatePull(req.Pull)
 	if err != nil {
@@ -237,6 +238,13 @@ func (a appInstantiator) Destroy(ctx context.Context, instanceID string) error {
 		return nil
 	}
 	return err
+}
+
+// Quiesce flushes the instance guest's filesystems (agent sync) before a
+// stop/start sleep or destroy-then-boot redeploy, so un-fsync'd writes reach
+// the Writeback volume. Best-effort.
+func (a appInstantiator) Quiesce(ctx context.Context, instanceID string) error {
+	return a.s.cfg.Manager.Quiesce(ctx, instanceID)
 }
 
 // Sleep snapshots the instance and stops its VMM (scale-to-zero), keeping the

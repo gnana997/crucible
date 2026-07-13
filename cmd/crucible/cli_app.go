@@ -76,6 +76,7 @@ type appSpecOpts struct {
 	vcpus, memory, port, minScale                 int
 	maxScale, targetConcurrency                   int
 	netAllow, publish, env, netAllowCIDR, canCall []string
+	volumes                                       []string
 	netFullEgress, publishAll                     bool
 }
 
@@ -94,6 +95,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVar(&a.netAllowCIDR, "net-allow-cidr", nil, "allow direct egress to a public IPv4 CIDR, e.g. 203.0.113.0/24 (repeatable)")
 	f.BoolVar(&a.netFullEgress, "net-full-egress", false, "allow egress to any public host (metadata/link-local/RFC1918 still blocked)")
 	f.StringArrayVarP(&a.publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
+	f.StringArrayVar(&a.volumes, "volume", nil, "attach a persistent volume NAME:/path (repeatable); the app becomes single-writer (destroy-then-boot redeploy, stop/start sleep) and its data survives redeploys/sleep/restarts")
 	f.BoolVarP(&a.publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
 	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (needs the ingress proxy)")
@@ -138,6 +140,13 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 			return api.AppSpec{}, perr
 		}
 		spec.Publish = append(spec.Publish, pm)
+	}
+	for _, vspec := range a.volumes {
+		vm, verr := parseVolume(vspec)
+		if verr != nil {
+			return api.AppSpec{}, verr
+		}
+		spec.Volumes = append(spec.Volumes, vm)
 	}
 	spec.Network = buildNetworkRequest(a.netAllow, a.netAllowCIDR, a.netFullEgress)
 	if a.health != "" {

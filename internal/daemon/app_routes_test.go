@@ -50,6 +50,7 @@ func (f *fakeInst) Create(_ context.Context, appID string, _ api.AppSpec) (strin
 }
 func (f *fakeInst) Exists(string) bool                            { return true }
 func (f *fakeInst) Destroy(context.Context, string) error         { return nil }
+func (f *fakeInst) Quiesce(context.Context, string) error         { return nil }
 func (f *fakeInst) Sleep(context.Context, string) (string, error) { return "snap_x", nil }
 func (f *fakeInst) SnapshotExists(string) bool                    { return true }
 func (f *fakeInst) WakeFromSnapshot(context.Context, string, api.AppSpec) (string, error) {

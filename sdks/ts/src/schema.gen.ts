@@ -616,6 +616,7 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
             vcpus?: number;
+            volumes?: components["schemas"]["VolumeMount"][];
         };
         AppStatus: {
             health?: string;
@@ -665,6 +666,7 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
+            volumes?: components["schemas"]["VolumeMount"][];
         };
         CreateSandboxRequest: {
             boot_args?: string;
@@ -873,6 +875,7 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
+            volumes?: components["schemas"]["VolumeMount"][];
         };
         Volume: {
             attached_to?: string;

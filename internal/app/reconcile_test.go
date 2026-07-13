@@ -22,6 +22,7 @@ type fakeInstantiator struct {
 	live        map[string]string // instanceID -> appID
 	creates     []string          // appIDs, in order
 	destroys    []string          // instanceIDs, in order
+	quiesces    []string          // instanceIDs quiesced (sync before stop), in order
 	createErr   error
 	probe       Health           // result Probe returns for live instances
 	imageHealth *api.HealthCheck // what ImageHealth returns (nil = image has none)
@@ -111,6 +112,13 @@ func (f *fakeInstantiator) Destroy(_ context.Context, instanceID string) error {
 	defer f.mu.Unlock()
 	delete(f.live, instanceID)
 	f.destroys = append(f.destroys, instanceID)
+	return nil
+}
+
+func (f *fakeInstantiator) Quiesce(_ context.Context, instanceID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.quiesces = append(f.quiesces, instanceID)
 	return nil
 }
 

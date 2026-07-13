@@ -2336,6 +2336,12 @@
           },
           "vcpus": {
             "type": "integer"
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeMount"
+            }
           }
         }
       },
@@ -2484,6 +2490,12 @@
           },
           "vcpus": {
             "type": "integer"
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeMount"
+            }
           }
         }
       },
@@ -3129,6 +3141,12 @@
           },
           "vcpus": {
             "type": "integer"
+          },
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VolumeMount"
+            }
           }
         }
       },

@@ -46,6 +46,12 @@ type Instantiator interface {
 	// Destroy tears the instance down. Absent/already-gone is not an error.
 	Destroy(ctx context.Context, instanceID string) error
 
+	// Quiesce flushes the instance's guest filesystems (sync) so a subsequent
+	// Destroy doesn't lose un-fsync'd writes to a Writeback volume. Best-effort
+	// (a gone instance or an old agent is not an error). Used before stop/start
+	// sleep and destroy-then-boot redeploy of a volume app.
+	Quiesce(ctx context.Context, instanceID string) error
+
 	// Sleep snapshots the instance and stops its VMM to free RAM while KEEPING
 	// its record + network, so Wake can restore it in place (scale-to-zero). It
 	// returns the id of the durable snapshot captured, which the caller persists
@@ -521,14 +527,33 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 		}
 	}
 
-	snapID, err := m.inst.Sleep(ctx, instanceID)
-	if err != nil {
+	revertRunning := func() {
 		m.obsMu.Lock()
 		if o := m.obs[rec.ID]; o != nil && o.instanceID == instanceID {
 			o.phase = "running" // revert: still awake
 		}
 		m.obsMu.Unlock()
-		return fmt.Errorf("app: sleep %q: %w", name, err)
+	}
+
+	var snapID string
+	if len(rec.Spec.Volumes) > 0 {
+		// Volume app: stop/start sleep, never a snapshot (a snapshot of a
+		// volume-backed VM is the F3 device-state cliff, v0.6.2). Sync the
+		// guest so un-fsync'd writes reach the Writeback volume, then destroy
+		// the instance — which releases its single-writer volume claim.
+		// AsleepSnapshotID stays empty, so Wake cold-creates a fresh instance.
+		_ = m.inst.Quiesce(ctx, instanceID)
+		if derr := m.inst.Destroy(ctx, instanceID); derr != nil {
+			revertRunning()
+			return fmt.Errorf("app: sleep %q (stop/start): %w", name, derr)
+		}
+	} else {
+		var serr error
+		snapID, serr = m.inst.Sleep(ctx, instanceID)
+		if serr != nil {
+			revertRunning()
+			return fmt.Errorf("app: sleep %q: %w", name, serr)
+		}
 	}
 
 	// Persist the asleep marker so a daemon restart re-adopts this app as asleep
@@ -586,6 +611,11 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	newInstanceID := instanceID
 	var werr error
 	switch {
+	case len(rec.Spec.Volumes) > 0:
+		// Volume app (stop/start): sleep destroyed the instance and captured no
+		// snapshot, so cold-create a fresh one. V-M1 re-attaches + mounts the
+		// volume; the IP is new but the proxy resolves the app by name.
+		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
 	case instanceID != "" && m.inst.Exists(instanceID):
 		// Same daemon lifetime: the slept instance is still live — restore in place.
 		werr = m.inst.Wake(ctx, instanceID)
@@ -1191,8 +1221,13 @@ func (m *Manager) reconcilePrimary(ctx context.Context, rec Record, now time.Tim
 			m.startRoll(ctx, rec, ob, now)
 			return
 		}
-		// Not a proxy-fronted app (nothing to keep warm, or a host publish a
-		// second instance can't co-bind): classic destroy-then-boot.
+		// Not a roll-eligible app (nothing to keep warm, a host publish a second
+		// instance can't co-bind, or a single-writer volume): classic
+		// destroy-then-boot. For a volume app, sync first so un-fsync'd writes
+		// reach the Writeback volume before the stop.
+		if len(rec.Spec.Volumes) > 0 {
+			_ = m.inst.Quiesce(ctx, ob.instanceID)
+		}
 		_ = m.inst.Destroy(ctx, ob.instanceID)
 		ob = nil
 	}
@@ -1300,7 +1335,13 @@ func (m *Manager) bootInstance(ctx context.Context, rec Record, prev *observed, 
 // no health check is set) and NO fixed host publish — a published host port
 // can't be bound by two instances simultaneously.
 func canRoll(rec Record) bool {
-	return rec.Spec.Port > 0 && len(rec.Spec.Publish) == 0 && !rec.Spec.PublishAll
+	// A volume app is single-writer: the flip's incoming instance and the
+	// current one would both mount one ext4 device = corruption (and the V-M1
+	// guard would refuse the incoming attach anyway). So a volume app — even
+	// proxy-fronted — redeploys via destroy-then-boot (a brief blip), never the
+	// zero-downtime flip.
+	return rec.Spec.Port > 0 && len(rec.Spec.Publish) == 0 && !rec.Spec.PublishAll &&
+		len(rec.Spec.Volumes) == 0
 }
 
 // startRoll begins a rolling update: boot the new generation's instance WITHOUT
@@ -1703,6 +1744,19 @@ func validateSpec(spec api.AppSpec) error {
 		}
 		if sp.MaxScale > 0 && sp.MaxScale < sp.MinScale {
 			return fmt.Errorf("app: sleep max_scale (%d) must be >= min_scale (%d)", sp.MaxScale, sp.MinScale)
+		}
+		if len(spec.Volumes) > 0 {
+			// A volume app is single-writer: it can never run 2+ live instances,
+			// so scale-out is invalid.
+			if sp.MinScale > 1 || sp.MaxScale > 1 {
+				return errors.New("app: a volume-backed app cannot scale out (min_scale/max_scale > 1) — ext4 is single-writer")
+			}
+			// Idle-sleep needs a wake trigger. Wake-on-request works only through
+			// the ingress proxy, so a TCP-only volume app (no --port) cannot
+			// idle-sleep (TCP-wake arrives in v0.6.1); it must stay always-on.
+			if sp.MinScale == 0 && sp.IdleTimeoutSec > 0 && spec.Port == 0 {
+				return errors.New("app: a volume-backed app without --port cannot idle-sleep (no proxy to wake it; set --port or --min-scale 1)")
+			}
 		}
 		if sp.TargetConcurrency < 0 {
 			return fmt.Errorf("app: sleep target_concurrency must be >= 0, got %d", sp.TargetConcurrency)

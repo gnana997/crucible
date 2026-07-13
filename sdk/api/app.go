@@ -31,6 +31,12 @@ type AppSpec struct {
 	MemoryMiB int   `json:"memory_mib,omitempty"`
 	DiskBytes int64 `json:"disk_bytes,omitempty"`
 
+	// Volumes are persistent block-device volumes mounted into the instance.
+	// A volume app is single-writer: it redeploys via destroy-then-boot and
+	// sleeps via stop/start (never the snapshot flip), and its data survives
+	// redeploys, sleep, and daemon restarts.
+	Volumes []VolumeMount `json:"volumes,omitempty"`
+
 	// Env is added to the instance's environment.
 	Env map[string]string `json:"env,omitempty"`
 

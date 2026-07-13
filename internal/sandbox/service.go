@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/gnana997/crucible/internal/agentapi"
@@ -30,6 +31,21 @@ func (m *Manager) ConfigureService(ctx context.Context, sandboxID string, spec *
 		return wire.ServiceStatus{}, err
 	}
 	return c.ConfigureService(ctx, spec)
+}
+
+// Quiesce flushes the sandbox guest's filesystems (agent sync) so a
+// subsequent stop doesn't lose un-fsync'd writes to a Writeback volume.
+// Best-effort: a sandbox with no agent channel (or gone) is a no-op, and an
+// old agent without /quiesce is tolerated.
+func (m *Manager) Quiesce(ctx context.Context, sandboxID string) error {
+	c, err := m.serviceClient(sandboxID)
+	if err != nil {
+		return nil // no agent channel or already gone — nothing to flush
+	}
+	if err := c.Quiesce(ctx); err != nil && !errors.Is(err, agentapi.ErrQuiesceUnsupported) {
+		return err
+	}
+	return nil
 }
 
 // StartService launches the sandbox's configured service.
