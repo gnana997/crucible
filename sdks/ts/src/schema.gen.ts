@@ -511,6 +511,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/volumes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List volumes */
+        get: operations["listVolumes"];
+        put?: never;
+        /**
+         * Create a persistent volume
+         * @description Creates a durable block-device volume (formatted ext4 on first use). Returns 501 when volume storage is not enabled (set --volume-dir), 409 when the name already exists.
+         */
+        post: operations["createVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a volume */
+        get: operations["getVolume"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a volume
+         * @description Deletes the volume and its data. 409 when it is attached to a live sandbox.
+         */
+        delete: operations["deleteVolume"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/whoami": {
         parameters: {
             query?: never;
@@ -640,6 +682,11 @@ export interface components {
             timeout_s?: number;
             vcpus?: number;
             volumes?: components["schemas"]["VolumeMount"][];
+        };
+        CreateVolumeRequest: {
+            name?: string;
+            /** Format: int64 */
+            size_bytes?: number;
         };
         ErrorResponse: {
             error?: string;
@@ -826,6 +873,18 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             vcpus?: number;
+        };
+        Volume: {
+            attached_to?: string;
+            /** Format: date-time */
+            created_at?: string;
+            host_id?: string;
+            name?: string;
+            /** Format: int64 */
+            size_bytes?: number;
+        };
+        VolumeListResponse: {
+            volumes?: components["schemas"]["Volume"][] | null;
         };
         VolumeMount: {
             name?: string;
@@ -2462,6 +2521,175 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listVolumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VolumeListResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    createVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CreateVolumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Volume name ([a-z0-9][a-z0-9-]*). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Volume name ([a-z0-9][a-z0-9-]*). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

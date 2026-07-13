@@ -71,19 +71,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+start_daemon() {
+  "$CRUCIBLE_BIN" daemon --listen "$LISTEN" \
+    --firecracker-bin "$FIRECRACKER_BIN" --jailer-bin "$JAILER_BIN" \
+    --chroot-base "$MOUNT/jailer" --kernel "$KERNEL" --rootfs "$MOUNT/rootfs.ext4" \
+    --work-base "$MOUNT/run" --image-dir "$MOUNT/images" --log-dir "$MOUNT/logs" \
+    --volume-dir "$MOUNT/volumes" --volume-default-size $((256*1024*1024)) \
+    --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
+  DAEMON_PID=$!
+  for _ in {1..150}; do
+    curl -sf "$BASE_URL/healthz" >/dev/null 2>&1 && return 0
+    kill -0 "$DAEMON_PID" 2>/dev/null || { echo "daemon exited early"; tail -30 "$DAEMON_LOG"; exit 3; }
+    sleep 0.2
+  done
+  echo "daemon never became healthy"; tail -20 "$DAEMON_LOG"; exit 3
+}
+
 echo "== 02 start daemon (--volume-dir $MOUNT/volumes)"
-"$CRUCIBLE_BIN" daemon --listen "$LISTEN" \
-  --firecracker-bin "$FIRECRACKER_BIN" --jailer-bin "$JAILER_BIN" \
-  --chroot-base "$MOUNT/jailer" --kernel "$KERNEL" --rootfs "$MOUNT/rootfs.ext4" \
-  --work-base "$MOUNT/run" --image-dir "$MOUNT/images" --log-dir "$MOUNT/logs" \
-  --volume-dir "$MOUNT/volumes" --volume-default-size $((256*1024*1024)) \
-  --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
-DAEMON_PID=$!
-for _ in {1..150}; do
-  curl -sf "$BASE_URL/healthz" >/dev/null 2>&1 && break
-  kill -0 "$DAEMON_PID" 2>/dev/null || { echo "daemon exited early"; tail -30 "$DAEMON_LOG"; exit 3; }
-  sleep 0.2
-done
+start_daemon
 echo "   daemon healthy (pid $DAEMON_PID)"
 
 run()  { "$CRUCIBLE_BIN" --addr "$BASE_URL" "$@"; }
@@ -127,6 +132,28 @@ if [[ -n "${SBX3:-}" ]]; then
     || bad "expected 'survive-the-kill', got '$GOT'"
   run rm "$SBX4" >/dev/null 2>&1 || true
 fi
+
+# ---- 06 explicit lifecycle: create --size, ls, duplicate, rm ---------------
+echo "== 06 volume create/ls/rm lifecycle (V-M2)"
+run volume create sized --size 128M >/dev/null 2>&1 && ok "volume create --size 128M" || bad "volume create --size"
+run volume ls 2>/dev/null | grep -qw sized && ok "volume ls shows 'sized'" || bad "volume ls missing 'sized'"
+if run volume create sized --size 128M >/dev/null 2>&1; then bad "duplicate create NOT refused"; else ok "duplicate create refused"; fi
+run volume rm sized >/dev/null 2>&1 && ok "volume rm (detached)" || bad "volume rm"
+
+# ---- 07 rm refused while attached, allowed after detach --------------------
+echo "== 07 volume rm refused while attached (V-M2)"
+SBX5=$(run sandbox create --image "$IMAGE" --volume held:/vol)
+if run volume rm held >/dev/null 2>&1; then bad "rm NOT refused while attached"; else ok "rm refused while attached"; fi
+run sandbox rm "${SBX5:-}" >/dev/null 2>&1 || true
+run volume rm held >/dev/null 2>&1 && ok "rm succeeds after detach" || bad "rm after detach"
+
+# ---- 08 records survive a daemon restart -----------------------------------
+echo "== 08 volume records survive a daemon restart (V-M2)"
+run volume create persist --size 128M >/dev/null 2>&1 || bad "create persist"
+kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
+start_daemon
+run volume ls 2>/dev/null | grep -qw persist && ok "volume survived daemon restart (durable store)" || bad "volume gone after restart"
+run volume rm persist >/dev/null 2>&1 || true
 
 echo "==============================================================="
 echo " volumes smoke: $pass passed, $fail failed"

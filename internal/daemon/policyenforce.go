@@ -99,6 +99,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// Image pull/import provision a bootable rootfs — create-grade.
 		case path == "/images" || path == "/images/import":
 			return policy.OpCreate, true
+		// Creating a persistent volume — create-grade.
+		case path == "/volumes":
+			return policy.OpCreate, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
 		// Writing files into a sandbox is exec-grade power over the guest.

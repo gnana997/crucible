@@ -44,6 +44,9 @@ type idParam struct {
 type appNameParam struct {
 	Name string `path:"name" description:"App name (a DNS label, e.g. web)."`
 }
+type volNameParam struct {
+	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
+}
 type regHostParam struct {
 	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
 }
@@ -346,6 +349,19 @@ func buildReflector() *openapi3.Reflector {
 		"", refParam{}, api.ImageResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
 	jsonOp(http.MethodDelete, "/images/{ref}", "deleteImage", "images", "Delete a cached image",
 		"", refParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes", "createVolume", "volumes", "Create a persistent volume",
+		"Creates a durable block-device volume (formatted ext4 on first use). Returns 501 when volume "+
+			"storage is not enabled (set --volume-dir), 409 when the name already exists.",
+		api.CreateVolumeRequest{}, api.Volume{}, http.StatusCreated,
+		http.StatusBadRequest, http.StatusConflict, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/volumes", "listVolumes", "volumes", "List volumes",
+		"", nil, api.VolumeListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/volumes/{name}", "getVolume", "volumes", "Get a volume",
+		"", volNameParam{}, api.Volume{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/volumes/{name}", "deleteVolume", "volumes", "Delete a volume",
+		"Deletes the volume and its data. 409 when it is attached to a live sandbox.",
+		volNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 
 	return r
 }

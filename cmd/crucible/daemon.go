@@ -484,13 +484,15 @@ Required flags:
 		if *jailerBin != "" {
 			vuid, vgid = int(*jailUID), int(*jailGID)
 		}
-		vm, verr := volume.NewManager(*volumeDir, *volumeSize, vuid, vgid)
+		hostID, _ := os.Hostname()
+		vm, verr := volume.NewManager(*volumeDir, *volumeSize, hostID, vuid, vgid)
 		if verr != nil {
 			_, _ = fmt.Fprintf(stderr, "error: init volume storage: %v\n", verr)
 			return 1
 		}
 		volMgr = vm
-		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize)
+		defer func() { _ = volMgr.Close() }()
+		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize, "host_id", hostID)
 	}
 
 	mgrCfg := sandbox.ManagerConfig{
@@ -590,6 +592,7 @@ Required flags:
 		Images:        imageStore,
 		LogStore:      logStore,
 		RegistryStore: regStore,
+		Volumes:       volMgr,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)

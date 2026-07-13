@@ -286,6 +286,12 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteImage) })
 	add("capture", "Capture a sandbox's (or an app's current instance's) network traffic to a local pcap file and return its path. Bounded by max_seconds/max_bytes; requires the 'capture' scoped op. Open the file in Wireshark.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.capture) })
+	add("volume_create", "Create a persistent volume (a durable block device, formatted ext4). Attach it to a sandbox with --volume NAME:/path; data survives the sandbox.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.createVolume) })
+	add("list_volumes", "List persistent volumes (name, size, which sandbox has each attached).",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listVolumes) })
+	add("delete_volume", "Delete a persistent volume and its data by name. Refused while the volume is attached to a live sandbox.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.deleteVolume) })
 }
 
 // handlers carries the operator policy (including the daemon client) the tool

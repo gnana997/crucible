@@ -112,6 +112,26 @@ type VolumeMount struct {
 	Path string `json:"path"`
 }
 
+// Volume is a persistent block-device volume managed by the daemon.
+type Volume struct {
+	Name       string    `json:"name"`
+	SizeBytes  int64     `json:"size_bytes"`
+	CreatedAt  time.Time `json:"created_at"`
+	HostID     string    `json:"host_id,omitempty"`     // host this volume is pinned to
+	AttachedTo string    `json:"attached_to,omitempty"` // sandbox id, empty if detached
+}
+
+// CreateVolumeRequest is the body of POST /volumes.
+type CreateVolumeRequest struct {
+	Name      string `json:"name"`
+	SizeBytes int64  `json:"size_bytes,omitempty"` // 0 = daemon default
+}
+
+// VolumeListResponse is the body of GET /volumes.
+type VolumeListResponse struct {
+	Volumes []Volume `json:"volumes"`
+}
+
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable
 	// from the LAN); "127.0.0.1" pins it to localhost-only.

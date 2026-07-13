@@ -129,7 +129,7 @@ func toolOps(name string) []policy.Operation {
 	switch name {
 	case "run":
 		return []policy.Operation{policy.OpCreate, policy.OpExec, policy.OpDelete}
-	case "create_sandbox":
+	case "create_sandbox", "volume_create":
 		return []policy.Operation{policy.OpCreate}
 	case "create_app", "update_app":
 		// An app configures an entrypoint the daemon runs — exec-grade
@@ -159,9 +159,9 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpSnapshot}
 	case "fork":
 		return []policy.Operation{policy.OpFork}
-	case "delete_sandbox", "delete_snapshot":
+	case "delete_sandbox", "delete_snapshot", "delete_volume":
 		return []policy.Operation{policy.OpDelete}
-	case "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles", "list_images":
+	case "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles", "list_images", "list_volumes":
 		return []policy.Operation{policy.OpRead}
 	case "delete_image":
 		return []policy.Operation{policy.OpDelete}

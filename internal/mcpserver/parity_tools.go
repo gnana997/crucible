@@ -9,7 +9,63 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	client "github.com/gnana997/crucible/sdk"
+	"github.com/gnana997/crucible/sdk/api"
 )
+
+// --- volume management (volume_create / list_volumes / delete_volume) --------
+
+type volumeToolOutput struct {
+	Name       string `json:"name"`
+	SizeBytes  int64  `json:"size_bytes"`
+	AttachedTo string `json:"attached_to,omitempty"`
+	HostID     string `json:"host_id,omitempty"`
+}
+
+type volumeListToolOutput struct {
+	Volumes []volumeToolOutput `json:"volumes"`
+}
+
+type createVolumeInput struct {
+	Name      string `json:"name" jsonschema:"the durable volume name ([a-z0-9][a-z0-9-]*)"`
+	SizeBytes int64  `json:"size_bytes,omitempty" jsonschema:"size in bytes (0 = the daemon default)"`
+}
+
+func (h *handlers) createVolume(ctx context.Context, _ *mcp.CallToolRequest, in createVolumeInput) (*mcp.CallToolResult, volumeToolOutput, error) {
+	if in.Name == "" {
+		return nil, volumeToolOutput{}, errors.New("name is required")
+	}
+	v, err := h.cfg.Client.CreateVolume(ctx, api.CreateVolumeRequest{Name: in.Name, SizeBytes: in.SizeBytes})
+	if err != nil {
+		return nil, volumeToolOutput{}, err
+	}
+	return nil, volumeToolOutput{Name: v.Name, SizeBytes: v.SizeBytes, AttachedTo: v.AttachedTo, HostID: v.HostID}, nil
+}
+
+func (h *handlers) listVolumes(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, volumeListToolOutput, error) {
+	vols, err := h.cfg.Client.ListVolumes(ctx)
+	if err != nil {
+		return nil, volumeListToolOutput{}, err
+	}
+	out := volumeListToolOutput{Volumes: make([]volumeToolOutput, len(vols.Items))}
+	for i, v := range vols.Items {
+		out.Volumes[i] = volumeToolOutput{Name: v.Name, SizeBytes: v.SizeBytes, AttachedTo: v.AttachedTo, HostID: v.HostID}
+	}
+	return nil, out, nil
+}
+
+type volumeNameInput struct {
+	Name string `json:"name" jsonschema:"the volume to delete (refused while attached to a live sandbox)"`
+}
+
+func (h *handlers) deleteVolume(ctx context.Context, _ *mcp.CallToolRequest, in volumeNameInput) (*mcp.CallToolResult, deletedOutput, error) {
+	if in.Name == "" {
+		return nil, deletedOutput{}, errors.New("name is required")
+	}
+	if err := h.cfg.Client.DeleteVolume(ctx, in.Name); err != nil {
+		return nil, deletedOutput{}, err
+	}
+	return nil, deletedOutput{Deleted: in.Name}, nil
+}
 
 // --- image management (list_images / delete_image) --------------------------
 

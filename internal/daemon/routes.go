@@ -99,6 +99,13 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /images", s.handleListImages)
 	mux.HandleFunc("GET /images/{ref}", s.handleGetImage)
 	mux.HandleFunc("DELETE /images/{ref}", s.handleDeleteImage)
+
+	// Persistent volumes (v0.6.0). 501 when Config.Volumes is nil. Mutations
+	// gate as `create`/`delete`, reads as `read`.
+	mux.HandleFunc("POST /volumes", s.handleCreateVolume)
+	mux.HandleFunc("GET /volumes", s.handleListVolumes)
+	mux.HandleFunc("GET /volumes/{name}", s.handleGetVolume)
+	mux.HandleFunc("DELETE /volumes/{name}", s.handleDeleteVolume)
 	return mux
 }
 

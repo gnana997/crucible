@@ -1996,6 +1996,204 @@
         }
       }
     },
+    "/volumes": {
+      "get": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "List volumes",
+        "operationId": "listVolumes",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VolumeListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Create a persistent volume",
+        "description": "Creates a durable block-device volume (formatted ext4 on first use). Returns 501 when volume storage is not enabled (set --volume-dir), 409 when the name already exists.",
+        "operationId": "createVolume",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVolumeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Volume"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/volumes/{name}": {
+      "delete": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Delete a volume",
+        "description": "Deletes the volume and its data. 409 when it is attached to a live sandbox.",
+        "operationId": "deleteVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Get a volume",
+        "operationId": "getVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Volume"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/whoami": {
       "get": {
         "tags": [
@@ -2340,6 +2538,18 @@
             "items": {
               "$ref": "#/components/schemas/VolumeMount"
             }
+          }
+        }
+      },
+      "CreateVolumeRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
           }
         }
       },
@@ -2919,6 +3129,40 @@
           },
           "vcpus": {
             "type": "integer"
+          }
+        }
+      },
+      "Volume": {
+        "type": "object",
+        "properties": {
+          "attached_to": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "host_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "VolumeListResponse": {
+        "type": "object",
+        "properties": {
+          "volumes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Volume"
+            },
+            "nullable": true
           }
         }
       },

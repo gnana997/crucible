@@ -13,6 +13,11 @@ class AppExecReq(BaseModel):
     timeout_s: int | None = None
 
 
+class CreateVolumeRequest(BaseModel):
+    name: str | None = None
+    size_bytes: int | None = None
+
+
 class ErrorResponse(BaseModel):
     error: str | None = None
 
@@ -167,6 +172,18 @@ class SnapshotResponse(BaseModel):
     source_id: str | None = None
     state_path: str | None = None
     vcpus: int | None = None
+
+
+class Volume(BaseModel):
+    attached_to: str | None = None
+    created_at: AwareDatetime | None = None
+    host_id: str | None = None
+    name: str | None = None
+    size_bytes: int | None = None
+
+
+class VolumeListResponse(BaseModel):
+    volumes: list[Volume] | None = None
 
 
 class VolumeMount(BaseModel):

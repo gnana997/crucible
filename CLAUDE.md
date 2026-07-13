@@ -19,7 +19,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
-an MCP server (27 tools), daemon API-key auth with scoped/policy tokens, and a
+an MCP server (30 tools), daemon API-key auth with scoped/policy tokens, and a
 TUI. Two durability tiers: **sandboxes** are ephemeral (a daemon restart drops
 the VM), while **apps** (`crucible app`) are durable — the daemon re-creates a
 healthy instance from persisted desired state. The v0.4 line built apps out:

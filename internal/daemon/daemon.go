@@ -34,6 +34,7 @@ import (
 	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
+	"github.com/gnana997/crucible/internal/volume"
 )
 
 // Server hosts the crucible HTTP API.
@@ -106,6 +107,11 @@ type Config struct {
 	// to image pulls. Nil makes those routes answer 501 and pulls stay
 	// anonymous.
 	RegistryStore *registryauth.Store
+
+	// Volumes, when non-nil, enables the /volumes routes (create/list/delete
+	// persistent volumes) and reflects them in create requests. Nil makes
+	// those routes answer 501 and a create requesting a volume is rejected.
+	Volumes *volume.Manager
 }
 
 const (
