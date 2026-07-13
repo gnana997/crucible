@@ -47,6 +47,31 @@ byte-for-byte read that could hold the freeze for seconds. crucible therefore
 asks you to sleep the app first (a slept or detached backup works on any
 filesystem). Put the backup directory on btrfs or XFS to back up live databases.
 
+## No downtime, measured
+
+A live backup pauses a database only for the freeze, and only briefly. Measured on
+`postgres:16-alpine` on a btrfs volume (1 vCPU / 512 MiB, AMD Ryzen AI 9 HX 370),
+under **16 concurrent writers sustaining ~2,500 padded-row INSERTs per second**,
+taking 12 live backups back to back:
+
+| Metric | Value |
+|---|---|
+| Live backup operation (freeze + reflink copy + thaw) | **~90 ms** median (73 to 111 ms) |
+| Typical INSERT latency | ~6 ms |
+| Worst INSERT latency during a backup | ~235 ms |
+| **Failed transactions** | **0** |
+
+The whole backup, freeze included, takes about 90 ms, and it barely moves with load
+because the copy is an O(1) reflink (pushing to 32 writers left it at ~105 ms). The
+freeze itself is a slice of that: an fsync of the volume plus the reflink. No
+transaction failed: a query that lands during the freeze waits for it and then
+completes, so the client sees a brief latency blip, not an error. That worst-case
+blip grows with write concurrency (more in-flight commits queue behind the freeze,
+then flush together on thaw), but it stays a pause, not an outage. At 32 concurrent
+writers the busiest query saw a few hundred milliseconds and still zero failures.
+
+Reproduce with `scripts/bench_backup.sh` (`WRITERS=N SAMPLES=M`).
+
 ## Where backups live
 
 Backups are written under `--backup-dir` (default `<volume-dir>/backups`). Point
