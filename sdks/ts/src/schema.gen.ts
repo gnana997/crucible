@@ -608,6 +608,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/volumes/{name}/clone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clone a volume
+         * @description Copies the quiescent volume {name} into a new volume. 409 when the target exists or the source is attached to a running sandbox.
+         */
+        post: operations["cloneVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/{name}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore a backup to a new volume
+         * @description Materialises a backup into the new volume {name}. 409 when {name} already exists (restore never overwrites), 404 when the backup is gone.
+         */
+        post: operations["restoreVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/whoami": {
         parameters: {
             query?: never;
@@ -699,6 +739,10 @@ export interface components {
         };
         BackupListResponse: {
             backups?: components["schemas"]["Backup"][] | null;
+        };
+        CloneVolReq: {
+            /** @description Name of the new volume to create. */
+            to?: string;
         };
         ConfigureServiceReq: {
             cmd?: string[] | null;
@@ -886,6 +930,10 @@ export interface components {
             host?: string;
             secret?: string;
             username?: string;
+        };
+        RestoreVolReq: {
+            /** @description Backup id to restore. */
+            from?: string;
         };
         SandboxResponse: {
             /** Format: date-time */
@@ -2891,6 +2939,132 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Backup"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cloneVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Source volume to clone (must be quiescent). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CloneVolReq"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    restoreVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Name of the new volume to create. */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RestoreVolReq"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description Not Found */

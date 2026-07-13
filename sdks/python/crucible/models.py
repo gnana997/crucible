@@ -26,6 +26,10 @@ class BackupListResponse(BaseModel):
     backups: list[Backup] | None = None
 
 
+class CloneVolReq(BaseModel):
+    to: str | None = Field(None, description='Name of the new volume to create.')
+
+
 class CreateVolumeRequest(BaseModel):
     name: str | None = None
     size_bytes: int | None = None
@@ -150,6 +154,10 @@ class RegistryCredentialRequest(BaseModel):
     host: str | None = None
     secret: str | None = None
     username: str | None = None
+
+
+class RestoreVolReq(BaseModel):
+    from_: str | None = Field(None, alias='from', description='Backup id to restore.')
 
 
 class SandboxResponse(BaseModel):
