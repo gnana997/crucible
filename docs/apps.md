@@ -151,6 +151,8 @@ simpler destroy-then-boot redeploy.
 
 ## Scale to zero
 
+![a durable app sleeps to ~zero RAM when idle, survives a full daemon restart while asleep, then wakes in place on the next request in under a second](../demo/scale-to-zero.gif)
+
 An app can **sleep when idle and wake on the next request in under a second**.
 Sleeping snapshots the running guest and stops its VMM — freeing its RAM and CPU
 — while **keeping** the netns, subnet/IP reservation, and ingress route, so the

@@ -6,9 +6,9 @@
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
-![crucible: a durable app sleeps to ~zero RAM when idle, survives a full daemon restart while asleep, then wakes in place on the next request in under a second](demo/scale-to-zero.gif)
+![crucible: deploy a serverless postgres on a durable volume; it scales to zero RAM when idle, and the next connection wakes it with its data intact](demo/serverless.gif)
 
-<p align="center"><em>Deploy a durable app reached by name; it <strong>sleeps itself when idle</strong> (freeing its RAM), survives a <strong>full daemon restart</strong> while asleep, then <strong>wakes in place on the next request in under a second</strong>, same address, same identity (<a href="docs/apps.md#scale-to-zero">scale to zero</a>). The snapshot/fork primitive underneath is its own one-take demo: <a href="docs/fork.md">snapshot &amp; fork</a>.</em></p>
+<p align="center"><em>Deploy a <strong>serverless postgres</strong> on a durable volume: it <strong>scales to zero when idle</strong> (freeing its RAM), and the <strong>next connection wakes it</strong> with your data intact (<a href="docs/serverless.md">wake-on-TCP</a> + <a href="docs/volumes.md">persistent volumes</a>). Any TCP service scales to zero the same way. The snapshot/fork primitive underneath is its own one-take demo: <a href="docs/fork.md">snapshot &amp; fork</a>.</em></p>
 
 AI coding agents write code and want to run it: check it compiles, run the tests they just wrote, try three approaches in parallel. Today's options are all wrong in different ways: raw Docker (shared kernel, weak isolation, no fork), hosted sandbox services (lock-in, usage-priced), or rolling your own Firecracker stack (months of operational work).
 
