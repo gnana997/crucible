@@ -3,7 +3,7 @@
 // and a Provider that owns the configured exporters and shuts them down cleanly.
 //
 // Design (see the v0.5.4 plan): crucible is a telemetry *source*, not a
-// pipeline. It emits open standards — Prometheus /metrics and (from O-M3) OTLP —
+// pipeline. It emits open standards — Prometheus /metrics and (soon) OTLP —
 // and delegates routing/fan-out to the ecosystem (OpenTelemetry Collector,
 // Vector, Grafana Alloy). The Exporter interface here is a compile-time seam,
 // NOT a runtime plugin loader: adding a sink means adding a reviewed built-in,

@@ -8,9 +8,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Exporter is the seam for a telemetry sink. O-M1 defines the interface and the
+// Exporter is the seam for a telemetry sink. This defines the interface and the
 // Provider lifecycle; the built-in exporters (Prometheus, OTLP, stdout) land in
-// O-M2/O-M3. It is a compile-time interface, not a plugin loader — a new sink is
+// later milestones. It is a compile-time interface, not a plugin loader — a new sink is
 // a reviewed built-in, never foreign code loaded at runtime.
 type Exporter interface {
 	// Name identifies the exporter in logs (e.g. "otlp", "prometheus").
@@ -32,7 +32,7 @@ type Config struct {
 	ServiceName string
 	Logger      *slog.Logger
 
-	// OTLP metric export (v0.5.4 O-M3). Off unless OTLPEndpoint or an
+	// OTLP metric export (v0.5.4). Off unless OTLPEndpoint or an
 	// OTEL_EXPORTER_OTLP_* env var is set. Gatherer is the Prometheus registry
 	// bridged to OTLP (the same series /metrics serves).
 	OTLPEndpoint string

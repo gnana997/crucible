@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Observability smoke (v0.5.4 O-M1 + O-M2): per-app Prometheus metrics off the
+# Observability smoke (v0.5.4): per-app Prometheus metrics off the
 # ingress proxy, plus the daemon pprof endpoint.
 #
 # What this proves on real KVM:
@@ -13,7 +13,7 @@
 #       no app_requests_total series for a bogus app name
 #   04  daemon pprof (--pprof-listen) serves /debug/pprof/ (J9 slice)
 #
-# OTLP export checks arrive with O-M3.
+# OTLP export checks arrive later.
 #
 # Requires: root + KVM, firecracker + jailer + vmlinux, crucible built, curl.
 #
@@ -146,7 +146,7 @@ code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "http://127.0.0.1:${
 hcode="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "http://127.0.0.1:${PPROF_PORT}/debug/pprof/heap" 2>/dev/null)"
 [[ "$hcode" == "200" ]] && pass "pprof heap profile serves" || fail "pprof heap did not serve (code=$hcode)"
 
-echo "== 05 OTLP export wired (O-M3 metrics + O-M3b logs)"
+echo "== 05 OTLP export wired (metrics + logs)"
 # No collector runs, so we assert the pipelines were BUILT (the exporters are
 # lazy — a missing collector doesn't fail startup). Full arrival is validated
 # against a real collector + the internal/telemetry bridge/pump unit tests.
@@ -161,7 +161,7 @@ else
   fail "OTLP log export not enabled — expected the enable log line"
 fi
 
-echo "== 06 packet capture (v0.5.4 O-M5): host-side pcap of the app instance"
+echo "== 06 packet capture (v0.5.4): host-side pcap of the app instance"
 INST="$(curl -s "$BASE_URL/apps/web" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
 if [[ "$INST" != sbx_* ]]; then
   fail "could not read web's instance id for the capture test"

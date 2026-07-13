@@ -169,7 +169,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 	}
 	name := appName(r.Host)
 
-	// Per-app request metric (v0.5.4 O-M2): capture the final status + latency and
+	// Per-app request metric (v0.5.4): capture the final status + latency and
 	// report once on return, but ONLY for a KNOWN app — an unknown/unauthorized
 	// Host never counts, so label cardinality stays bounded to real apps. The
 	// wrapper delegates Flush/Hijack so streaming and websocket upgrades still work.

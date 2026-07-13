@@ -13,7 +13,7 @@ import (
 
 // TestOTLPMetricBridge proves a client_golang registry flows through the OTel
 // Prometheus bridge → metric pipeline → exporter with no metric redefinition —
-// the core of O-M3's "same /metrics series, pushed over OTLP".
+// the core of OTLP metric export: the same /metrics series pushed over OTLP.
 func TestOTLPMetricBridge(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	c := prometheus.NewCounter(prometheus.CounterOpts{Name: "demo_widget_total", Help: "x"})

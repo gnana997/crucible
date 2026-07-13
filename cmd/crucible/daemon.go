@@ -549,7 +549,7 @@ Required flags:
 			logger.Info("durable logs enabled", "log_dir", *logDir)
 		}
 	}
-	// Stream app logs over OTLP (v0.5.4 O-M3b) — no-op unless --otlp-endpoint is
+	// Stream app logs over OTLP (v0.5.4) — no-op unless --otlp-endpoint is
 	// set; taps the log store's best-effort fanout so it never blocks the app.
 	if *otlpLogs && logStore != nil {
 		tele.StartLogExport(context.Background(), logStore)
@@ -601,7 +601,7 @@ Required flags:
 		}
 	}
 
-	// Per-app lifecycle metrics (v0.5.4 O-M2): pull-model, read from the app
+	// Per-app lifecycle metrics (v0.5.4): pull-model, read from the app
 	// manager at scrape time so a deleted app simply stops being reported.
 	if appMgr != nil {
 		mx.SetAppStateSource(func() []metrics.AppState {

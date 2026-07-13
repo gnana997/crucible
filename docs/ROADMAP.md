@@ -119,7 +119,7 @@ An app runs multiple replicas behind the proxy, load-balanced, and autoscales on
 - [x] **Load balancing** — the proxy balances requests across an app's live instances with **power-of-two-choices least-request**, a slow-start ramp so a just-forked replica isn't slammed cold, and passive outlier ejection. External and app→app traffic both balance through the one path.
 - [x] **Autoscaling** — `--max-scale M --target-concurrency C` autoscales between the floor and M on concurrency: a fast window scales up on bursts, a slow window scales down when calm (stabilized against flapping). `min_scale=0` composes with scale-to-zero (idle→0, request→1, load→M). `app ls` shows a replicas column.
 
-### v0.5.3 — Reliability & isolation hardening *(current)*
+### v0.5.3 — Reliability & isolation hardening
 
 Close the sharp edges the scale-out and app→app work surfaced: no leaked VMs, no stale agents, and no port contention between publishing and internal networking.
 
@@ -127,11 +127,20 @@ Close the sharp edges the scale-out and app→app work surfaced: no leaked VMs, 
 - [x] **Agent-fresh image cache** — converted OCI images are keyed by the injected agent's digest, so a daemon upgrade re-converts instead of booting a stale baked agent (the cause of `wake` failing on an image an older daemon cached).
 - [x] **Publish coexists with app→app** — the `<app>.internal` VIP and a published host port on the same number no longer clash (`SO_REUSEPORT` + a host-port registry that preserves one-owner-per-port).
 
+### v0.5.4 — Observability *(current)*
+
+Make a running app legible — per-app metrics, OTLP export of metrics and logs, daemon profiling, and on-demand packet capture — while keeping the in-daemon surface small: crucible emits open standards and delegates routing to your collector.
+
+- [x] **Per-app metrics** — request rate / latency / status class from the proxy + lifecycle gauges (`app_replicas`/`ready`/`up`/`asleep`/`sleep_total`/`wake_latency`) on `/metrics`, cardinality-bounded, with a reference Grafana dashboard ([observability.md](observability.md)).
+- [x] **OTLP export (metrics + logs)** — one `--otlp-endpoint` flag pushes the same `/metrics` series (via an OpenTelemetry Prometheus bridge, no metric redefinition) and streams app logs from the durable log store; honors `OTEL_EXPORTER_OTLP_*` env. Point it at any collector.
+- [x] **Daemon pprof** — `--pprof-listen` serves Go `net/http/pprof` (off by default; loopback-guarded).
+- [x] **On-demand packet capture** — `sandbox capture` / `app capture` streams host-side pcap (no in-guest tcpdump; distroless-safe), gated by a default-deny `capture` scoped op and audited; MCP `capture`/`list_images`/`delete_image` tools (24→27).
+
 ## Planned
 
 ### Next — Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, and horizontal scale-out exist (v0.4.0–v0.5.3); next is the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero, app→app networking, horizontal scale-out, and observability exist (v0.4.0–v0.5.4); next is the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy** — ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth** — ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.

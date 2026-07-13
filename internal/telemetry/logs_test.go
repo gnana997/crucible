@@ -13,7 +13,7 @@ import (
 
 // TestOTLPLogsPump proves an appended log-store record flows through the fanout
 // → pump → OTel log pipeline → exporter, carrying the instance id and stream as
-// attributes (the O-M3b path, with a stdout exporter standing in for OTLP).
+// attributes (with a stdout exporter standing in for OTLP).
 func TestOTLPLogsPump(t *testing.T) {
 	store, err := logstore.New(t.TempDir())
 	if err != nil {

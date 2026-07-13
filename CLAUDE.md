@@ -15,7 +15,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.5.3 — durable apps you deploy, reach, update, pull privately, scale to zero, wire together (app→app by name), and scale out (N load-balanced autoscaling replicas). The core runtime
+**Status:** v0.5.4 — durable apps you deploy, reach, update, pull privately, scale to zero, wire together (app→app by name), scale out (N load-balanced autoscaling replicas), and observe (per-app metrics + OTLP + pprof + packet capture). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -46,8 +46,13 @@ request concurrency; **v0.5.3 reliability & isolation hardening** — no orphane
 VMs across app-lifecycle edges (rolling update / delete / sleep mid-drain), the
 converted-image cache is keyed by the injected agent's digest (a daemon upgrade
 re-converts instead of booting a stale agent), and a published host port
-coexists with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`). See the
-ROADMAP for what's next.
+coexists with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`);
+**v0.5.4 observability** — per-app metrics on `/metrics` (+ reference Grafana
+dashboard), OTLP export of metrics + logs via `--otlp-endpoint` (an OTel
+Prometheus bridge, so `/metrics` is unchanged) honoring `OTEL_*` env, daemon
+`--pprof-listen`, and on-demand host-side packet capture (`sandbox`/`app
+capture` → pcap, default-deny `capture` scoped op). See the ROADMAP for what's
+next.
 
 ## Working style
 

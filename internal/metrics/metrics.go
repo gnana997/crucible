@@ -28,7 +28,7 @@ type Metrics struct {
 	wakeLatency             prometheus.Histogram
 	internalRequests        prometheus.Counter
 
-	// Per-app request metrics (v0.5.4 O-M2). Push-model with an `app` (and
+	// Per-app request metrics (v0.5.4). Push-model with an `app` (and
 	// `code` status-class) label; cardinality is bounded to real apps by the
 	// proxy (unknown Host headers are never counted) and GC'd via SyncApps.
 	appRequests        *prometheus.CounterVec

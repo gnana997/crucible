@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.5.3](https://img.shields.io/badge/status-v0.5.3-orange)
+![Status: v0.5.4](https://img.shields.io/badge/status-v0.5.4-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -37,7 +37,7 @@ Full motivation and design: [docs/VISION.md](docs/VISION.md).
 - **Default-deny networking, opt-in wider.** No egress unless you allowlist hostnames; resolved IPs are range-filtered so a guest can't SSRF cloud metadata or private ranges. A trusted app can opt into full public egress (`--net-full-egress`) or public CIDRs (`--net-allow-cidr`) — still public-unicast only, never metadata/RFC1918. Enforced in host nftables + a DNS proxy the guest is forced through.
 - **Three ways to drive it.** A [CLI](docs/cli.md), a live [TUI dashboard](docs/tui.md), and an [MCP server](docs/mcp.md): all thin clients over one REST API, so they can't drift.
 - **Scoped tokens.** Bind an API key to a policy the daemon enforces (allowed operations, egress ceiling, profile allowlist, resource caps, expiry). See [docs/policy.md](docs/policy.md).
-- **Observability.** Per-exec structured results (exit code, wall-clock, and CPU/memory/I/O usage), durable per-sandbox logs, and a Prometheus `/metrics` endpoint.
+- **Observability.** Per-exec structured results (exit code, wall-clock, CPU/memory/I/O usage) and durable per-sandbox logs, plus **per-app metrics** on Prometheus `/metrics` (RPS, latency, replicas, `app_asleep`) with a reference Grafana dashboard, **OTLP export** of metrics + logs to any collector (`--otlp-endpoint`), daemon **pprof**, and on-demand **packet capture** (`app capture` → host-side pcap) ([docs/observability.md](docs/observability.md)).
 - **Self-hosted, single binary.** Daemon and CLI are one Go binary. No cloud, no account, no telemetry.
 
 > **Maturity.** crucible is pre-1.0 and **not yet hardened for production or untrusted multi-tenant use.** The daemon binds loopback by default, with optional bearer-key auth (required, plus TLS, to bind a non-loopback address). See [SECURITY.md](SECURITY.md) for the exact isolation model and its limits.
@@ -106,7 +106,8 @@ Fork is **~9× faster than a cold boot** either way, and we ran **512 concurrent
 
 ## Roadmap
 
-- **v0.5.3** (current): **reliability & isolation hardening** — no orphaned VMs across app-lifecycle edges (a rolling update's old instance is always reaped, even on delete/re-update/sleep mid-drain); a daemon upgrade no longer boots a **stale guest agent** from a cached image (conversions are keyed by the injected agent too); and a published host port now **coexists** with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`). ([CHANGELOG](CHANGELOG.md#053--2026-07-13)).
+- **v0.5.4** (current): **observability** — per-app metrics on `/metrics` (RPS, latency, replicas, `app_asleep`) + a reference Grafana dashboard; **OTLP export** of metrics and logs via one `--otlp-endpoint` flag (an OpenTelemetry Prometheus bridge, so `/metrics` is unchanged); daemon **pprof** (`--pprof-listen`); and **on-demand packet capture** (`app capture` → host-side pcap, no in-guest tcpdump, gated by a default-deny `capture` op). ([CHANGELOG](CHANGELOG.md#054--2026-07-13)).
+- **v0.5.3**: **reliability & isolation hardening** — no orphaned VMs across app-lifecycle edges (a rolling update's old instance is always reaped, even on delete/re-update/sleep mid-drain); a daemon upgrade no longer boots a **stale guest agent** from a cached image (conversions are keyed by the injected agent too); and a published host port now **coexists** with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`). ([CHANGELOG](CHANGELOG.md#053--2026-07-13)).
 - **v0.5.2**: **scale out** — `app create --min-scale N` runs N replicas behind the proxy, **P2C load-balanced**; `--max-scale M --target-concurrency C` autoscales on concurrency (fast up, slow down). Each replica is **forked warm from a golden snapshot in milliseconds**, self-healed by the reconciler — k8s-style horizontal scaling where the VM properties (snapshot/restore) make scale-up cheap ([docs/apps.md#horizontal-scale-out](docs/apps.md#horizontal-scale-out)).
 - **v0.5.1**: **app→app networking** — deploy web + backend as separate apps and let them talk: `web` reaches `http://backend.internal/` through the ingress proxy, **default-deny** (`app create web --can-call backend`), and a scaled-to-zero backend **wakes on the internal call**. Through the proxy VIP (not a guest-to-guest mesh), so per-sandbox isolation holds. Experimental, off by default (`--internal-networking`) ([docs/apps.md](docs/apps.md)).
 - **v0.5.0**: **scale to zero** — an app **sleeps when idle and wakes on the next request in under a second**. `crucible app sleep`/`app wake` snapshot a running app and stop its VMM to free RAM+CPU, then restore it **in place** (same IP, same identity, clock stepped to now); `app create --idle-timeout <dur> --min-scale 0` does it automatically — the ingress proxy sleeps an idle app and the next request wakes it, buffered until it's ready (a request herd coalesces into one wake). A slept app **survives a daemon restart** (durable snapshot, re-adopted on start) ([docs/apps.md](docs/apps.md)).

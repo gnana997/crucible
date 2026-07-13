@@ -6,6 +6,44 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.5.4] — 2026-07-13
+
+Observability. A running app is now legible — per-app metrics, OTLP export of
+metrics and logs, daemon profiling, and on-demand packet capture — with a
+deliberately small in-daemon surface: crucible emits open standards and delegates
+routing to your collector.
+
+### Added
+
+- **Per-app metrics on `/metrics`.** Request rate, latency (histogram), and status
+  class per app from the ingress proxy (`app_requests_total{app,code}`,
+  `app_request_duration_seconds{app}`), plus lifecycle gauges pulled from the app
+  manager — `app_replicas`, `app_ready_replicas`, `app_up`, `app_asleep`,
+  `app_sleep_total`, `app_last_wake_latency_ms`. Label cardinality is bounded to
+  real apps (an unknown Host header is never counted). A **reference Grafana
+  dashboard** ships in `docs/observability/grafana-dashboard.json`.
+- **OTLP export (metrics + logs).** One flag — `--otlp-endpoint` — pushes the same
+  `/metrics` series over OTLP (via an OpenTelemetry Prometheus **bridge**, so no
+  metric is redefined and `/metrics` is unchanged) and streams app logs from the
+  durable log store as OTLP log records. Honors the standard `OTEL_EXPORTER_OTLP_*`
+  / `OTEL_RESOURCE_ATTRIBUTES` env natively; `--otlp-protocol grpc|http`,
+  `--otlp-headers`, `--otlp-insecure`, `--otlp-logs`. Point it at any collector
+  (Grafana/Tempo/Loki, SigNoz, Datadog, Honeycomb, …). Off by default; a setup
+  error is logged and skipped, so the daemon always starts and `/metrics` keeps
+  serving.
+- **Daemon profiling.** `--pprof-listen 127.0.0.1:6060` serves Go `net/http/pprof`
+  for CPU/heap/goroutine profiles of the daemon's hot paths. Off by default; warns
+  on a non-loopback bind (profiles can expose process memory).
+- **On-demand packet capture.** `crucible sandbox capture <id>` / `app capture
+  <name>` streams a live **pcap** of a guest's traffic, captured **host-side** on
+  the sandbox's veth — **no in-guest tcpdump**, so it works for distroless/scratch.
+  BPF `--filter`, `--snaplen`, and hard `--max-bytes` / `--max-seconds` caps.
+  Gated by a new **default-deny `capture` scoped-token op** (never implied by
+  `read` — payloads are sensitive) and audited. Needs `tcpdump` on the host.
+- **MCP tools (24 → 27).** `list_images` and `delete_image` (image-cache
+  management), and `capture` (writes a pcap to a local file and returns its path,
+  gated by the `capture` op).
+
 ## [0.5.3] — 2026-07-13
 
 Reliability & isolation hardening: no orphaned VMs across app-lifecycle edges, no
