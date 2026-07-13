@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gnana997/crucible/sdk/api"
 )
@@ -78,13 +79,30 @@ func desiredForwarders(spec api.AppSpec) []fwdSpec {
 	return out
 }
 
-func signatureOf(fs []fwdSpec) string {
+// reapPolicy derives the forwarder's idle-connection behavior from an app's sleep
+// policy: how long a connection may sit byte-idle before it's reaped, and whether
+// to enable TCP keepalive. KeepConnections → never reap on silence (pub/sub),
+// keepalive on. Otherwise reap at ConnIdleTimeoutSec, defaulting to IdleTimeoutSec.
+// WakesOnTCP guarantees Sleep is non-nil with IdleTimeoutSec > 0.
+func reapPolicy(spec api.AppSpec) (reapIdle time.Duration, keepAlive bool) {
+	sp := spec.Sleep
+	if sp.KeepConnections {
+		return 0, true
+	}
+	secs := sp.ConnIdleTimeoutSec
+	if secs <= 0 {
+		secs = sp.IdleTimeoutSec
+	}
+	return time.Duration(secs) * time.Second, false
+}
+
+func signatureOf(fs []fwdSpec, reapIdle time.Duration, keepAlive bool) string {
 	parts := make([]string, len(fs))
 	for i, f := range fs {
 		parts[i] = f.hostAddr + ">" + strconv.Itoa(f.guestPort)
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, ",")
+	return strings.Join(parts, ",") + "|reap=" + reapIdle.String() + "|keep=" + strconv.FormatBool(keepAlive)
 }
 
 // ReconcilePorts binds a waking forwarder per publish mapping for each
@@ -95,8 +113,10 @@ func signatureOf(fs []fwdSpec) string {
 // never blocks the reconcile loop on a long-lived connection.
 func (s *WakeForwarderSet) ReconcilePorts(specs []api.AppSpec) {
 	type want struct {
-		sig  string
-		fwds []fwdSpec
+		sig       string
+		fwds      []fwdSpec
+		reapIdle  time.Duration
+		keepAlive bool
 	}
 	desired := make(map[string]want, len(specs))
 	for _, sp := range specs {
@@ -107,7 +127,8 @@ func (s *WakeForwarderSet) ReconcilePorts(specs []api.AppSpec) {
 		if len(fs) == 0 {
 			continue
 		}
-		desired[sp.Name] = want{sig: signatureOf(fs), fwds: fs}
+		reapIdle, keepAlive := reapPolicy(sp)
+		desired[sp.Name] = want{sig: signatureOf(fs, reapIdle, keepAlive), fwds: fs, reapIdle: reapIdle, keepAlive: keepAlive}
 	}
 
 	s.mu.Lock()
@@ -131,7 +152,17 @@ func (s *WakeForwarderSet) ReconcilePorts(specs []api.AppSpec) {
 		fwds := make([]*WakingForwarder, 0, len(d.fwds))
 		bound := true
 		for _, fs := range d.fwds {
-			f, err := NewWakingForwarder(fs.hostAddr, name, fs.guestPort, s.resolver, s.waker, s.activity, s.log)
+			f, err := NewWakingForwarder(WakingForwarderConfig{
+				HostAddr:  fs.hostAddr,
+				AppName:   name,
+				GuestPort: fs.guestPort,
+				Resolver:  s.resolver,
+				Waker:     s.waker,
+				Activity:  s.activity,
+				ReapIdle:  d.reapIdle,
+				KeepAlive: d.keepAlive,
+				Log:       s.log,
+			})
 			if err != nil {
 				// A busy host port, say. Roll back the partial bind and leave the
 				// app unrecorded so the next reconcile pass retries.

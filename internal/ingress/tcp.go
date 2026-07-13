@@ -7,9 +7,16 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gnana997/crucible/internal/reuseport"
 )
+
+// keepAlivePeriod is the TCP keepalive probe interval set on connections in
+// keep-connections mode (reaping off): a genuinely dead peer is closed within a
+// few probes so it can't pin the app awake forever, while a live-but-idle
+// connection's TCP stack ACKs the probes and stays up.
+const keepAlivePeriod = 60 * time.Second
 
 // WakingForwarder is the L4 analogue of the ingress proxy: a raw TCP listener
 // that fronts one app's published port and, on each connection, resolves the
@@ -26,41 +33,63 @@ type WakingForwarder struct {
 	appName   string
 	guestPort int // the guest port to dial (from the publish mapping)
 
-	ln       net.Listener
-	resolve  func(name string) (Target, error) // Resolver.ResolveName
-	coord    *wakeCoordinator                  // coalesces a herd of connects into one wake
-	activity *ActivityTracker                  // shared with the idle monitor; may be nil
-	log      *slog.Logger
+	ln        net.Listener
+	resolve   func(name string) (Target, error) // Resolver.ResolveName
+	coord     *wakeCoordinator                  // coalesces a herd of connects into one wake
+	activity  *ActivityTracker                  // shared with the idle monitor; may be nil
+	reapIdle  time.Duration                     // close a connection idle this long; 0 = never (keep-connections)
+	keepAlive bool                              // set SO_KEEPALIVE (reaps a dead peer when reapIdle==0)
+	log       *slog.Logger
 
 	wg       sync.WaitGroup
 	closing  chan struct{}
 	closeOne sync.Once
 }
 
-// NewWakingForwarder binds hostAddr (SO_REUSEPORT, so a published wildcard port
+// WakingForwarderConfig configures a WakingForwarder. ReapIdle is how long a
+// connection may sit byte-idle before the forwarder closes it (so pooled clients
+// let a scale-to-zero app reach zero connections); 0 disables reaping
+// (keep-connections mode), in which case set KeepAlive so a dead peer is still
+// reaped by TCP keepalive.
+type WakingForwarderConfig struct {
+	HostAddr  string
+	AppName   string
+	GuestPort int
+	Resolver  *Resolver
+	Waker     Waker
+	Activity  *ActivityTracker
+	ReapIdle  time.Duration
+	KeepAlive bool
+	Log       *slog.Logger
+}
+
+// NewWakingForwarder binds HostAddr (SO_REUSEPORT, so a published wildcard port
 // still coexists with the app→app VIP on the same port) and starts accepting.
-// It seeds activity for appName so a never-connected scale-to-zero app still
+// It seeds activity for AppName so a never-connected scale-to-zero app still
 // becomes eligible to sleep after its idle_timeout.
-func NewWakingForwarder(hostAddr, appName string, guestPort int, r *Resolver, waker Waker, act *ActivityTracker, log *slog.Logger) (*WakingForwarder, error) {
+func NewWakingForwarder(cfg WakingForwarderConfig) (*WakingForwarder, error) {
+	log := cfg.Log
 	if log == nil {
 		log = slog.Default()
 	}
-	ln, err := reuseport.Listen(hostAddr)
+	ln, err := reuseport.Listen(cfg.HostAddr)
 	if err != nil {
 		return nil, err
 	}
 	f := &WakingForwarder{
-		appName:   appName,
-		guestPort: guestPort,
+		appName:   cfg.AppName,
+		guestPort: cfg.GuestPort,
 		ln:        ln,
-		resolve:   r.ResolveName,
-		coord:     newWakeCoordinator(waker, 0),
-		activity:  act,
-		log:       log.With("component", "l4wake", "app", appName, "host", hostAddr, "guest_port", guestPort),
+		resolve:   cfg.Resolver.ResolveName,
+		coord:     newWakeCoordinator(cfg.Waker, 0),
+		activity:  cfg.Activity,
+		reapIdle:  cfg.ReapIdle,
+		keepAlive: cfg.KeepAlive,
+		log:       log.With("component", "l4wake", "app", cfg.AppName, "host", cfg.HostAddr, "guest_port", cfg.GuestPort),
 		closing:   make(chan struct{}),
 	}
-	if act != nil {
-		act.Seen(appName)
+	if cfg.Activity != nil {
+		cfg.Activity.Seen(cfg.AppName)
 	}
 	f.wg.Add(1)
 	go f.acceptLoop()
@@ -130,6 +159,13 @@ func (f *WakingForwarder) handle(client net.Conn) {
 	}
 	defer func() { _ = backend.Close() }()
 
+	// Keep-connections mode (reapIdle==0): don't reap on silence, but enable TCP
+	// keepalive on both ends so a genuinely dead peer can't pin the app awake.
+	if f.keepAlive {
+		setKeepAlive(client)
+		setKeepAlive(backend)
+	}
+
 	// Abort both ends promptly if the forwarder is torn down (app deleted); the
 	// watcher exits when the pipe completes, so it never outlives the connection.
 	done := make(chan struct{})
@@ -143,9 +179,19 @@ func (f *WakingForwarder) handle(client net.Conn) {
 		}
 	}()
 
-	// Bidirectional splice with the proxy's half-close + both-idle safety net,
-	// the same helper the L7 SNI passthrough uses for its raw-TCP forward.
-	pipe(client, backend)
+	// Bidirectional splice with half-close. reapIdle bounds byte-idleness: a
+	// connection silent that long is closed so a scale-to-zero app can reach zero
+	// connections and sleep (0 = never reap — keep-connections mode).
+	pipeWithIdle(client, backend, f.reapIdle)
+}
+
+// setKeepAlive enables TCP keepalive with keepAlivePeriod on a connection, if it
+// is a *net.TCPConn. Best-effort.
+func setKeepAlive(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(keepAlivePeriod)
+	}
 }
 
 // target resolves the app's current instance, waking it (coalesced) on ErrAsleep

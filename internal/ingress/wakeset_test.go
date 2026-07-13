@@ -138,6 +138,55 @@ func TestReconcilePortsRebindsOnMappingChange(t *testing.T) {
 	_ = ln.Close()
 }
 
+func TestReapPolicy(t *testing.T) {
+	s2z := func(mut func(*api.SleepPolicy)) api.AppSpec {
+		sp := &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 30}
+		mut(sp)
+		return api.AppSpec{Sleep: sp}
+	}
+	cases := []struct {
+		name     string
+		spec     api.AppSpec
+		wantReap time.Duration
+		wantKeep bool
+	}{
+		{"default reap = idle_timeout", s2z(func(*api.SleepPolicy) {}), 30 * time.Second, false},
+		{"explicit conn idle", s2z(func(sp *api.SleepPolicy) { sp.ConnIdleTimeoutSec = 5 }), 5 * time.Second, false},
+		{"keep-connections → no reap + keepalive", s2z(func(sp *api.SleepPolicy) { sp.KeepConnections = true }), 0, true},
+		{"keep-connections wins over conn idle", s2z(func(sp *api.SleepPolicy) { sp.ConnIdleTimeoutSec = 5; sp.KeepConnections = true }), 0, true},
+	}
+	for _, tc := range cases {
+		reap, keep := reapPolicy(tc.spec)
+		if reap != tc.wantReap || keep != tc.wantKeep {
+			t.Errorf("%s: reapPolicy = (%v, %v), want (%v, %v)", tc.name, reap, keep, tc.wantReap, tc.wantKeep)
+		}
+	}
+}
+
+// TestReconcilePortsRebindsOnKeepConnectionsChange — toggling --keep-connections
+// via app update must rebind the forwarder (its reap behavior changed), even
+// though the host→guest mapping is unchanged.
+func TestReconcilePortsRebindsOnKeepConnectionsChange(t *testing.T) {
+	host, port, closeBackend := startEchoBackend(t)
+	defer closeBackend()
+	s := newTestSet(host, port)
+	defer s.Close()
+
+	hp := freePort(t)
+	spec := scaleToZeroSpec("pg", "127.0.0.1", hp, port)
+	s.ReconcilePorts([]api.AppSpec{spec})
+	first := s.apps["pg"]
+	if first == nil {
+		t.Fatal("app not bound")
+	}
+
+	spec.Sleep.KeepConnections = true
+	s.ReconcilePorts([]api.AppSpec{spec})
+	if s.apps["pg"] == first {
+		t.Fatal("toggling keep-connections should rebind the forwarder")
+	}
+}
+
 func TestWakesOnTCP(t *testing.T) {
 	pub := []api.PortMapping{{HostPort: 5432, GuestPort: 5432}}
 	cases := []struct {

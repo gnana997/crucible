@@ -507,14 +507,20 @@ func peekSNI(conn net.Conn, timeout time.Duration) (sni string, hello []byte, er
 	return sni, pc.buf.Bytes(), nil
 }
 
-// pipe copies bidirectionally between two conns with an idle timeout, so a
-// spliced connection that goes silent in both directions can't pin goroutines +
-// FDs forever. Each write side is half-closed on EOF so a one-way-idle
-// connection still drains and terminates.
-func pipe(a, b net.Conn) {
+// pipe copies bidirectionally between two conns with the default idle timeout, so
+// a spliced connection that goes silent in both directions can't pin goroutines +
+// FDs forever. Each write side is half-closed on EOF so a one-way-idle connection
+// still drains and terminates.
+func pipe(a, b net.Conn) { pipeWithIdle(a, b, proxyIdleTimeout) }
+
+// pipeWithIdle is pipe with a caller-chosen idle timeout. idle <= 0 disables the
+// idle deadline entirely — the copy blocks until data or a close — so a
+// connection is torn down only by the peer or (for the wake-on-TCP forwarder in
+// keep-connections mode) TCP keepalive reaping a dead peer.
+func pipeWithIdle(a, b net.Conn, idle time.Duration) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		copyIdle(dst, src, proxyIdleTimeout)
+		copyIdle(dst, src, idle)
 		if c, ok := dst.(interface{ CloseWrite() error }); ok {
 			_ = c.CloseWrite()
 		}
@@ -528,11 +534,14 @@ func pipe(a, b net.Conn) {
 
 // copyIdle streams src→dst, resetting src's read deadline before each read so a
 // connection idle longer than idle is torn down (the read errors, both copy
-// directions unwind, and handleSNI's defers close both conns).
+// directions unwind, and the caller's defers close both conns). idle <= 0 sets no
+// deadline: the read blocks until data or close.
 func copyIdle(dst, src net.Conn, idle time.Duration) {
 	buf := make([]byte, 32*1024)
 	for {
-		_ = src.SetReadDeadline(time.Now().Add(idle))
+		if idle > 0 {
+			_ = src.SetReadDeadline(time.Now().Add(idle))
+		}
 		n, rerr := src.Read(buf)
 		if n > 0 {
 			if _, werr := dst.Write(buf[:n]); werr != nil {

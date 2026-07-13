@@ -835,7 +835,9 @@ export interface components {
             grace_s?: number;
         };
         SleepPolicy: {
+            conn_idle_timeout_s?: number;
             idle_timeout_s?: number;
+            keep_connections?: boolean;
             max_scale?: number;
             min_scale?: number;
             target_concurrency?: number;

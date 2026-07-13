@@ -15,7 +15,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.0 — durable apps you deploy, reach, update, pull privately, scale to zero, wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer). The core runtime
+**Status:** v0.6.1 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -51,8 +51,20 @@ coexists with the `<app>.internal` VIP on the same port (`SO_REUSEPORT`);
 dashboard), OTLP export of metrics + logs via `--otlp-endpoint` (an OTel
 Prometheus bridge, so `/metrics` is unchanged) honoring `OTEL_*` env, daemon
 `--pprof-listen`, and on-demand host-side packet capture (`sandbox`/`app
-capture` → pcap, default-deny `capture` scoped op). See the ROADMAP for what's
-next.
+capture` → pcap, default-deny `capture` scoped op). The v0.6 line adds
+persistence and serverless: **v0.6.0 persistent volumes** (`--volume NAME:/path`
+on sandboxes/apps — sparse ext4 backing file, `cache_type=Writeback` so a guest
+`fsync` survives a hard kill, single-writer, volume apps sleep stop/start and
+redeploy destroy-then-boot; `--volume-dir` + `volume create/ls/rm` + `/volumes`
++ 3 MCP tools); **v0.6.1 wake-on-TCP** (a scale-to-zero app that publishes a port
+is fronted by an app-scoped L4 forwarder that wakes it on the first TCP
+connection and sleeps it on inactivity, with no proxy in the path, protocol-agnostic,
+so any volume-backed database (postgres, redis, …) becomes self-hosted serverless;
+`--connection-idle-timeout` reaps idle pooled connections so scale-to-zero works
+for connection-pooled clients, and `--keep-connections` flips to connection-scoped
+mode (reap off + TCP keepalive) for pub/sub / streaming — awake while subscribed,
+asleep when nobody's connected; plus the guest init now provides `/dev/fd` for
+process-substitution entrypoints). See the ROADMAP for what's next.
 
 ## Working style
 

@@ -156,7 +156,9 @@ class ServiceStopReq(BaseModel):
 
 
 class SleepPolicy(BaseModel):
+    conn_idle_timeout_s: int | None = None
     idle_timeout_s: int | None = None
+    keep_connections: bool | None = None
     max_scale: int | None = None
     min_scale: int | None = None
     target_concurrency: int | None = None

@@ -157,7 +157,7 @@ start_daemon() {
   echo "daemon never healthy"; tail -30 "$DAEMON_LOG"; exit 3
 }
 cleanup() {
-  for a in web webb up sleeper resid voldb; do cli app rm "$a" >/dev/null 2>&1 || true; done
+  for a in web webb up sleeper resid voldb waketcp; do cli app rm "$a" >/dev/null 2>&1 || true; done
   sleep 1
   [[ -n "$DAEMON_PID" ]] && kill -TERM "$DAEMON_PID" 2>/dev/null && wait "$DAEMON_PID" 2>/dev/null
   [[ "${KEEP:-0}" == "1" ]] || rm -rf "$VOLUME_DIR"
@@ -463,7 +463,49 @@ else
   fail "volume app never reached running (fc=$(fc_count) want $((FC0+1))): $(cli app get voldb 2>/dev/null | head -c 300)"
 fi
 
-echo "== 14 FINAL: no orphaned VMs or sandbox records after everything"
+# =============================================================================
+echo "== 14 wake-on-TCP: sleep frees VM+netns+IP; a connection wakes it; rm frees the port"
+FC0="$(fc_count)"
+cli app create waketcp --image "$IMAGE" --pull missing -p "${PUB_PORT}:80" --restart always \
+  --health "tcp:80" --memory 256 --min-scale 0 --idle-timeout 1h >/dev/null 2>&1
+if wait_phase waketcp running >/dev/null && wait_fc $((FC0+1)); then
+  { hit "http://localhost:${PUB_PORT}/" html || hit "http://localhost:${PUB_PORT}/" nginx; } >/dev/null 2>&1
+  pass "scale-to-zero app served via the L4 forwarder (1 VM)"
+  # A scale-to-zero app sleeps and frees the VM; the forwarder (app-scoped) stays
+  # bound. idle-timeout is long, so sleep manually and assert nothing leaks.
+  cli app sleep waketcp >/dev/null 2>&1
+  if wait_phase waketcp asleep >/dev/null && wait_fc "$FC0" 20; then
+    pass "sleep freed the VM + its netns/IP (0 extra VMs while asleep)"
+  else
+    fail "wake-on-TCP sleep leaked a VM/netns: phase=$(phase waketcp) fc=$(fc_count) want $FC0"
+  fi
+  # A connection to the published port must WAKE it (no manual app wake).
+  if hit "http://localhost:${PUB_PORT}/" html || hit "http://localhost:${PUB_PORT}/" nginx; then
+    if wait_phase waketcp running >/dev/null && wait_fc $((FC0+1)) 30; then
+      pass "wake-on-connect restored exactly one VM (no leak)"
+    else
+      fail "wake left wrong VM count: fc=$(fc_count) want $((FC0+1))"
+    fi
+  else
+    fail "connection did not wake the slept app on :${PUB_PORT}"
+  fi
+  cli app rm waketcp >/dev/null 2>&1; wait_fc "$FC0" 20 >/dev/null || true
+  [[ "$(fc_count)" -eq "$FC0" ]] && pass "app rm left no VM" || fail "app rm leaked a VM: fc=$(fc_count)"
+  # The forwarder is closed by the reconcile pass that drops the app (a hair after
+  # the VM teardown), so poll until the host port stops accepting.
+  freed=0
+  for _ in $(seq 1 20); do
+    timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/${PUB_PORT}" 2>/dev/null || { freed=1; break; }
+    sleep 0.5
+  done
+  [[ "$freed" -eq 1 ]] && pass "app rm freed the host port :${PUB_PORT} (forwarder closed)" \
+    || fail "host port :${PUB_PORT} still accepts after app rm (forwarder leaked)"
+else
+  fail "wake-on-TCP app never reached running (fc=$(fc_count) want $((FC0+1))): $(cli app get waketcp 2>/dev/null | head -c 300)"
+fi
+wait_fc 0 20 >/dev/null || true
+
+echo "== 15 FINAL: no orphaned VMs or sandbox records after everything"
 FC="$(fc_count)"; SBX_N="$(sbx_total)"
 if [[ "$FC" -eq 0 && "$SBX_N" -eq 0 ]]; then
   pass "clean exit: 0 firecracker VMs, 0 sandbox records"

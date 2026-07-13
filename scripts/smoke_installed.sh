@@ -72,6 +72,7 @@ HOST_PORT_D="${HOST_PORT_D:-8083}"   # v0.4.1 app (env + exec health)
 HOST_PORT_E="${HOST_PORT_E:-8084}"   # v0.4.2 app update
 HOST_PORT_F="${HOST_PORT_F:-8085}"   # v0.5.0 sleep/wake app
 HOST_PORT_G="${HOST_PORT_G:-8086}"   # v0.6.0 volume-backed app
+HOST_PORT_H="${HOST_PORT_H:-8087}"   # v0.6.1 wake-on-TCP app
 
 echo "==============================================================="
 echo " crucible installed-release acceptance smoke"
@@ -928,6 +929,49 @@ else
     fi
   else
     skip "daemon has no /apps endpoint — skipping the volume-backed app check"
+  fi
+fi
+
+# ---- 22 v0.6.1: wake-on-TCP — a scale-to-zero published port wakes on connect --
+echo "== 22 wake-on-TCP (v0.6.1): a scale-to-zero published port wakes on the next connection"
+if ! curl -sf "$BASE_URL/apps" >/dev/null 2>&1; then
+  skip "daemon has no /apps endpoint"
+else
+  WAPP="crucible-smoke-wake"
+  cli app rm "$WAPP" >/dev/null 2>&1 || true
+  WERR="$(mktemp)"
+  # Scale-to-zero + a published port → the app-scoped L4 forwarder owns :H and
+  # wakes the app on connect (no ingress proxy involved). idle-timeout is long so
+  # it won't auto-sleep mid-test; we sleep it manually, then a curl must wake it.
+  OUT="$(cli app create "$WAPP" --image "$IMAGE" -p "$HOST_PORT_H:80" --restart always \
+           --health "tcp:80" --memory 256 --min-scale 0 --idle-timeout 1h 2>"$WERR")"
+  if [[ "$OUT" == "$WAPP" ]]; then
+    track_app "$WAPP"; rm -f "$WERR"
+    if hit "http://localhost:$HOST_PORT_H/" "html" || hit "http://localhost:$HOST_PORT_H/" "nginx"; then
+      pass "L4 forwarder served the published port :$HOST_PORT_H (no proxy)"
+    else
+      fail "wake-on-TCP app never served on :$HOST_PORT_H"
+    fi
+    if cli app sleep "$WAPP" >/dev/null 2>&1; then
+      ASLEEP=0
+      for _ in {1..30}; do [[ "$(app_phase "$WAPP")" == "asleep" ]] && { ASLEEP=1; break; }; sleep 1; done
+      [[ "$ASLEEP" -eq 1 ]] && pass "app slept (phase=asleep, VM freed)" \
+        || fail "app never reached asleep: $(curl -s "$BASE_URL/apps/$WAPP" 2>&1 | head -c 200)"
+      # The forwarder stays bound: connecting to the port must WAKE the app
+      # (no manual `app wake`), then serve.
+      if hit "http://localhost:$HOST_PORT_H/" "html" || hit "http://localhost:$HOST_PORT_H/" "nginx"; then
+        [[ "$(app_phase "$WAPP")" == "running" ]] \
+          && pass "wake-on-connect: a TCP connection woke the slept app and served it" \
+          || fail "served but phase != running after wake: $(app_phase "$WAPP")"
+      else
+        fail "connection to the slept app did not wake + serve it on :$HOST_PORT_H"
+      fi
+    else
+      skip "app sleep unsupported (pre-v0.6.1 daemon?)"
+    fi
+    cli app rm "$WAPP" >/dev/null 2>&1
+  else
+    skip "wake-on-TCP app create failed (pre-v0.6.1 daemon?): $(head -1 "$WERR" 2>/dev/null)"; rm -f "$WERR"
   fi
 fi
 

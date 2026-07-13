@@ -37,14 +37,17 @@ func startEchoBackend(t *testing.T) (host string, port int, closeFn func()) {
 // single instance points at an echo backend, with a blockingWaker that holds
 // each wake until released (then flips the app to running). Mirrors
 // newWakeTestProxy for the L4 path.
-func newWakeTestForwarder(t *testing.T, act *ActivityTracker) (*WakingForwarder, *blockingWaker, func()) {
+func newWakeTestForwarder(t *testing.T, act *ActivityTracker, reapIdle time.Duration) (*WakingForwarder, *blockingWaker, func()) {
 	t.Helper()
 	host, port, closeBackend := startEchoBackend(t)
 	apps := &wakingApps{instance: "sbx_1", port: port, phase: "asleep"}
 	inst := fakeInstances{ips: map[string]string{"sbx_1": host}}
 	resolver := NewResolver(apps, inst, "", "", 0) // ttl 0: no cache; ResolveName by app name
 	waker := &blockingWaker{apps: apps, release: make(chan struct{})}
-	f, err := NewWakingForwarder("127.0.0.1:0", "pg", port, resolver, waker, act, nil)
+	f, err := NewWakingForwarder(WakingForwarderConfig{
+		HostAddr: "127.0.0.1:0", AppName: "pg", GuestPort: port,
+		Resolver: resolver, Waker: waker, Activity: act, ReapIdle: reapIdle,
+	})
 	if err != nil {
 		closeBackend()
 		t.Fatalf("NewWakingForwarder: %v", err)
@@ -72,7 +75,7 @@ func roundtrip(t *testing.T, f *WakingForwarder, payload string) string {
 }
 
 func TestWakingForwarderWakesAsleepAppAndForwards(t *testing.T) {
-	f, waker, cleanup := newWakeTestForwarder(t, nil)
+	f, waker, cleanup := newWakeTestForwarder(t, nil, 0)
 	defer cleanup()
 
 	got := make(chan string, 1)
@@ -100,7 +103,7 @@ func TestWakingForwarderWakesAsleepAppAndForwards(t *testing.T) {
 }
 
 func TestWakingForwarderRunningForwardsWithoutWake(t *testing.T) {
-	f, waker, cleanup := newWakeTestForwarder(t, nil)
+	f, waker, cleanup := newWakeTestForwarder(t, nil, 0)
 	defer cleanup()
 	// App already running: no wake should fire.
 	waker.apps.wakeToRunning()
@@ -116,7 +119,7 @@ func TestWakingForwarderRunningForwardsWithoutWake(t *testing.T) {
 // TestWakingForwarderHerdCoalescesToOneWake — the money test: N concurrent
 // connections to one slept app trigger exactly one wake, and all are forwarded.
 func TestWakingForwarderHerdCoalescesToOneWake(t *testing.T) {
-	f, waker, cleanup := newWakeTestForwarder(t, nil)
+	f, waker, cleanup := newWakeTestForwarder(t, nil, 0)
 	defer cleanup()
 
 	const N = 30
@@ -157,7 +160,10 @@ func TestWakingForwarderWakeFailClosesClient(t *testing.T) {
 	resolver := NewResolver(apps, inst, "", "", 0)
 	// A waker that returns without flipping the app to running: it stays asleep.
 	waker := wakerFunc(func(_ context.Context, _ string) error { return nil })
-	f, err := NewWakingForwarder("127.0.0.1:0", "pg", port, resolver, waker, nil, nil)
+	f, err := NewWakingForwarder(WakingForwarderConfig{
+		HostAddr: "127.0.0.1:0", AppName: "pg", GuestPort: port,
+		Resolver: resolver, Waker: waker,
+	})
 	if err != nil {
 		t.Fatalf("NewWakingForwarder: %v", err)
 	}
@@ -178,7 +184,7 @@ func TestWakingForwarderWakeFailClosesClient(t *testing.T) {
 
 func TestWakingForwarderRecordsActivity(t *testing.T) {
 	act := NewActivityTracker()
-	f, waker, cleanup := newWakeTestForwarder(t, act)
+	f, waker, cleanup := newWakeTestForwarder(t, act, 0)
 	defer cleanup()
 	waker.apps.wakeToRunning()
 
@@ -219,7 +225,7 @@ func TestWakingForwarderSeedsActivityOnStart(t *testing.T) {
 	if _, _, ok := act.Activity("pg"); ok {
 		t.Fatal("app seen before any forwarder started")
 	}
-	f, _, cleanup := newWakeTestForwarder(t, act)
+	f, _, cleanup := newWakeTestForwarder(t, act, 0)
 	defer cleanup()
 	_ = f
 	// NewWakingForwarder calls Seen, so the idle monitor can now observe (and
@@ -227,5 +233,77 @@ func TestWakingForwarderSeedsActivityOnStart(t *testing.T) {
 	last, inflight, ok := act.Activity("pg")
 	if !ok || inflight != 0 || last.IsZero() {
 		t.Fatalf("after start: ok=%v inflight=%d lastZero=%v, want true 0 false", ok, inflight, last.IsZero())
+	}
+}
+
+// TestWakingForwarderReapsIdleConnection — with a reap timeout, a connection held
+// byte-idle is closed by the forwarder (not the client), so in-flight drops to
+// zero and the app can sleep even though a pooled client kept its socket open.
+func TestWakingForwarderReapsIdleConnection(t *testing.T) {
+	act := NewActivityTracker()
+	f, waker, cleanup := newWakeTestForwarder(t, act, 250*time.Millisecond)
+	defer cleanup()
+	waker.apps.wakeToRunning()
+
+	c, err := net.Dial("tcp", f.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	// One round-trip to establish the splice, then sit idle (send nothing).
+	if _, err := c.Write([]byte("x")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := io.ReadFull(c, make([]byte, 1)); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if _, inflight, _ := act.Activity("pg"); inflight != 1 {
+		t.Fatalf("inflight=%d while connected, want 1", inflight)
+	}
+
+	// The forwarder reaps the idle connection after ~reapIdle; in-flight → 0 with
+	// no action from the client.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, inflight, _ := act.Activity("pg"); inflight == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_, inflight, _ := act.Activity("pg")
+			t.Fatalf("idle connection not reaped: inflight=%d, want 0", inflight)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The client observes the reap as a closed connection.
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("client read after reap = %v, want EOF", err)
+	}
+}
+
+// TestWakingForwarderKeepConnectionsNoReap — with reaping off (reapIdle 0), a
+// byte-idle connection is NOT closed, so it stays counted (pub/sub: the app must
+// not sleep out from under a live-but-quiet subscription).
+func TestWakingForwarderKeepConnectionsNoReap(t *testing.T) {
+	act := NewActivityTracker()
+	f, waker, cleanup := newWakeTestForwarder(t, act, 0)
+	defer cleanup()
+	waker.apps.wakeToRunning()
+
+	c, err := net.Dial("tcp", f.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.Write([]byte("x")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := io.ReadFull(c, make([]byte, 1)); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// Sit idle well past what a short reap would use; the connection stays counted.
+	time.Sleep(500 * time.Millisecond)
+	if _, inflight, _ := act.Activity("pg"); inflight != 1 {
+		t.Fatalf("inflight=%d after idle with reaping off, want 1 (connection kept)", inflight)
 	}
 }

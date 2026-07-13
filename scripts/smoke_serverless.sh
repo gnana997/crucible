@@ -18,6 +18,17 @@
 #      - a fresh TCP connection wakes it (cold-create + volume re-attach), and the
 #        row written before sleep is still there afterward (durable across wake).
 #
+#   C. Request/response redis (reaping ON, the default): a client that HOLDS a
+#      connection open + idle is still reaped, so the app reaches zero connections
+#      and sleeps — proving scale-to-zero works for pooled clients, not just HTTP.
+#
+#   D. Pub/sub redis (--keep-connections): a subscriber's idle connection is NOT
+#      reaped, so the app stays awake while subscribed and sleeps only once the
+#      last subscriber disconnects — connection-scoped scale-to-zero for streaming.
+#
+# Together these show wake-on-TCP is protocol-agnostic (nginx, postgres, redis)
+# and covers both request/response and connection-scoped (pub/sub) workloads.
+#
 # Requires: root + KVM, firecracker + jailer + vmlinux + a rootfs whose agent has
 # /mount (build with the current crucible-agent), mkfs.ext4, curl, a default
 # egress iface (published host ports need the network manager up), and internet
@@ -48,6 +59,9 @@ NGINX_IMAGE="${NGINX_IMAGE:-nginx:alpine}"
 PG_IMAGE="${PG_IMAGE:-postgres:16-alpine}"
 HP_NGINX="${HP_NGINX:-7920}"   # host port for the non-volume app
 HP_PG="${HP_PG:-7921}"         # host port for the volume postgres
+HP_RR="${HP_RR:-7922}"         # host port for the request/response redis
+HP_PS="${HP_PS:-7923}"         # host port for the pub/sub redis
+REDIS_IMAGE="${REDIS_IMAGE:-redis:alpine}"
 
 pass=0; fail=0
 ok()  { echo "  ✓ $*"; pass=$((pass+1)); }
@@ -126,6 +140,17 @@ port_open() { timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$1" 2>/dev/null; }
 # (the endpoint the tcp:5432 health check validates), password-authenticated via
 # PGPASSWORD, returning just the scalar result. `env VAR=val cmd` avoids sh -c.
 pg_query() { run app exec pg -- env PGPASSWORD=smoke psql -h 127.0.0.1 -U postgres -tAc "$1" 2>/dev/null | tr -d '\r\n '; }
+# redis_ping PORT — open a raw TCP connection to the published redis port, send an
+# inline PING, and return 0 if the reply contains PONG (proving the L4 forwarder
+# reached a live redis). Connecting also wakes a slept app.
+redis_ping() {
+  local reply
+  exec 3<>"/dev/tcp/127.0.0.1/$1" 2>/dev/null || return 1
+  printf 'PING\r\n' >&3
+  IFS= read -t 20 -r reply <&3
+  exec 3<&- 2>/dev/null || true
+  [[ "$reply" == *PONG* ]]
+}
 
 FC0="$(fc_count)"   # firecracker procs before this smoke (usually 0)
 
@@ -250,6 +275,76 @@ else
   bad "postgres never reached running (is $PG_IMAGE pullable? enough RAM? fc=$(fc_count)): $(run app get pg 2>/dev/null | head -c 400)"
   run app rm pg >/dev/null 2>&1 || true
   run volume rm pgdata >/dev/null 2>&1 || true
+fi
+
+# =============================================================================
+# C. Request/response redis (reap on): a held-idle pooled connection is reaped so
+#    the app still scales to zero — proving it's not just postgres.
+# =============================================================================
+echo "== 10 request/response redis (reap on): a held-idle connection still lets it sleep"
+# default --connection-idle-timeout = --idle-timeout (5s), so a silent connection
+# is reaped ~5s after it goes quiet, then the app sleeps ~5s later.
+run app create rr --image "$REDIS_IMAGE" -p "$HP_RR:6379" --restart always \
+  --health "tcp:6379" --memory 256 --min-scale 0 --idle-timeout 5s >/dev/null 2>&1
+if wait_phase rr running 240 && wait_fc $((FC0+1)) 60; then
+  redis_ping "$HP_RR" && ok "redis served PING/PONG over the L4 forwarder" \
+    || bad "redis did not answer PING on :$HP_RR"
+  # Hold a connection open and idle (a pooled client). Reaping must still let the
+  # app reach zero connections and sleep.
+  ( exec 3<>"/dev/tcp/127.0.0.1/$HP_RR"; printf 'PING\r\n' >&3; IFS= read -t 5 -r _ <&3; sleep 60 ) &
+  HOLDER=$!
+  if wait_phase rr asleep 60 && wait_fc "$FC0" 20; then
+    ok "idle connection reaped → app slept despite a held-open client (VM freed)"
+  else
+    bad "reap-on app did not sleep with a held connection: phase=$(app_phase rr) fc=$(fc_count)"
+  fi
+  kill "$HOLDER" 2>/dev/null || true
+  # A fresh connection wakes it again.
+  redis_ping "$HP_RR" >/dev/null 2>&1
+  wait_phase rr running 60 && wait_fc $((FC0+1)) 30 \
+    && ok "wake-on-connect brought redis back" \
+    || bad "redis did not wake on reconnect: phase=$(app_phase rr) fc=$(fc_count)"
+  run app rm rr >/dev/null 2>&1; wait_fc "$FC0" 20 >/dev/null || true
+else
+  bad "request/response redis never reached running (is $REDIS_IMAGE pullable? fc=$(fc_count)): $(run app get rr 2>/dev/null | head -c 300)"
+  run app rm rr >/dev/null 2>&1 || true
+fi
+
+# =============================================================================
+# D. Pub/sub redis (keep-connections): a subscriber holds the app AWAKE, and it
+#    sleeps only once the subscriber disconnects — connection-scoped scale-to-zero.
+# =============================================================================
+echo "== 11 pub/sub redis (--keep-connections): awake while subscribed, sleeps on disconnect"
+run app create ps --image "$REDIS_IMAGE" -p "$HP_PS:6379" --restart always \
+  --health "tcp:6379" --memory 256 --min-scale 0 --idle-timeout 5s --keep-connections >/dev/null 2>&1
+if wait_phase ps running 240 && wait_fc $((FC0+1)) 60; then
+  redis_ping "$HP_PS" && ok "pub/sub redis served PING/PONG over the L4 forwarder" \
+    || bad "pub/sub redis did not answer PING on :$HP_PS"
+  # A subscriber holds a (byte-idle) connection. With reaping OFF it must NOT be
+  # closed, so the app stays awake well past its idle_timeout.
+  ( exec 3<>"/dev/tcp/127.0.0.1/$HP_PS"; printf 'SUBSCRIBE ch\r\n' >&3; sleep 60 ) &
+  SUB=$!
+  sleep 18   # > 3× idle_timeout: a reap-on app would have slept by now
+  if [[ "$(app_phase ps)" == "running" ]] && [[ "$(fc_count)" -eq $((FC0+1)) ]]; then
+    ok "keep-connections held the app awake with an idle subscriber (no reap)"
+  else
+    bad "pub/sub app slept out from under a subscriber: phase=$(app_phase ps) fc=$(fc_count)"
+  fi
+  # Drop the subscriber → zero connections → the app sleeps after idle_timeout.
+  kill "$SUB" 2>/dev/null || true
+  if wait_phase ps asleep 40 && wait_fc "$FC0" 20; then
+    ok "slept after the last subscriber disconnected (connection-scoped scale-to-zero)"
+  else
+    bad "pub/sub app did not sleep after the subscriber left: phase=$(app_phase ps) fc=$(fc_count)"
+  fi
+  redis_ping "$HP_PS" >/dev/null 2>&1
+  wait_phase ps running 60 && wait_fc $((FC0+1)) 30 \
+    && ok "wake-on-connect brought the pub/sub app back" \
+    || bad "pub/sub redis did not wake on reconnect: phase=$(app_phase ps)"
+  run app rm ps >/dev/null 2>&1; wait_fc "$FC0" 20 >/dev/null || true
+else
+  bad "pub/sub redis never reached running (fc=$(fc_count)): $(run app get ps 2>/dev/null | head -c 300)"
+  run app rm ps >/dev/null 2>&1 || true
 fi
 
 echo "==============================================================="

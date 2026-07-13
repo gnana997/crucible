@@ -3022,8 +3022,14 @@
       "SleepPolicy": {
         "type": "object",
         "properties": {
+          "conn_idle_timeout_s": {
+            "type": "integer"
+          },
           "idle_timeout_s": {
             "type": "integer"
+          },
+          "keep_connections": {
+            "type": "boolean"
           },
           "max_scale": {
             "type": "integer"

@@ -106,6 +106,20 @@ type SleepPolicy struct {
 	// autoscaler aims for (replicas ≈ ceil(observed concurrency / target)). Zero
 	// takes a conservative default.
 	TargetConcurrency int `json:"target_concurrency,omitempty"`
+
+	// ConnIdleTimeoutSec is how long a TCP connection through the wake-on-TCP
+	// forwarder may sit idle (no bytes either way) before the forwarder closes
+	// it — so a scale-to-zero app whose clients hold pooled connections can still
+	// reach zero connections and sleep. 0 defaults to IdleTimeoutSec. Ignored when
+	// KeepConnections is set. (Only meaningful for a scale-to-zero published app.)
+	ConnIdleTimeoutSec int `json:"conn_idle_timeout_s,omitempty"`
+
+	// KeepConnections disables idle-connection reaping: the forwarder never closes
+	// a connection on silence (only TCP keepalive reaps a genuinely dead peer), so
+	// the app sleeps only when the last client disconnects. This is the mode for
+	// connection-scoped workloads — pub/sub, LISTEN/NOTIFY, streaming — where an
+	// idle-but-live connection must not be dropped.
+	KeepConnections bool `json:"keep_connections,omitempty"`
 }
 
 // HealthCheck configures daemon-side probing of an app's instance.

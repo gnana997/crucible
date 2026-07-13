@@ -1799,6 +1799,9 @@ func validateSpec(spec api.AppSpec) error {
 		if sp.TargetConcurrency < 0 {
 			return fmt.Errorf("app: sleep target_concurrency must be >= 0, got %d", sp.TargetConcurrency)
 		}
+		if sp.ConnIdleTimeoutSec < 0 {
+			return fmt.Errorf("app: sleep conn_idle_timeout_s must be >= 0, got %d", sp.ConnIdleTimeoutSec)
+		}
 	}
 	for _, target := range spec.CanCall {
 		if !IsValidName(target) {

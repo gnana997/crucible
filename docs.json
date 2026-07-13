@@ -75,7 +75,8 @@
             "apps",
             "proxy",
             "registry",
-            "volumes"
+            "volumes",
+            "serverless"
           ]
         },
         {

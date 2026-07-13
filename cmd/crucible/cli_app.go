@@ -72,12 +72,12 @@ func newAppWakeCmd(o *globalOpts) *cobra.Command {
 // builds an AppSpec from them, so the two commands can never drift.
 type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
-	idleTimeout                                   string
+	idleTimeout, connIdleTimeout                  string
 	vcpus, memory, port, minScale                 int
 	maxScale, targetConcurrency                   int
 	netAllow, publish, env, netAllowCIDR, canCall []string
 	volumes                                       []string
-	netFullEgress, publishAll                     bool
+	netFullEgress, publishAll, keepConnections    bool
 }
 
 func (a *appSpecOpts) register(cmd *cobra.Command) {
@@ -102,6 +102,8 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
 	f.IntVar(&a.maxScale, "max-scale", 0, "maximum instances for horizontal autoscaling; >min-scale enables it (0 = fixed at min-scale)")
 	f.IntVar(&a.targetConcurrency, "target-concurrency", 0, "autoscaler target: in-flight requests per instance (0 = default)")
+	f.StringVar(&a.connIdleTimeout, "connection-idle-timeout", "", "for a scale-to-zero published (TCP) app: close a connection idle this long so pooled clients let it sleep (e.g. 30s; default = --idle-timeout)")
+	f.BoolVar(&a.keepConnections, "keep-connections", false, "for a scale-to-zero published (TCP) app: never reap idle connections — sleep only when the last client disconnects (pub/sub, LISTEN, streaming)")
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
 }
 
@@ -164,16 +166,23 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", a.healthCmd}}
 	}
 	if cmd.Flags().Changed("idle-timeout") || cmd.Flags().Changed("min-scale") ||
-		cmd.Flags().Changed("max-scale") || cmd.Flags().Changed("target-concurrency") {
+		cmd.Flags().Changed("max-scale") || cmd.Flags().Changed("target-concurrency") ||
+		cmd.Flags().Changed("connection-idle-timeout") || cmd.Flags().Changed("keep-connections") {
 		idleSec, err := parseIdleTimeout(a.idleTimeout)
 		if err != nil {
 			return api.AppSpec{}, err
 		}
+		connIdleSec, err := parseIdleTimeout(a.connIdleTimeout)
+		if err != nil {
+			return api.AppSpec{}, fmt.Errorf("--connection-idle-timeout: %w", err)
+		}
 		spec.Sleep = &api.SleepPolicy{
-			IdleTimeoutSec:    idleSec,
-			MinScale:          a.minScale,
-			MaxScale:          a.maxScale,
-			TargetConcurrency: a.targetConcurrency,
+			IdleTimeoutSec:     idleSec,
+			MinScale:           a.minScale,
+			MaxScale:           a.maxScale,
+			TargetConcurrency:  a.targetConcurrency,
+			ConnIdleTimeoutSec: connIdleSec,
+			KeepConnections:    a.keepConnections,
 		}
 	}
 	return spec, nil

@@ -6,6 +6,60 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.1] — 2026-07-13
+
+Wake-on-TCP: scale-to-zero for **any** self-hosted TCP service, not just HTTP.
+Scale-to-zero used to work only for HTTP apps woken through the ingress proxy; a
+database, cache, or broker is reached over a published port, so it couldn't sleep.
+Now a scale-to-zero app's published port is fronted by an L4 forwarder that wakes
+the app on the first TCP connection and sleeps it when it goes idle, with no proxy
+in the path, protocol-agnostic. The result: a **self-hosted serverless postgres or
+redis** (cold-starts on the next connection, data intact on its volume), and a
+**scale-to-zero pub/sub** backend that sleeps when nobody's connected.
+
+### Added
+
+- **Wake-on-TCP.** A scale-to-zero app (`--min-scale 0 --idle-timeout <dur>`) that
+  publishes a host port (`-p HOST:GUEST`) gets an **app-scoped waking forwarder**:
+  it owns the host port for the app's whole life (surviving its sleep), resolves
+  the current instance fresh per connection, **wakes a slept app on connect**
+  (a connection burst coalesces into one wake), and forwards. TCP connection
+  activity feeds the idle monitor, so the app sleeps on TCP inactivity: all
+  automatic, no new daemon flag, no ingress proxy required. Works for postgres,
+  mysql, redis, mongo, or your own daemon. Docs: [serverless.md](docs/serverless.md).
+  Acceptance: `scripts/smoke_serverless.sh`.
+- **Idle-connection reaping** (`--connection-idle-timeout`, default = `--idle-timeout`).
+  A pooled client that holds a connection open between queries would keep the app
+  awake forever; the forwarder closes a byte-idle connection after this timeout so
+  the app can reach zero connections and sleep. The client's pool reconnects on its
+  next query. This makes serverless work for connection-pooled databases/caches, not
+  just connect-per-request clients.
+- **Connection-scoped mode** (`--keep-connections`). Turns reaping off: the forwarder
+  never closes a connection on silence (only TCP keepalive reaps a dead peer), so the
+  app stays awake while any client is connected and sleeps only when the **last**
+  disconnects. This is the mode for pub/sub, `LISTEN/NOTIFY`, and streaming, where an
+  idle-but-live subscription must not be dropped.
+- **Serverless postgres & redis.** A volume-backed postgres with `--min-scale 0`
+  sleeps (stop/start, freeing the VM) and cold-wakes on the next connection with its
+  data intact; a redis scales to zero between requests (reaping) or stays awake for a
+  live subscriber (`--keep-connections`).
+
+### Changed
+
+- A scale-to-zero app is now valid with **either** an HTTP `--port` (proxy wake)
+  **or** a published host port (TCP wake); an app with neither wake trigger is
+  rejected at create time (it could never come back), instead of silently running
+  always-on.
+
+### Fixed
+
+- **Guest `/dev/fd`.** The guest init now creates the standard `/dev/fd` and
+  `/dev/std{in,out,err}` → `/proc/self/fd` symlinks a bare devtmpfs lacks. Without
+  them, bash **process substitution** `<(…)` fails, which broke container
+  entrypoints that use it, e.g. the postgres image's password init
+  (`initdb --pwfile=<(…)`). Any image relying on `<(…)` or `/dev/stdout`-by-name
+  now works.
+
 ## [0.6.0] — 2026-07-13
 
 Persistent volumes. Data that outlives the sandbox: a named, fsync-honest block

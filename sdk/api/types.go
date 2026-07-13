@@ -100,7 +100,6 @@ type CreateSandboxRequest struct {
 	Volumes []VolumeMount `json:"volumes,omitempty"`
 }
 
-// PortMapping publishes one host port to one guest port.
 // VolumeMount attaches a durable, named block-device volume at an absolute
 // path inside the guest. The backing store persists across sandboxes, so
 // re-creating with the same Name reattaches the same data. ext4 is
@@ -132,6 +131,7 @@ type VolumeListResponse struct {
 	Volumes []Volume `json:"volumes"`
 }
 
+// PortMapping publishes one host port to one guest port.
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable
 	// from the LAN); "127.0.0.1" pins it to localhost-only.
