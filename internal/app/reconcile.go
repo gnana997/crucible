@@ -649,6 +649,24 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 		werr = fmt.Errorf("no live instance and no durable snapshot to wake from")
 	}
 
+	// F3-M4: a volume app's snapshot-wake (in-place or from-snapshot) must never
+	// leave it stuck asleep — a persistently-bad snapshot would otherwise loop.
+	// On any restore failure, fall back to the v0.6.1 stop/start cold-create: tear
+	// down the slept instance if it's still around (releasing its single-writer
+	// volume guard so the fresh Create can re-attach), then cold-create. Slower
+	// (a real boot + recovery) but always recovers. Non-volume apps keep the
+	// retry-on-failure behavior unchanged.
+	if werr != nil && len(rec.Spec.Volumes) > 0 {
+		m.log.Warn("app volume snapshot-wake failed; falling back to stop/start cold-create",
+			"app", rec.ID, "name", name, "instance", instanceID, "err", werr)
+		if instanceID != "" && m.inst.Exists(instanceID) {
+			if derr := m.inst.Destroy(ctx, instanceID); derr != nil {
+				m.log.Warn("wake fallback: destroy slept instance failed", "app", rec.ID, "err", derr)
+			}
+		}
+		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
+	}
+
 	m.obsMu.Lock()
 	if o := m.obs[rec.ID]; o != nil {
 		if werr != nil {

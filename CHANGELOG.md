@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.2] — 2026-07-14
+
+Instant serverless-stateful. A volume-backed app (the serverless postgres/redis
+from v0.6.1) used to cold-boot on wake: sleep destroyed the instance and wake
+booted a fresh one, so the database ran recovery (seconds). Now it snapshot-sleeps
+and snapshot-wakes like a stateless app: the process is already running in the
+restored memory, attached to its volume, so wake takes about 125 ms with no cold
+boot and no WAL recovery. The cold-start wart on serverless postgres is gone.
+
+### Changed
+
+- **Volume apps snapshot-sleep and wake in place.** A scale-to-zero app on a
+  volume now sleeps by snapshotting its instance and stopping the VMM (RAM freed,
+  the single-writer volume guard held) instead of destroying it, and wakes by
+  restoring the snapshot with the volume re-attached: same instance and IP,
+  ~125 ms, data intact. A wake after a **daemon restart** restores a fresh
+  instance from the durable snapshot (new IP, still no cold boot), re-acquiring
+  the volume guard.
+- The published-port latency table in [serverless.md](docs/serverless.md) now
+  reads ~125 ms for volume-backed wake (was cold boot).
+
+### Added
+
+- **Durable-while-asleep fsync.** The volume backing file is fsync'd host-side
+  before the VMM stops at sleep (Firecracker does not flush drive backing files on
+  snapshot), so a host crash while a volume app is asleep cannot lose committed
+  rows — the v0.6.0 fsync-honest guarantee holds across sleep.
+- **Automatic cold-boot fallback.** If a snapshot restore ever fails, the wake
+  falls back to a stop/start cold-create (tearing down the slept instance and
+  re-attaching the volume) so a wake never fails — it just isn't instant that once.
+
 ## [0.6.1] — 2026-07-13
 
 Wake-on-TCP: scale-to-zero for **any** self-hosted TCP service, not just HTTP.

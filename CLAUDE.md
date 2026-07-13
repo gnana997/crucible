@@ -15,7 +15,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.1 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer). The core runtime
+**Status:** v0.6.2 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~125 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -64,7 +64,14 @@ so any volume-backed database (postgres, redis, …) becomes self-hosted serverl
 for connection-pooled clients, and `--keep-connections` flips to connection-scoped
 mode (reap off + TCP keepalive) for pub/sub / streaming — awake while subscribed,
 asleep when nobody's connected; plus the guest init now provides `/dev/fd` for
-process-substitution entrypoints). See the ROADMAP for what's next.
+process-substitution entrypoints). **v0.6.2 (F3)** makes a volume app snapshot-sleep
+and snapshot-wake like a stateless one: sleep snapshots the instance and stops the
+VMM (RAM freed, single-writer guard held, backing file host-fsync'd for durability
+while asleep); wake restores in place (~125 ms, same instance + IP, volume
+re-attached, no cold boot / WAL recovery), and a wake after a daemon restart forks a
+fresh instance from the durable snapshot re-acquiring the guard, with an automatic
+stop/start cold-create fallback so a wake never fails. See the ROADMAP for what's
+next (v0.6.3 = volume backups).
 
 ## Working style
 

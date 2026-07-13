@@ -135,6 +135,42 @@ func TestValidateSpecScaleToZeroWakeTrigger(t *testing.T) {
 	}
 }
 
+// TestVolumeAppWakeFallsBackToColdCreate (F3-M4): when a volume app's
+// snapshot-wake fails (a bad restore), the wake must not leave it stuck asleep —
+// it falls back to tearing down the slept instance and cold-creating a fresh one.
+func TestVolumeAppWakeFallsBackToColdCreate(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+
+	spec := sleepableSpec("db", 30, 0)
+	spec.Port = 8080
+	spec.Volumes = []api.VolumeMount{{Name: "data", Path: "/data"}}
+	mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	if err := m.Sleep(ctx(), "db"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+
+	// Make the in-place restore fail; the wake must recover via cold-create.
+	f.mu.Lock()
+	f.wakeErr = errors.New("boom: restore failed")
+	f.mu.Unlock()
+
+	cBefore, dBefore := f.createCount(), len(f.destroys)
+	if err := m.Wake(ctx(), "db"); err != nil {
+		t.Fatalf("Wake should have fallen back to cold-create, got error: %v", err)
+	}
+	if f.createCount() != cBefore+1 {
+		t.Errorf("wake did not cold-create on fallback: creates %d→%d", cBefore, f.createCount())
+	}
+	if len(f.destroys) != dBefore+1 {
+		t.Errorf("fallback did not tear down the slept instance (release its guard): destroys %d→%d", dBefore, len(f.destroys))
+	}
+	if got, _ := m.GetByName("db"); got.Status == nil || got.Status.Phase != "running" {
+		t.Fatalf("phase after fallback wake = %v, want running", got.Status)
+	}
+}
+
 // TestAppSleepWakeLifecycle drives the full app-level Sleep/Wake state machine
 // against the fake instantiator: boot → sleep (phase asleep, counted) →
 // reconcile-leaves-alone → wake (phase running), plus the wrong-state errors.

@@ -30,6 +30,7 @@ type fakeInstantiator struct {
 	onSleep     func()           // if set, called (outside f.mu) mid-Sleep — a test gate
 	snapshots   int              // count of SnapshotInstance calls (golden captures)
 	forks       int              // count of ForkInstance calls (warm extras)
+	wakeErr     error            // if set, Wake returns it (exercises the F3-M4 fallback)
 }
 
 func (f *fakeInstantiator) SnapshotInstance(_ context.Context, instanceID string) (string, error) {
@@ -150,6 +151,9 @@ func (f *fakeInstantiator) Sleep(_ context.Context, instanceID string) (string, 
 func (f *fakeInstantiator) Wake(_ context.Context, instanceID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.wakeErr != nil {
+		return f.wakeErr
+	}
 	if !f.slept[instanceID] {
 		return errors.New("fake: not asleep")
 	}

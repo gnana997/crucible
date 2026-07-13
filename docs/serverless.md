@@ -107,13 +107,15 @@ the proxy; one with neither is rejected (nothing could wake it).
 | App | Sleep mode | Wake |
 |---|---|---|
 | **Non-volume** (stateless cache, ephemeral redis) | snapshot | **~125-170 ms**: restore in place, same IP |
-| **Volume-backed** (postgres, redis with persistence) | stop/start | **cold boot** (~1-5 s): a fresh instance boots and the service starts |
+| **Volume-backed** (postgres, redis with persistence) | snapshot | **~125 ms**: restore in place, same IP, volume re-attached |
 
-A volume app can only *stop/start* sleep (a snapshot of a volume-backed VM is a
-device-state problem deferred to a later release), so a serverless **postgres**
-pays a real cold start: the database boots and runs recovery. That is inherent to
-durable-on-a-volume and comparable to other serverless-database offerings; only the
-*stateless* case is sub-second.
+Both wake by snapshot restore, so a serverless **postgres** comes back **without a
+cold boot or WAL recovery**: the database process is already running in the
+restored memory, attached to its volume, in about 125 ms. A same-lifetime wake is
+in place (same instance and IP); a wake after a **daemon restart** restores a fresh
+instance from the durable snapshot (new IP, still no cold boot), with the volume
+re-attached and data intact. If a restore ever fails, the app falls back to a cold
+boot so a wake never fails; it just isn't instant that once.
 
 ## What fits and what doesn't
 
@@ -128,8 +130,8 @@ durable-on-a-volume and comparable to other serverless-database offerings; only 
 
 **Doesn't fit** (inherent to scale-to-zero, not a limitation we can remove):
 
-- a service that must stay continuously reachable with sub-second latency on
-  *every* request (the cold-boot wake is real for volume apps);
+- a service that cannot tolerate the ~125 ms snapshot-restore pause on the first
+  request after it has gone idle (that wake is fast, but not zero);
 - durable message delivery to a *disconnected* subscriber; a slept pub/sub app is
   not holding the connection, so fire-and-forget messages published while it is
   asleep have no one to deliver to (persistent queues that keep messages on a
