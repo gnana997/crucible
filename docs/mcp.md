@@ -84,6 +84,9 @@ Each tool is a thin wrapper over one daemon call. Names are snake_case per MCP c
 | `list_snapshots` | List snapshots. | — |
 | `delete_snapshot` | Delete a snapshot. | `snapshot_id` |
 | `list_profiles` | List available rootfs profiles. | — |
+| `list_images` | List converted OCI images in the daemon's cache (digest, ref, size). | — |
+| `delete_image` | Delete a cached image by digest, hex prefix, or ref. | `ref` |
+| `capture` | Capture a sandbox's (or an app's current instance's) traffic to a local pcap file and return its path. Bounded; **needs the default-deny `capture` op.** | `sandbox_id` \| `app`, `filter?`, `max_seconds?`, `max_bytes?` |
 
 - **`run` is the star** — most agents want "run this code, give me the output" with no lifecycle to manage. `env` entries are `KEY=VALUE` strings; `net_allow` is a list of hostnames the sandbox may reach.
 - **Booting an image** — set `image` (e.g. `nginx:alpine` or a converted digest) instead of `profile` on `run`/`create_sandbox`; the daemon pulls + converts on a store miss (`pull`: missing/always/never). `image` and `profile` are mutually exclusive. `create_sandbox` boots the image's entrypoint and can `publish` host ports (`["8080:80"]`), echoing the applied mappings back.

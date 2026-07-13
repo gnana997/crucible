@@ -111,9 +111,9 @@ func TestServerAdvertisesFullCatalog(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"app_exec", "app_logs", "app_sleep", "app_wake", "create_app", "create_sandbox", "delete_app",
-		"delete_sandbox", "delete_snapshot", "exec", "fork", "get_app", "inspect_sandbox", "list_apps",
-		"list_profiles", "list_sandboxes", "list_snapshots", "logs", "read_file", "run", "snapshot",
+		"app_exec", "app_logs", "app_sleep", "app_wake", "capture", "create_app", "create_sandbox", "delete_app",
+		"delete_image", "delete_sandbox", "delete_snapshot", "exec", "fork", "get_app", "inspect_sandbox", "list_apps",
+		"list_images", "list_profiles", "list_sandboxes", "list_snapshots", "logs", "read_file", "run", "snapshot",
 		"stop_sandbox", "update_app", "write_files",
 	}
 	if len(got) != len(want) {

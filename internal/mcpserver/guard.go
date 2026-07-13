@@ -161,8 +161,13 @@ func toolOps(name string) []policy.Operation {
 		return []policy.Operation{policy.OpFork}
 	case "delete_sandbox", "delete_snapshot":
 		return []policy.Operation{policy.OpDelete}
-	case "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles":
+	case "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles", "list_images":
 		return []policy.Operation{policy.OpRead}
+	case "delete_image":
+		return []policy.Operation{policy.OpDelete}
+	case "capture":
+		// Packet capture exposes traffic payloads — default-deny, its own op.
+		return []policy.Operation{policy.OpCapture}
 	}
 	return nil
 }

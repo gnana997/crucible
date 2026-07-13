@@ -81,7 +81,7 @@ so the MCP server can mirror a policy by advertising only the tools it permits.
 | `delete` | `DELETE /sandboxes|snapshots/{id}` | `run`, `delete_sandbox`, `delete_snapshot` |
 | `read` | all `GET` | `list_sandboxes`, `inspect_sandbox`, `list_snapshots`, `list_profiles` |
 | `registry` | `POST`/`DELETE /registry/credentials` | *(none — operator action, no MCP tool)* |
-| `capture` | `GET /sandboxes/{id}/capture` | *(none — debug tooling)* — **default-deny; grant explicitly.** Packet capture exposes traffic payloads, so it is never implied by `read`. |
+| `capture` | `GET /sandboxes/{id}/capture` | `capture` — **default-deny; grant explicitly.** Packet capture exposes traffic payloads, so it is never implied by `read`. |
 
 `run` creates → execs → deletes in one call, so it needs `create`+`exec`+`delete`
 — a token lacking any of those won't be offered `run`.
