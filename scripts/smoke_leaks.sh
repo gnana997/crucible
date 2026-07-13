@@ -411,30 +411,34 @@ fi
 wait_fc 0 20 >/dev/null || true
 
 # =============================================================================
-echo "== 13 volume-app stop/start sleep leaks no VM, netns, or IP"
+echo "== 13 volume-app snapshot sleep/wake-in-place leaks no VM (F3)"
 FC0="$(fc_count)"
 cli app create voldb --image "$IMAGE" --pull missing --port 80 --restart always \
   --health "http:80:/" --memory 256 --volume voldbdata:/data >/dev/null 2>&1
 if wait_phase voldb running >/dev/null && wait_fc $((FC0+1)); then
   pass "volume app booted (1 VM)"
   IP1="$(guest_ip "$(app_inst voldb)")"
+  INST1="$(app_inst voldb)"
   exec_app voldb sh -c 'echo v > /data/x && sync' >/dev/null 2>&1
-  # A volume app sleeps stop/start (quiesce → destroy): the VM AND its netns/IP
-  # must be released, not kept warm like a snapshot sleep.
+  # F3: a volume app snapshot-sleeps — the VMM stops (RAM freed, 0 VMs) but the
+  # netns/IP reservation + single-writer volume guard are KEPT for wake-in-place.
   cli app sleep voldb >/dev/null 2>&1
   if wait_phase voldb asleep >/dev/null && wait_fc "$FC0" 20; then
-    pass "stop/start sleep freed the VM + its netns/IP (0 extra VMs while asleep)"
+    pass "snapshot sleep freed the VM (0 while asleep), netns/IP kept for wake-in-place"
   else
-    fail "volume-app sleep leaked a VM/netns: phase=$(phase voldb) fc=$(fc_count) want $FC0"
+    fail "volume-app sleep leaked a VM: phase=$(phase voldb) fc=$(fc_count) want $FC0"
   fi
-  # Wake → cold-create a FRESH instance (new IP), volume re-attached.
+  # Wake → restore IN PLACE: same instance id, same IP, volume re-attached, data intact.
   cli app wake voldb >/dev/null 2>&1
   if wait_phase voldb running >/dev/null && wait_fc $((FC0+1)) 30; then
     IP2="$(guest_ip "$(app_inst voldb)")"
+    INST2="$(app_inst voldb)"
     DATA="$(exec_app voldb cat /data/x 2>/dev/null | tr -d '\r\n')"
-    [[ "$DATA" == "v" ]] \
-      && pass "woke to a fresh instance, volume re-attached, data intact (IP $IP1 → $IP2)" \
-      || fail "wake lost volume data: got '$DATA' want 'v'"
+    if [[ "$DATA" == "v" && "$IP2" == "$IP1" && "$INST2" == "$INST1" ]]; then
+      pass "woke in place (same instance $INST1, same IP $IP1), volume intact"
+    else
+      fail "wake not in-place or data lost: data='$DATA' want 'v', IP $IP1→$IP2, inst $INST1→$INST2"
+    fi
   else
     fail "wake did not restore exactly one VM: fc=$(fc_count) want $((FC0+1))"
   fi

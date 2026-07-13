@@ -256,6 +256,14 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 	if !spec.LazyMem {
 		stage[chrootMemPath] = jailer.StageFile{Src: spec.MemPath, Shared: true}
 	}
+	// F3: re-stage each volume's backing file into the restore chroot at the same
+	// chroot-relative path (/vol0.ext4…) the snapshot recorded, so LoadSnapshot
+	// re-opens it — no PatchDrive needed under jailer. NoCopyFallback (like Start)
+	// keeps it a hardlink to the durable backing file, never a copy that would
+	// fork the data.
+	for _, v := range spec.Volumes {
+		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true}
+	}
 	if err := jailer.Stage(jSpec, stage); err != nil {
 		_ = jailer.Cleanup(jSpec)
 		return nil, fmt.Errorf("runner: stage snapshot files for jailer: %w", err)

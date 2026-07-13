@@ -39,6 +39,7 @@ type sleepState struct {
 	netns      string
 	vcpus      int
 	memMiB     int
+	volumes    []runner.VolumeAttach // F3: re-staged into the wake chroot
 }
 
 // SleepInPlace snapshots a running sandbox, then stops its VMM to free RAM while
@@ -152,6 +153,7 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 		rootfsPath: liveRootfs, // in-place wake restores against the LIVE rootfs
 		vcpus:      s.VCPUs,
 		memMiB:     s.MemoryMiB,
+		volumes:    s.volumes, // re-staged into the wake chroot at the same paths
 	}
 	if s.Network != nil {
 		st.netns = s.Network.NetnsPath
@@ -218,6 +220,7 @@ func (m *Manager) WakeInPlace(ctx context.Context, id string) error {
 		LazyMem:    true,
 		NetNS:      st.netns,
 		Quotas:     m.quotasFor(st.vcpus, st.memMiB),
+		Volumes:    st.volumes, // F3: re-attach the volume drive(s) on wake
 	}
 	restoreStart := time.Now()
 	handle, err := m.cfg.Runner.Restore(ctx, spec)

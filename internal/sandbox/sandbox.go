@@ -180,6 +180,11 @@ type Sandbox struct {
 	// released on Delete so a later sandbox can reattach the same volume.
 	volumeNames []string
 
+	// volumes are the runner-level volume attachments (drive id + host backing
+	// path) captured at Create, so a wake-in-place restore (F3) can re-stage the
+	// same volumes into the restored chroot.
+	volumes []runner.VolumeAttach
+
 	// asleep, when non-nil, holds the snapshot artifacts captured by
 	// SleepInPlace to wake from: the VMM is stopped (RAM freed) but the record,
 	// netns, and workdir are kept. Cleared by WakeInPlace. In-memory only —
@@ -879,6 +884,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 		}
 	}
 	s.volumeNames = volNames
+	s.volumes = volSpecs
 
 	// Optional supervised service: push the spec and start it before the
 	// sandbox is registered, so a successful Create always returns with

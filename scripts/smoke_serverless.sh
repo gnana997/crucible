@@ -12,11 +12,12 @@
 #      - the published host port stays bound while asleep, and the next TCP
 #        connection WAKES the app in place (snapshot restore) and forwards.
 #
-#   B. Volume cold-boot path (serverless postgres — the north-star):
+#   B. Volume snapshot-wake path (serverless postgres — the north-star, F3):
 #      - a scale-to-zero postgres on a persistent volume, published on :5432;
-#      - manual `app sleep` frees the VM (stop/start for a volume app);
-#      - a fresh TCP connection wakes it (cold-create + volume re-attach), and the
-#        row written before sleep is still there afterward (durable across wake).
+#      - manual `app sleep` snapshots the instance and stops the VMM (VM freed,
+#        snapshot kept, single-writer guard held);
+#      - a fresh TCP connection wakes it IN PLACE (~125 ms, same instance + IP, no
+#        cold boot / WAL recovery), and the row written before sleep is intact.
 #
 #   C. Request/response redis (reaping ON, the default): a client that HOLDS a
 #      connection open + idle is still reaped, so the app reaches zero connections
@@ -125,6 +126,9 @@ run() { "$CRUCIBLE_BIN" --addr "$BASE_URL" "$@"; }
 
 # ---- helpers ----------------------------------------------------------------
 app_phase() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1 | grep -o '[a-z]*"$' | tr -d '"'; }
+# app_inst reads the current instance id off the API (compact JSON), not `app get`
+# (the CLI pretty-prints with a space after the colon that a space-less grep misses).
+app_inst() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1; }
 # wait_phase APP WANT [TRIES]
 wait_phase() { local want="$2" tries="${3:-120}"; for _ in $(seq 1 "$tries"); do [[ "$(app_phase "$1")" == "$want" ]] && return 0; sleep 0.5; done; return 1; }
 fc_count() { pgrep -f 'firecracker --id' 2>/dev/null | wc -l | tr -d ' '; }
@@ -244,20 +248,27 @@ if wait_phase pg running 400 && wait_fc $((FC0+1)) 60; then
     fi
   fi
 
-  echo "== 08 manual sleep destroys the instance (stop/start, volume detached)"
+  echo "== 08 manual sleep snapshots the instance and stops the VMM (F3)"
+  inst_before="$(app_inst pg)"
   run app sleep pg >/dev/null 2>&1
   if wait_phase pg asleep 60 && wait_fc "$FC0" 40; then
-    ok "app sleep → phase=asleep, VM freed"
+    ok "app sleep → phase=asleep, VM freed (snapshot kept, guard held)"
   else
     bad "postgres did not sleep: phase=$(app_phase pg) fc=$(fc_count)"
   fi
 
-  echo "== 09 a fresh TCP connection cold-wakes it; the row survives"
+  echo "== 09 a TCP connection wakes it IN PLACE (~125 ms, no recovery); the row survives"
   tcp_poke "$HP_PG"   # connect to the published port → triggers wake-on-connect
-  if wait_phase pg running 400 && wait_fc $((FC0+1)) 60; then
-    ok "wake-on-connect cold-created a fresh instance (volume re-attached)"
+  if wait_phase pg running 120 && wait_fc $((FC0+1)) 60; then
+    inst_after="$(app_inst pg)"
+    [[ -n "$inst_after" && "$inst_after" == "$inst_before" ]] \
+      && ok "wake-on-connect restored IN PLACE (same instance $inst_after — F3 snapshot-wake, not cold boot)" \
+      || bad "wake was not in-place (F3): instance $inst_before → $inst_after"
+    # Postgres is already running in restored memory (no cold boot, no WAL
+    # recovery), so the query should answer on the first try; the retry is just a
+    # safety net for the connect-during-wake window.
     got=""
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 30); do
       got="$(pg_query 'SELECT x FROM t')"
       [[ "$got" == "4242" ]] && break
       sleep 1

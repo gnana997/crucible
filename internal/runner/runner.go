@@ -249,6 +249,15 @@ type RestoreSpec struct {
 	// the VMM's host footprint just like a fresh boot. Enforced only by
 	// the jailer runner; zero-valued fields mean "no limit".
 	Quotas Quotas
+
+	// Volumes are the persistent volume drives to re-attach on restore
+	// (wake-in-place of a volume-backed app, F3). The snapshot recorded
+	// each at its chroot-relative path, so the runner must re-stage the
+	// same backing file (by DriveID → chroot path) before LoadSnapshot;
+	// the backing file persists in --volume-dir across the sleep. Empty
+	// for a non-volume restore. Must match the volumes the source
+	// sandbox had at snapshot time.
+	Volumes []VolumeAttach
 }
 
 // Runner starts Firecracker VMs — either from a cold boot (Start) or

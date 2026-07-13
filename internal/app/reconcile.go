@@ -555,24 +555,17 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 	}
 
 	var snapID string
-	if len(rec.Spec.Volumes) > 0 {
-		// Volume app: stop/start sleep, never a snapshot (a snapshot of a
-		// volume-backed VM is the F3 device-state cliff, v0.6.2). Sync the
-		// guest so un-fsync'd writes reach the Writeback volume, then destroy
-		// the instance — which releases its single-writer volume claim.
-		// AsleepSnapshotID stays empty, so Wake cold-creates a fresh instance.
-		_ = m.inst.Quiesce(ctx, instanceID)
-		if derr := m.inst.Destroy(ctx, instanceID); derr != nil {
-			revertRunning()
-			return fmt.Errorf("app: sleep %q (stop/start): %w", name, derr)
-		}
-	} else {
-		var serr error
-		snapID, serr = m.inst.Sleep(ctx, instanceID)
-		if serr != nil {
-			revertRunning()
-			return fmt.Errorf("app: sleep %q: %w", name, serr)
-		}
+	// F3: all apps — volume-backed included — snapshot-sleep. The instance keeps
+	// its identity + netns/IP, its single-writer volume guard stays HELD (the
+	// snapshot path never Destroys), and its volume backing file is host-fsync'd
+	// before the VMM stops, so a slept volume app wakes in place (~125 ms) with
+	// data durable. (v0.6.1 stop/start-destroyed a volume app; F3 replaces it.
+	// A restore-failure fallback to stop/start is F3-M4.)
+	var serr error
+	snapID, serr = m.inst.Sleep(ctx, instanceID)
+	if serr != nil {
+		revertRunning()
+		return fmt.Errorf("app: sleep %q: %w", name, serr)
 	}
 
 	// Persist the asleep marker so a daemon restart re-adopts this app as asleep
@@ -630,17 +623,21 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	newInstanceID := instanceID
 	var werr error
 	switch {
-	case len(rec.Spec.Volumes) > 0:
-		// Volume app (stop/start): sleep destroyed the instance and captured no
-		// snapshot, so cold-create a fresh one. V-M1 re-attaches + mounts the
-		// volume; the IP is new but the proxy resolves the app by name.
-		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
 	case instanceID != "" && m.inst.Exists(instanceID):
-		// Same daemon lifetime: the slept instance is still live — restore in place.
+		// Same daemon lifetime (volume-backed or not): the slept instance is still
+		// live — restore in place. F3 makes this a ~125 ms snapshot-wake for volume
+		// apps too: the instance survived sleep with its single-writer volume guard
+		// still held, so WakeInPlace re-attaches the same volume.
 		werr = m.inst.Wake(ctx, instanceID)
+	case len(rec.Spec.Volumes) > 0:
+		// Volume app whose instance is gone (after a daemon restart): cold-create a
+		// fresh one and re-attach + mount the volume. Fast snapshot-wake after a
+		// restart (WakeFromSnapshot re-staging the volume) is F3-M3; until then this
+		// is the v0.6.1 behavior — correct if not yet instant.
+		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
 	case rec.AsleepSnapshotID != "":
-		// After a restart the slept instance is gone; fork a fresh one from the
-		// durable snapshot (new IP; the proxy resolves by name).
+		// Non-volume app after a restart: fork a fresh one from the durable
+		// snapshot (new IP; the proxy resolves by name).
 		newInstanceID, werr = m.inst.WakeFromSnapshot(ctx, rec.AsleepSnapshotID, rec.Spec)
 	default:
 		werr = fmt.Errorf("no live instance and no durable snapshot to wake from")

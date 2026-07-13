@@ -189,10 +189,10 @@ func TestAppSleepWakeLifecycle(t *testing.T) {
 	}
 }
 
-// TestVolumeAppSleepsViaStopStart: a volume-backed app sleeps by quiescing +
-// destroying its instance (never a snapshot) and wakes by cold-creating a fresh
-// one (V-M3 stop/start).
-func TestVolumeAppSleepsViaStopStart(t *testing.T) {
+// TestVolumeAppSnapshotSleepsAndWakesInPlace (F3): a volume-backed app
+// snapshot-sleeps — NOT stop/start — so its instance keeps its identity + volume
+// guard, and a same-lifetime wake restores it in place rather than cold-creating.
+func TestVolumeAppSnapshotSleepsAndWakesInPlace(t *testing.T) {
 	f := newFake()
 	m, _ := newMgr(t, f)
 
@@ -201,35 +201,39 @@ func TestVolumeAppSleepsViaStopStart(t *testing.T) {
 	spec.Volumes = []api.VolumeMount{{Name: "data", Path: "/data"}}
 	mustCreate(t, m, spec, true)
 	m.reconcile(ctx())
-	if got, _ := m.GetByName("db"); got.Status == nil || got.Status.Phase != "running" {
+	got, _ := m.GetByName("db")
+	if got.Status == nil || got.Status.Phase != "running" {
 		t.Fatalf("phase after boot = %v, want running", got.Status)
 	}
+	inst := got.Status.InstanceID
 
-	// Sleep a volume app: quiesce (sync) + destroy, NEVER a snapshot.
+	// F3: a volume app snapshot-sleeps — no inst.Quiesce, no inst.Destroy (the
+	// instance survives, guard held); it's the same path a non-volume app takes.
 	qBefore, dBefore := len(f.quiesces), len(f.destroys)
 	if err := m.Sleep(ctx(), "db"); err != nil {
 		t.Fatalf("Sleep: %v", err)
 	}
-	if len(f.quiesces) <= qBefore {
-		t.Error("volume-app sleep did not quiesce (sync) the instance")
+	if len(f.quiesces) != qBefore {
+		t.Errorf("volume-app sleep used stop/start quiesce (want snapshot): quiesces %d→%d", qBefore, len(f.quiesces))
 	}
-	if len(f.destroys) <= dBefore {
-		t.Error("volume-app sleep did not destroy the instance (stop/start)")
+	if len(f.destroys) != dBefore {
+		t.Errorf("volume-app sleep destroyed the instance (want snapshot, guard held): destroys %d→%d", dBefore, len(f.destroys))
 	}
 	if got, _ := m.GetByName("db"); got.Status.Phase != "asleep" {
 		t.Fatalf("phase after sleep = %q, want asleep", got.Status.Phase)
 	}
 
-	// Wake a volume app: cold-create a fresh instance (no snapshot to restore).
+	// F3: same-lifetime wake restores in place (inst.Wake) — no cold-create, same
+	// instance id (the fake's Wake only succeeds if the instance was inst.Sleep'd).
 	cBefore := f.createCount()
 	if err := m.Wake(ctx(), "db"); err != nil {
 		t.Fatalf("Wake: %v", err)
 	}
-	if f.createCount() != cBefore+1 {
-		t.Errorf("volume-app wake did not cold-create: creates %d→%d", cBefore, f.createCount())
+	if f.createCount() != cBefore {
+		t.Errorf("volume-app wake cold-created (want wake-in-place): creates %d→%d", cBefore, f.createCount())
 	}
-	if got, _ := m.GetByName("db"); got.Status.Phase != "running" {
-		t.Fatalf("phase after wake = %q, want running", got.Status.Phase)
+	if got, _ := m.GetByName("db"); got.Status.Phase != "running" || got.Status.InstanceID != inst {
+		t.Fatalf("after wake: phase=%q instance=%q, want running + same instance %q", got.Status.Phase, got.Status.InstanceID, inst)
 	}
 }
 
