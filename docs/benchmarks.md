@@ -17,23 +17,23 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 
 | | ext4 (common default) | **btrfs (reflink)** |
 |---|---|---|
-| Fork (warm → child), p50 | 695 ms | **210 ms** — 3.3× faster |
-| Fork fan-out @ 64-way | 273 ms/child · 3.7/s | **37 ms/child · 27/s** — ~7× |
-| 128-way fork, wall time | 108 s | **4.0 s** — 27× |
-| Snapshot, p50 | 630 ms | **468 ms** |
-| 64 forks, host RAM | 1.1 GiB | **~0** (pages shared) |
-| Proxy wake, p50 | 248 ms | **157 ms** — 1.6× |
+| Fork (warm → child), p50 | 530 ms | **125 ms** — 4.2× faster |
+| Fork fan-out @ 64-way | 294 ms/child · 3.4/s | **24 ms/child · 41/s** — ~12× |
+| 128-way fork, wall time | 36.4 s | **2.1 s** — ~18× |
+| Snapshot, p50 | 644 ms | **466 ms** |
+| 64 forks, host RAM | 1.0 GiB | **813 MiB** |
+| Proxy wake, p50 | 252 ms | **125 ms** — 2.0× |
 
-**If you fork a lot, put `--work-base` on btrfs or XFS.** The rest of this page reports both, so you can see the floor (ext4) and the ceiling (reflink). Note that **wake barely cares** (1.6×) — it restores against the live rootfs with lazy memory and copies nothing on the timed path — while **fork/fan-out care enormously** (up to 27×), because each ext4 child byte-copies a full ~1 GiB rootfs.
+**If you fork a lot, put `--work-base` on btrfs or XFS.** The rest of this page reports both, so you can see the floor (ext4) and the ceiling (reflink). Note that **wake barely cares about the filesystem** (2.0×) — it restores against the live rootfs with lazy memory and copies nothing on the timed path — while **fork/fan-out care enormously** (up to ~18×), because each ext4 child byte-copies a full ~1 GiB rootfs. Marginal *RAM* per fork is similar on both filesystems (~12–16 MiB) — guest pages are shared via `userfaultfd` regardless of the disk; reflink's win is wall-time and I/O, not memory.
 
 ## Setup
 
 | | |
 |---|---|
 | CPU | AMD Ryzen AI 9 HX 370 (24 threads) |
-| Kernel | 7.0 · Free RAM ~12–15 GiB (other workloads paused) |
+| Kernel | 7.0 · Free RAM ~11.6 GiB (btrfs) / ~19 GiB (ext4) at start, other workloads paused |
 | Sandbox | 1 vCPU / 512 MiB, default (1 GiB) rootfs, no network |
-| Daemon | measured on v0.5.0 under jailer, `CRUCIBLE_MAX_FORK=128`+ (the fork / snapshot / wake hot paths these numbers cover are unchanged through v0.5.4) |
+| Daemon | measured on **v0.5.4** under jailer, `CRUCIBLE_MAX_FORK` auto-sized to the density target |
 | Samples | 30 per latency op (3 warmup discarded) |
 | FS | ext4 (host root) and btrfs (60 GiB loopback) — the daemon's `--work-base`/`--chroot-base` on each; reproduce both with `scripts/bench_reflink.sh` (`FS=btrfs`/`FS=ext4`) |
 
@@ -41,13 +41,13 @@ Fork clones the per-child rootfs copy-on-write. On a **reflink** filesystem (btr
 
 | Operation | ext4 p50 | btrfs p50 | p90 / p99 (btrfs) |
 |---|---|---|---|
-| Exec roundtrip (`true`, warm) | 4.0 ms | **2.6 ms** | 3.1 / 4.0 ms |
-| Cold create (boot → agent ready) | 1.46 s | **1.12 s** | 1.54 / 1.89 s |
-| Snapshot (running → on disk) | 630 ms | **468 ms** | 874 ms / 2.45 s |
-| Fork (warm snapshot → child) | 695 ms | **210 ms** | 234 / 241 ms |
-| **Proxy wake (request → served)** | **248 ms** | **157 ms** | 247 / 262 ms |
+| Exec roundtrip (`true`, warm) | 2.2 ms | **2.8 ms** | 3.2 / 8.3 ms |
+| Cold create (boot → agent ready) | 1.36 s | **1.03 s** | 1.05 / 1.10 s |
+| Snapshot (running → on disk) | 644 ms | **466 ms** | 2.16 s / 2.40 s |
+| Fork (warm snapshot → child) | 530 ms | **125 ms** | 143 / 157 ms |
+| **Proxy wake (request → served)** | **252 ms** | **125 ms** | 153 / 156 ms |
 
-**Fork is ~2× faster than a cold create even on ext4, and ~3× faster again on reflink** — pay the ~1 s boot once, then branch cheaply. **Wake beats a cold create ~7×** (157 ms vs 1.12 s on btrfs) and is nearly storage-independent (see below). Exec overhead is ~3 ms (a vsock roundtrip). Snapshot's median is ~0.5 s with occasional multi-second tails from writing the 512 MiB memory image through writeback.
+**Fork is ~2.6× faster than a cold create even on ext4, and ~8× faster on reflink** — pay the ~1 s boot once, then branch cheaply. **Wake beats a cold create ~8×** (125 ms vs 1.03 s on btrfs) and is nearly storage-independent (see below). Exec overhead is ~2–3 ms (a vsock roundtrip), essentially filesystem-independent. Snapshot's median is ~0.5 s with occasional multi-second tails from writing the 512 MiB memory image through writeback.
 
 ## Wake (scale-to-zero)
 
@@ -55,11 +55,11 @@ The v0.5.0 headline: a slept app costs ~zero RAM and wakes on the next request. 
 
 | Proxy wake (request → served) | ext4 | **btrfs** |
 |---|---|---|
-| p50 | 248 ms | **157 ms** |
-| p90 | 328 ms | 247 ms |
-| p99 | 344 ms | 262 ms |
+| p50 | 252 ms | **125 ms** |
+| p90 | 302 ms | 153 ms |
+| p99 | 331 ms | 156 ms |
 
-**Wake is ~7× faster than a cold create** (157 ms vs 1.12 s, btrfs) and, unlike fork, barely depends on the filesystem (~1.6×). That's because wake restores in place against the *live* rootfs with lazy (`userfaultfd`) memory — no rootfs clone, no memory copy on the timed path, cost O(working set) not O(guest RAM). The ext4 penalty is only the page-cache pressure left by the untimed sleep-snapshot. Either way it's comfortably sub-second.
+**Wake is ~8× faster than a cold create** (125 ms vs 1.03 s, btrfs) and, unlike fork, only mildly depends on the filesystem (2.0×). That's because wake restores in place against the *live* rootfs with lazy (`userfaultfd`) memory — no rootfs clone, no memory copy on the timed path, cost O(working set) not O(guest RAM). The ext4 penalty is only the page-cache pressure left by the untimed sleep-snapshot. Either way it's comfortably sub-second.
 
 > There is also a `wake` phase (`--phases wake`) that times the bare *sandbox-level* restore-in-place mechanism; it needs a rootfs whose guest agent has `/wake` (OCI images used by `proxywake` always do). Every JSON result carries an `env` block — host, CPU, kernel, memory, and a **live FICLONE reflink probe** of `--reflink-path` — so nobody compares an ext4 number against a btrfs one.
 
@@ -69,31 +69,33 @@ Forking *N* children from one snapshot in a single call. Per-child cost falls wi
 
 | Children | ext4 per-child | btrfs per-child | btrfs throughput |
 |---|---|---|---|
-| 1 | 871 ms | 165 ms | 6.1/s |
-| 4 | 445 ms | 54 ms | 18.5/s |
-| 16 | 310 ms | 40 ms | 24.8/s |
-| 64 | 273 ms | 37 ms | 27.4/s |
-| 128 | 845 ms | **31 ms** | **31.8/s** |
+| 1 | 621 ms | 173 ms | 5.8/s |
+| 4 | 361 ms | 58 ms | 17.2/s |
+| 16 | 338 ms | 32 ms | 31.3/s |
+| 64 | 294 ms | 24 ms | 41.0/s |
+| 128 | 284 ms | **16 ms** | **62.6/s** |
 
-On ext4 each child copies a full 1 GiB rootfs, so a 128-way fan-out moves ~128 GiB of disk — per-child cost *rises* past a point (273 ms → 845 ms from 64 to 128) as the disk saturates, and the whole batch took **108 s vs 4 s** on btrfs. On reflink the clone is O(1), so per-child cost keeps falling as fixed overhead amortizes.
+On ext4 each child copies a full 1 GiB rootfs, so per-child cost plateaus around ~285–340 ms and the 128-way batch moves ~128 GiB of disk — it took **36 s vs 2 s** on btrfs. On reflink the clone is O(1), so per-child cost keeps *falling* as fixed overhead amortizes (173 ms → 16 ms), and throughput climbs to ~63 forks/s at 128-way.
 
 ## Memory efficiency
 
-The lazy-`userfaultfd` payoff: guest RAM is served on demand from the snapshot's memory file, so forks share pages instead of each copying 512 MiB. Forking **64 children** from one warm snapshot:
+The lazy-`userfaultfd` payoff: guest RAM is served on demand from the snapshot's memory file, so forks page in only their working set instead of each copying 512 MiB. Forking **64 children** from one warm snapshot:
 
 | | ext4 | btrfs |
 |---|---|---|
-| Host RAM consumed | 1.1 GiB (~18 MiB/fork) | **~1 MiB (~0/fork)** |
-| vs naïve *64 × 512 MiB* = 32 GiB | 29× less | **32,768× less** |
-| Wall time | 75 s | **1.3 s** |
+| Host RAM consumed | 1.0 GiB (~16.4 MiB/fork) | **813 MiB (~12.7 MiB/fork)** |
+| vs naïve *64 × 512 MiB* = 32 GiB | 31× less | **40× less** |
+| Wall time | 33.4 s | **1.29 s** |
 
-reflink pulls far ahead because ext4's per-fork rootfs byte-copies add page-cache pressure (and 64 GiB of I/O) that reflink avoids entirely — the guest memory itself is shared read-only via `userfaultfd` on both filesystems, so the residual host RAM on btrfs is essentially just copy-on-write divergence.
+Marginal RAM per fork is comparable on both filesystems (~13–16 MiB) — the guest's memory is shared read-only via `userfaultfd` on either disk, so what each child adds is just its faulted-in working set plus copy-on-write divergence. btrfs is slightly lighter (no page-cache pressure from rootfs byte-copies) and, crucially, **~26× faster wall-time** (1.3 s vs 33 s) because ext4 also moves 64 GiB of rootfs I/O that reflink skips entirely.
 
 ## Density (reflink)
 
-Forking toward a live-sandbox target on btrfs and watching free RAM: **512 concurrent microVMs** came up, going from ~11.9 GiB free at the start to **3.1 GiB free** at 512 live — ~17 MiB marginal RAM per running VM (its faulted-in working set). 512 was the test's cap, not a ceiling.
+Forking toward a live-sandbox target on btrfs and watching free RAM: this run reached **320 concurrent microVMs** — from ~11.6 GiB free at the start to **7.9 GiB free** at 320 live, ~11 MiB marginal RAM per running VM (its faulted-in working set) — before the first failure.
 
-On reflink, density is **RAM-bound**. On **ext4** it's *disk*-bound instead — each fork writes a full ~1 GiB rootfs, so 512 would move ~512 GiB — which is why this run is reflink-only (`scripts/bench_reflink.sh FS=ext4` skips density by default). Use reflink for density.
+The stop was **not** RAM exhaustion (7.9 GiB was still free) but a per-fork *restore-readiness* timeout: inside a 64-wide fork batch at that concurrency, one child's guest agent didn't answer `/healthz` within the restore deadline. So 320 is this run's first-failure point, not a hard ceiling — a longer agent-ready deadline (or a smaller fork batch) would push the peak higher.
+
+On reflink, density is bounded by RAM and restore concurrency. On **ext4** it's *disk*-bound instead — each fork writes a full ~1 GiB rootfs, so 320 would move ~320 GiB — which is why this phase is reflink-only (`scripts/bench_reflink.sh FS=ext4` skips density by default). Use reflink for density.
 
 ## Reproduce
 

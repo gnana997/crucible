@@ -95,13 +95,13 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 | | ext4 (common default) | btrfs / XFS (reflink) |
 |---|---|---|
-| Fork (warm → child), p50 | ~695 ms | **~210 ms** |
-| Fork throughput (64-way) | 3.7/s | **27/s** |
-| **Proxy wake (request → served), p50** | 248 ms | **157 ms** |
-| 64 forks, host RAM | 1.1 GiB | **~0** (pages shared, vs 32 GiB naïve) |
-| Exec roundtrip | ~4 ms | ~3 ms |
+| Fork (warm → child), p50 | ~530 ms | **~125 ms** |
+| Fork throughput (64-way) | 3.4/s | **41/s** |
+| **Proxy wake (request → served), p50** | 252 ms | **125 ms** |
+| 64 forks, host RAM | 1.0 GiB | **813 MiB** (~13 MiB/fork, pages shared; vs 32 GiB naïve) |
+| Exec roundtrip | ~2 ms | ~3 ms |
 
-**Fork is ~2× faster than a cold create on ext4, ~5× on reflink** — pay the ~1 s boot once, then branch cheaply. A slept app **wakes in ~157 ms** (~7× faster than a cold create, and barely storage-dependent), and we ran **512 concurrent microVMs** on the laptop (reflink, RAM-bound).
+**Fork is ~2.6× faster than a cold create on ext4, ~8× on reflink** — pay the ~1 s boot once, then branch cheaply. A slept app **wakes in ~125 ms** (~8× faster than a cold create, and barely storage-dependent), and we ran **320 concurrent microVMs** on the laptop with RAM to spare.
 
 > **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 27 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 

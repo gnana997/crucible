@@ -45,10 +45,10 @@ Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or a
 | Frame types | 1 stdout, 2 stderr, 3 exit, 4 stdin, 5 stdin-close |
 | Max frame payload | 65536 bytes |
 | Interactive exec transports | hijacked `POST .../exec?stdin=1`; WebSocket `GET .../exec` |
-| Fork p50 (warm→child) | ext4 695ms vs btrfs reflink 210ms |
-| Fork throughput (64-way) | ext4 3.7/s vs btrfs 27/s |
-| Proxy wake p50 (request→served) | ext4 248ms vs btrfs 157ms (~7× faster than a cold create) |
-| 64-fork host RAM | ext4 1.1GiB vs btrfs ~0 (pages shared; naive 64×512MiB=32GiB) |
+| Fork p50 (warm→child) | ext4 530ms vs btrfs reflink 125ms |
+| Fork throughput (64-way) | ext4 3.4/s vs btrfs 41/s |
+| Proxy wake p50 (request→served) | ext4 252ms vs btrfs 125ms (~8× faster than a cold create) |
+| 64-fork host RAM | ext4 1.0GiB vs btrfs 813MiB (~13MiB/fork, pages shared; naive 64×512MiB=32GiB) |
 | Exec roundtrip | ~3ms (filesystem-independent) |
 | Sandbox subnet | /30 from 10.20.0.0/16 pool, DNS anycast 10.20.255.254:53 |
 | Concurrent sandbox cap (subnet pool) | ~16K |
@@ -79,7 +79,7 @@ Crucible is a self-hosted, single-host sandbox runtime that boots untrusted or a
 | Choose... | When... |
 |---|---|
 | ext4 for `--work-base` | reflink unsupported/unavailable; accept slower, RAM-hungrier forks |
-| btrfs reflink for `--work-base` | forking frequently; want O(1) clone, ~3x faster fork (210ms vs 695ms), and near-zero fork RAM (pages shared) vs ext4's full per-fork rootfs byte-copy |
+| btrfs reflink for `--work-base` | forking frequently; want O(1) clone, ~4x faster fork (125ms vs 530ms), and lighter, far faster fan-out (pages shared; no per-fork rootfs byte-copy) vs ext4 |
 | XFS reflink for `--work-base` | also supports O(1) reflink clones like btrfs; no separate quantified benchmark reported |
 | `pull: missing` (default) | normal repeated runs of same image |
 | `pull: always` | need to pick up a moved tag |
