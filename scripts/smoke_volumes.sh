@@ -183,6 +183,46 @@ else
   bad "durable app never reached running (is $APP_IMAGE pullable?)"
 fi
 
+# ---- 10 slept volume app fast-wakes from its snapshot after a restart (F3-M3) ----
+echo "== 10 slept volume app fast-wakes from its snapshot after a daemon restart (F3-M3)"
+phase_of() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1; }
+wait_ph() { for _ in $(seq 1 200); do [[ "$(phase_of "$1")" == "\"phase\":\"$2\"" ]] && return 0; sleep 0.5; done; return 1; }
+
+run app create dbr --image "$APP_IMAGE" --volume dbrdata:/data --restart always >/dev/null 2>&1
+if wait_ph dbr running; then
+  run app exec dbr -- sh -c 'echo m3-marker > /data/m && sync' >/dev/null 2>&1
+  # F3: manual sleep snapshots the instance (keeps the durable snapshot + guard).
+  run app sleep dbr >/dev/null 2>&1
+  if wait_ph dbr asleep; then
+    ok "volume app snapshot-slept (F3)"
+    # Restart the daemon: the slept app must re-adopt as asleep from its snapshot.
+    kill -TERM "$DAEMON_PID" 2>/dev/null; wait "$DAEMON_PID" 2>/dev/null
+    start_daemon
+    if wait_ph dbr asleep; then
+      ok "slept volume app re-adopted as asleep after restart"
+    else
+      bad "app not re-adopted asleep after restart: phase=$(phase_of dbr)"
+    fi
+    # Wake it: the instance is gone (restarted), so this is WakeFromSnapshot —
+    # a fresh instance restored from the durable snapshot, re-attaching the volume
+    # (re-acquiring the single-writer guard) with the data intact.
+    run app wake dbr >/dev/null 2>&1
+    if wait_ph dbr running; then
+      GOT=$(run app exec dbr -- cat /data/m 2>/dev/null | tr -d '\r\n')
+      [[ "$GOT" == "m3-marker" ]] && ok "woke from snapshot after restart, volume data intact" \
+        || bad "expected 'm3-marker' after post-restart wake, got '$GOT'"
+    else
+      bad "volume app did not wake after restart: $(run app get dbr 2>/dev/null | head -c 300)"
+    fi
+  else
+    bad "volume app did not snapshot-sleep: phase=$(phase_of dbr)"
+  fi
+  run app rm dbr >/dev/null 2>&1 || true
+  run volume rm dbrdata >/dev/null 2>&1 || true
+else
+  bad "volume app never reached running (is $APP_IMAGE pullable?)"
+fi
+
 echo "==============================================================="
 echo " volumes smoke: $pass passed, $fail failed"
 echo "==============================================================="

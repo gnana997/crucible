@@ -1482,7 +1482,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			sb, err := m.forkOne(ctx, snap, tokenID, publish, false)
+			sb, err := m.forkOne(ctx, snap, tokenID, publish, false, nil) // fork/scale-out never carries volumes (single-writer)
 			results[idx] = forkResult{sb: sb, err: err}
 		}(i)
 	}
@@ -1519,7 +1519,7 @@ func (m *Manager) Fork(ctx context.Context, snapshotID string, count int, tokenI
 
 // forkOne creates a single fork. Split out so Fork's all-or-nothing
 // loop stays readable.
-func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, publish []PortMapping, wake bool) (*Sandbox, error) {
+func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, publish []PortMapping, wake bool, volumes []VolumeMount) (*Sandbox, error) {
 	// Bound the restore to guest memory, for the same reason Snapshot does:
 	// LoadSnapshot carries no fcapi wall-clock cap and r.Context() no
 	// deadline, so a wedged firecracker must not hang this goroutine. Forks
@@ -1573,6 +1573,34 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		}
 	}()
 
+	// F3-M3: re-attach the app's volumes for a wake-from-snapshot (post-restart).
+	// Attach claims the single-writer guard for this fresh instance (a restart
+	// dropped the previous claim) and returns the persistent backing path; the
+	// drive is re-staged at the same chroot path so LoadSnapshot re-opens it, and
+	// the guest's in-memory mount just resumes. A scale-out fork carries no
+	// volumes (volume apps are single-writer), so this loop is a no-op there.
+	var volSpecs []runner.VolumeAttach
+	var volNames []string
+	if len(volumes) > 0 {
+		if m.cfg.VolumeManager == nil {
+			return nil, fmt.Errorf("%w: wake with volumes but no volume storage configured", ErrInvalidConfig)
+		}
+		for i, v := range volumes {
+			hostPath, aerr := m.cfg.VolumeManager.Attach(v.Name, id)
+			if aerr != nil {
+				return nil, fmt.Errorf("wake %s: attach volume %q: %w", id, v.Name, aerr)
+			}
+			name := v.Name
+			defer func() {
+				if !success {
+					m.cfg.VolumeManager.Release(name)
+				}
+			}()
+			volSpecs = append(volSpecs, runner.VolumeAttach{DriveID: fmt.Sprintf("vol%d", i), HostPath: hostPath})
+			volNames = append(volNames, name)
+		}
+	}
+
 	restoreSpec := runner.RestoreSpec{
 		Workdir:    workdir,
 		StatePath:  snap.StatePath,
@@ -1580,6 +1608,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		RootfsPath: forkRootfs,
 		LazyMem:    true,
 		Quotas:     m.quotasFor(snap.VCPUs, snap.MemoryMiB),
+		Volumes:    volSpecs,
 	}
 	if netHandle != nil {
 		restoreSpec.NetNS = netHandle.NetnsPath
@@ -1605,6 +1634,8 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 		Network:          netHandle,
 		handle:           handle,
 		done:             make(chan struct{}),
+		volumeNames:      volNames, // F3-M3: hold the re-acquired volume guard(s)
+		volumes:          volSpecs,
 	}
 	if s.VSockPath != "" {
 		s.execClient = agentapi.NewClient(s.VSockPath, agentwire.AgentVSockPort)
@@ -1712,7 +1743,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 // wake semantics (reseed RNG + step clock, identity preserved) and a fresh
 // network. Used to wake a slept app after a daemon restart, when its original
 // in-place instance is gone; the returned sandbox is the app's new instance.
-func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publish []PortMapping) (*Sandbox, error) {
+func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publish []PortMapping, volumes []VolumeMount) (*Sandbox, error) {
 	snap, err := m.GetSnapshot(snapshotID)
 	if err != nil {
 		return nil, err
@@ -1720,7 +1751,11 @@ func (m *Manager) WakeFromSnapshot(ctx context.Context, snapshotID string, publi
 	if err := m.admitWake(); err != nil {
 		return nil, err
 	}
-	return m.forkOne(ctx, snap, "", publish, true)
+	// F3-M3: a volume-backed app re-attaches its volume(s) into the fresh instance
+	// (re-acquiring the single-writer guard, which a daemon restart dropped). No
+	// re-mount is needed — the guest resumed with the volume already mounted in the
+	// restored memory; forkOne only re-stages the drive at the same device.
+	return m.forkOne(ctx, snap, "", publish, true, volumes)
 }
 
 // staticNetConfig builds the network config the daemon pushes to an

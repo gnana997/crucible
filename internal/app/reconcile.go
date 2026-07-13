@@ -629,11 +629,17 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 		// apps too: the instance survived sleep with its single-writer volume guard
 		// still held, so WakeInPlace re-attaches the same volume.
 		werr = m.inst.Wake(ctx, instanceID)
+	case len(rec.Spec.Volumes) > 0 && rec.AsleepSnapshotID != "" && m.inst.SnapshotExists(rec.AsleepSnapshotID):
+		// F3-M3: volume app after a daemon restart — fast-wake from the durable
+		// snapshot, re-attaching the volume into a fresh instance (~125 ms, no cold
+		// boot / recovery). The restored guest resumes with the volume already
+		// mounted; WakeFromSnapshot re-acquires the single-writer guard the restart
+		// dropped.
+		newInstanceID, werr = m.inst.WakeFromSnapshot(ctx, rec.AsleepSnapshotID, rec.Spec)
 	case len(rec.Spec.Volumes) > 0:
-		// Volume app whose instance is gone (after a daemon restart): cold-create a
-		// fresh one and re-attach + mount the volume. Fast snapshot-wake after a
-		// restart (WakeFromSnapshot re-staging the volume) is F3-M3; until then this
-		// is the v0.6.1 behavior — correct if not yet instant.
+		// Volume app with no usable durable snapshot (files gone): cold-create a
+		// fresh instance and re-attach + mount the volume — the v0.6.1 behavior,
+		// correct if not instant.
 		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
 	case rec.AsleepSnapshotID != "":
 		// Non-volume app after a restart: fork a fresh one from the durable
