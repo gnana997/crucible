@@ -29,6 +29,14 @@ backups.
   Creating a backup on-box stays `snapshot`-grade. SDK `ExportBackup` /
   `ImportBackup`. No MCP tools (an agent must not stream volume data off the box).
 
+### Fixed
+
+- **Port-publish forwarder shutdown race.** `Set.Close` could call
+  `wg.Wait` while an accept loop was still spawning per-connection handlers with
+  `wg.Add(1)` — a data race on the WaitGroup (caught by `go test -race`). The
+  accept loop is now counted in the WaitGroup, so the counter can't be observed
+  at zero while it is live. Pre-existing (v0.4.1); no behavior change.
+
 ### Notes
 
 - The daemon stays provider-agnostic on purpose: no S3/GCS SDKs, no cloud

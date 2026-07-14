@@ -124,6 +124,10 @@ func Publish(log *slog.Logger, mappings []Mapping) (*Set, error) {
 			closing: make(chan struct{}),
 		}
 		s.fwds = append(s.fwds, f)
+		// Count the accept loop itself in the WaitGroup so Close's Wait can't
+		// observe a zero counter while accept is still spawning per-connection
+		// handlers (accept's wg.Add(1) would otherwise race Close's wg.Wait).
+		f.wg.Add(1)
 		go f.accept()
 	}
 	return s, nil
@@ -154,6 +158,7 @@ func (f *forwarder) stop() {
 }
 
 func (f *forwarder) accept() {
+	defer f.wg.Done()
 	for {
 		conn, err := f.ln.Accept()
 		if err != nil {
