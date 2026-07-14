@@ -45,7 +45,7 @@ that axis"**, so `{}` is fully permissive.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `operations` | `[]string` | allow-list of verbs: `create`, `exec`, `snapshot`, `fork`, `delete`, `read`, `registry`, `capture`, `admin_backup`. Absent/empty = all allowed. |
+| `operations` | `[]string` | allow-list of verbs: `create`, `exec`, `snapshot`, `fork`, `delete`, `read`, `registry`, `capture`, `admin_backup`, `volume_backup`. Absent/empty = all allowed. |
 | `net_allow_max` | `[]string` | hostname egress ceiling (tri-state, below). |
 | `net_full_egress` | `bool` | grants the range-based egress modes (`full_egress`, `allowlist_cidr`). Default `false`: without it, a request asking for either is rejected — so a `net_allow_max` hostname ceiling can't be bypassed by switching to full-egress. |
 | `allow_profiles` | `[]string` | which rootfs profiles may launch. Absent = any. |
@@ -83,6 +83,7 @@ so the MCP server can mirror a policy by advertising only the tools it permits.
 | `registry` | `POST`/`DELETE /registry/credentials` | *(none — operator action, no MCP tool)* |
 | `capture` | `GET /sandboxes/{id}/capture` | `capture` — **default-deny; grant explicitly.** Packet capture exposes traffic payloads, so it is never implied by `read`. |
 | `admin_backup` | `GET /admin/backup` | *(none — operator action, no MCP tool)* — **default-deny; grant explicitly.** The daemon backup streams token state and usable registry secrets. |
+| `volume_backup` | `GET /backups/{id}/export`, `POST /backups/import` | *(none — data-egress action, no MCP tool)* — **default-deny; grant explicitly.** Streaming a backup off/onto the host moves volume data across the boundary. Distinct from *creating* a backup (`POST /volumes/{name}/backups`), which is `snapshot`-grade. |
 
 `run` creates → execs → deletes in one call, so it needs `create`+`exec`+`delete`
 — a token lacking any of those won't be offered `run`.

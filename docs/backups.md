@@ -131,6 +131,44 @@ verify the data), a slept-app backup, a live backup via fsfreeze on a reflink
 filesystem, a restore into a new volume, and an independent clone. See also
 [volumes.md](volumes.md) and [serverless.md](serverless.md).
 
+## Off-host backups (export / import)
+
+A backup under `--backup-dir` still dies with the box. To survive host or disk
+loss, a backup has to leave the host — and that is a job the daemon does not do
+itself: it stays provider-agnostic (no S3/GCS SDKs, no cloud credentials). Two
+thin verbs move a backup's bytes across the API so a control plane (or a cron
+script) can ship them to wherever it keeps backups:
+
+```bash
+# stream a backup off the host (gzip by default — the image is sparse)
+crucible volume backup export <id> -w db.img.gz
+crucible volume backup export <id> | aws s3 cp - s3://backups/db.img.gz   # piped
+
+# later, on a fresh host: stream it back on, then restore to a new volume
+crucible volume backup import --source db -f db.img.gz     # prints a new backup id
+crucible volume restore --from <new-id> --to db-restored
+```
+
+Both are gated by the default-deny **`volume_backup`** scoped-token op — they
+move volume data across the boundary, so a `read`-only token can't. Export gzips
+by default (holes in the sparse ext4 image compress away over the wire);
+`--raw` streams the backing file uncompressed for a caller that dedups its own
+way. Import expects gzip unless `--raw`, and records the backup under **this**
+host's id (the backup lives here now). The bytes are a static, already-consistent
+point-in-time image, so export/import add no freezing — they just move the file
+v0.6.3 already made consistent.
+
+For a *self-hoster* with no control plane, pointing `--backup-dir` at an NFS or
+S3-fuse mount is the simplest off-host path (no export needed); export/import are
+what a **remote** control plane uses to pull backups over the network. Efficient
+incremental / deduplicated off-host storage is left to that layer (e.g. restic or
+borg over the exported streams).
+
+Acceptance: `scripts/smoke_offhost_backup.sh` runs the full loop — back up a
+volume, export it, delete the volume and its local backup, import the stream
+back, restore to a new volume, and confirm the data survived — plus the
+`volume_backup`-vs-`read` gate.
+
 ## Daemon backup (`crucible admin backup`)
 
 Volume backups protect your *data*; the daemon backup protects the

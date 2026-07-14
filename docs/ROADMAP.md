@@ -163,7 +163,14 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.6.5: Capacity guards *(current)*
+### v0.6.6: Off-host backups *(current)*
+
+Let a backup leave the host so it survives host/disk loss — without any cloud SDK or credential in the daemon ([backups.md](backups.md)).
+
+- [x] **Export / import:** `volume backup export <id>` streams a backup's bytes off the host (gzip by default; the sparse image's holes compress away), and `volume backup import --source <vol>` streams one back onto a fresh host, after which `volume restore` materializes a volume. A control plane (or a cron script) ships the bytes to an object store; the daemon stays provider-agnostic.
+- [x] **`volume_backup` op:** a new default-deny scoped-token op gates export/import (they move volume data), distinct from snapshot-grade backup creation. No MCP tools. `scripts/smoke_offhost_backup.sh` runs the full export → import → restore round trip.
+
+### v0.6.5: Capacity guards
 
 Prove the wake herd and guard the disk, so density (more sleeping apps than host RAM) is safe to charge for ([apps.md](apps.md), [benchmarks.md](benchmarks.md)).
 

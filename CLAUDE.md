@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.5 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.6.6 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -102,8 +102,17 @@ stays running (safe degraded state), the disk complement to the existing
 the mass-wake load test (drain with `app sleep --all`, fire N concurrent wakes,
 report the latency distribution + how gracefully the RAM floor defers to
 `503`+retry) — measured 20 concurrent wakes at ~430 ms p99 with RAM barely
-moving (lazy paging faults in only each guest's working set). See the ROADMAP
-for what's next (off-host + incremental backups, TLS/ACME).
+moving (lazy paging faults in only each guest's working set). **v0.6.6**
+**off-host backups**: `volume backup export <id>` streams a backup's bytes off
+the host (`GET /backups/{id}/export`, gzip by default — the sparse image's holes
+compress away; `--raw` for uncompressed) and `volume backup import --source
+<vol>` streams one back onto a fresh host (`POST /backups/import`), after which
+`volume restore` materializes a volume — so a **remote** control plane can pull
+backups over the API and ship them to an object store while the daemon stays
+provider-agnostic (no cloud SDKs/creds). Both gate on a new default-deny
+`volume_backup` scoped op (moves volume data; no MCP tools); backup *create*
+stays snapshot-grade. See the ROADMAP for what's next (incremental backups,
+TLS/ACME).
 
 ## Working style
 

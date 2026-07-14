@@ -6,6 +6,39 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.6] — 2026-07-15
+
+Off-host backups. A backup under `--backup-dir` still dies with the box; this
+release lets a backup leave the host without putting any cloud SDK or credential
+in the daemon. Two thin, provider-agnostic verbs stream a backup's bytes out and
+back, so a control plane (or a cron script) ships them to wherever it keeps
+backups.
+
+### Added
+
+- **`volume backup export <id>`** streams a backup's bytes off the host
+  (`GET /backups/{id}/export`). Gzip by default — the ext4 image is sparse, so
+  the holes compress away over the wire; `--raw` streams the backing file
+  uncompressed. Write to a file (`-w`) or pipe it (`… | aws s3 cp - s3://…`).
+- **`volume backup import --source <vol>`** streams a backup back onto a
+  (possibly fresh) host and registers it (`POST /backups/import`), printing a new
+  backup id; `volume restore --from <id> --to <new>` then materializes a volume.
+  The imported backup takes this host's id — it lives here now.
+- **New default-deny `volume_backup` scoped-token op** gates export and import:
+  they move volume data across the API boundary, so a `read`-only token can't.
+  Creating a backup on-box stays `snapshot`-grade. SDK `ExportBackup` /
+  `ImportBackup`. No MCP tools (an agent must not stream volume data off the box).
+
+### Notes
+
+- The daemon stays provider-agnostic on purpose: no S3/GCS SDKs, no cloud
+  credentials. A self-hoster's simplest off-host path is still `--backup-dir` on
+  an NFS/S3-fuse mount; export/import are what a **remote** control plane uses to
+  pull backups over the network and ship them onward (where it can also add
+  incremental / deduplicated storage). Docs: [backups.md](docs/backups.md);
+  acceptance: `scripts/smoke_offhost_backup.sh` (full export → import → restore
+  round trip + the `volume_backup` gate).
+
 ## [0.6.5] — 2026-07-15
 
 Capacity guards for scale-to-zero at scale. Density is the whole economic bet —
