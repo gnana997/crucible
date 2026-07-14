@@ -89,7 +89,8 @@ func newVolumeBackupCmd(o *globalOpts) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o), newVolumeBackupExportCmd(o))
+	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o),
+		newVolumeBackupExportCmd(o), newVolumeBackupImportCmd(o))
 	return cmd
 }
 
@@ -133,6 +134,54 @@ func newVolumeBackupExportCmd(o *globalOpts) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&out, "write", "w", "", "write the backup to this file (default: stdout when piped)")
 	cmd.Flags().BoolVar(&raw, "raw", false, "stream the backing file uncompressed (default: gzip)")
+	return cmd
+}
+
+func newVolumeBackupImportCmd(o *globalOpts) *cobra.Command {
+	var source, consistency, in string
+	var raw bool
+	cmd := &cobra.Command{
+		Use:   "import --source <volume>",
+		Short: "Stream a backup onto the host (needs the 'volume_backup' scoped op)",
+		Long: "Place an off-host backup onto this host and register it, printing the new\n" +
+			"backup id; then `volume restore --from <id> --to <new>` materialises a volume.\n" +
+			"Reads a file (-f) or stdin. Expects gzip (as `export` produces) unless --raw.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if source == "" {
+				return errors.New("--source <volume> is required")
+			}
+			var r io.Reader
+			if in != "" {
+				f, err := os.Open(in)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = f.Close() }()
+				r = f
+			} else {
+				if term.IsTerminal(int(os.Stdin.Fd())) {
+					return errors.New("no backup on stdin; use -f <file> or pipe the backup in")
+				}
+				r = cmd.InOrStdin()
+			}
+			b, err := o.client().ImportBackup(cmd.Context(), client.ImportOptions{
+				SourceVolume: source, Consistency: consistency, Raw: raw,
+			}, r)
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), b)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), b.ID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&source, "source", "", "the volume this backup came from (recorded on the new backup)")
+	cmd.Flags().StringVar(&consistency, "consistency", "", "consistency level to record (default: filesystem)")
+	cmd.Flags().StringVarP(&in, "file", "f", "", "read the backup from this file (default: stdin)")
+	cmd.Flags().BoolVar(&raw, "raw", false, "the input is uncompressed (default: expect gzip)")
 	return cmd
 }
 

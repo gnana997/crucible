@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/gnana997/crucible/internal/policy"
 	"github.com/gnana997/crucible/internal/tokenstore"
 	"github.com/gnana997/crucible/internal/volume"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // exportTestServer wires a real volume Manager (skips without mkfs.ext4) plus a
@@ -133,5 +135,60 @@ func TestExportBackupMissing404(t *testing.T) {
 	srv, _, _, bkTok, _ := exportTestServer(t)
 	if rec := getRaw(t, srv, "/backups/nope-nonexistent/export", bkTok); rec.Code != 404 {
 		t.Errorf("missing backup export = %d, want 404", rec.Code)
+	}
+}
+
+func postRaw(t *testing.T, srv *Server, path, token string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("POST", path, bytes.NewReader(body))
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, r)
+	return rec
+}
+
+// TestImportBackupRoundTripOverHTTP exports a backup (gzip) and imports it back
+// through the HTTP handlers, then confirms the imported backup file matches —
+// the export→import loop across the API, with the volume_backup gate.
+func TestImportBackupRoundTripOverHTTP(t *testing.T) {
+	srv, id, path, bkTok, roTok := exportTestServer(t)
+
+	// Import needs its own op, not read.
+	if rec := postRaw(t, srv, "/backups/import?source=data", roTok, []byte("x")); rec.Code != 403 {
+		t.Fatalf("read-only import = %d, want 403", rec.Code)
+	}
+	// source is required.
+	if rec := postRaw(t, srv, "/backups/import", bkTok, []byte("x")); rec.Code != 400 {
+		t.Fatalf("import without source = %d, want 400", rec.Code)
+	}
+
+	// Export (gzip) → import (gzip) over HTTP.
+	exp := getRaw(t, srv, "/backups/"+id+"/export", bkTok)
+	if exp.Code != 200 {
+		t.Fatalf("export = %d", exp.Code)
+	}
+	imp := postRaw(t, srv, "/backups/import?source=data", bkTok, exp.Body.Bytes())
+	if imp.Code != 201 {
+		t.Fatalf("import = %d, want 201 (%s)", imp.Code, imp.Body.String())
+	}
+	var rec api.Backup
+	if err := json.Unmarshal(imp.Body.Bytes(), &rec); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if rec.ID == id {
+		t.Error("import should mint a fresh id")
+	}
+	// The imported backing file is byte-identical to the original backup file.
+	orig, _ := os.ReadFile(path)
+	f, _, _, err := srv.cfg.Volumes.OpenBackup(rec.ID)
+	if err != nil {
+		t.Fatalf("OpenBackup(imported): %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	got, _ := io.ReadAll(f)
+	if !bytes.Equal(got, orig) {
+		t.Error("imported backup differs from the original after the HTTP round trip")
 	}
 }

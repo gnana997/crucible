@@ -10,6 +10,7 @@
 package volume
 
 import (
+	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -454,6 +455,74 @@ func (m *Manager) OpenBackup(id string) (*os.File, BackupRecord, int64, error) {
 		return nil, BackupRecord{}, 0, fmt.Errorf("volume: stat backup %s: %w", id, err)
 	}
 	return f, rec, fi.Size(), nil
+}
+
+// ImportMeta carries the metadata an imported backup's bytes don't: which
+// volume it came from (for the catalog), its consistency level, and whether the
+// incoming stream is gzip-compressed (as ExportBackup produces by default).
+type ImportMeta struct {
+	SourceVolume string
+	Consistency  string
+	Compressed   bool
+}
+
+// ImportBackup writes an incoming backup stream into the backup dir and
+// registers it, returning the new record — the inverse of OpenBackup/export.
+// It places an off-host backup onto a (possibly fresh) host so RestoreTo can
+// then materialise a volume from it. The record takes a freshly generated id
+// and THIS host's id (the backup lives here now); a gzip stream is decompressed
+// on the way in. The SourceVolume need not exist on this host (DR to a new box).
+func (m *Manager) ImportBackup(meta ImportMeta, r io.Reader) (BackupRecord, error) {
+	if !nameRe.MatchString(meta.SourceVolume) {
+		return BackupRecord{}, ErrInvalidName
+	}
+	consistency := meta.Consistency
+	if consistency == "" {
+		consistency = "filesystem"
+	}
+	id := meta.SourceVolume + "-" + time.Now().UTC().Format("20060102T150405.000Z")
+	destDir := filepath.Join(m.backupDir, meta.SourceVolume)
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: create backup dir %s: %w", destDir, err)
+	}
+	dst := filepath.Join(destDir, id+".img")
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: create backup file: %w", err)
+	}
+	committed := false
+	defer func() {
+		_ = f.Close()
+		if !committed {
+			_ = os.Remove(dst) // never leave a partial import behind
+		}
+	}()
+
+	src := r
+	if meta.Compressed {
+		gz, gerr := gzip.NewReader(r)
+		if gerr != nil {
+			return BackupRecord{}, fmt.Errorf("volume: import gunzip: %w", gerr)
+		}
+		defer func() { _ = gz.Close() }()
+		src = gz
+	}
+	n, err := io.Copy(f, src)
+	if err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: import copy: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return BackupRecord{}, fmt.Errorf("volume: import fsync: %w", err)
+	}
+	brec := BackupRecord{
+		ID: id, SourceVolume: meta.SourceVolume, SizeBytes: n,
+		CreatedAt: time.Now().UTC(), Consistency: consistency, HostID: m.hostID, Path: dst,
+	}
+	if err := m.st.putBackup(brec); err != nil {
+		return BackupRecord{}, err
+	}
+	committed = true
+	return brec, nil
 }
 
 // DeleteBackup removes a backup's backing file and record. ErrBackupNotFound if

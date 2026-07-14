@@ -2,6 +2,7 @@ package volume
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"io"
 	"os"
@@ -262,6 +263,73 @@ func TestOpenBackupStreamsTheFile(t *testing.T) {
 
 	if _, _, _, err := m.OpenBackup("nope-does-not-exist"); !errors.Is(err, ErrBackupNotFound) {
 		t.Errorf("OpenBackup(missing) err = %v, want ErrBackupNotFound", err)
+	}
+}
+
+// TestBackupExportImportRestoreRoundTrip is the off-host loop in-process: back
+// up a volume, stream it out (gzip), delete the original volume + backup
+// (simulate host loss), stream it back in, restore to a new volume, and prove
+// the bytes survived — with the imported record taking this host's id.
+func TestBackupExportImportRestoreRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	m := newMgr(t, dir)
+	if _, err := m.Create("data", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A recognizable byte in the backing file so we can prove data survived.
+	orig, _ := os.ReadFile(filepath.Join(dir, "data.img"))
+
+	b, err := m.Backup("data")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	// Export → gzip into a buffer (what the CP would ship off-host).
+	f, _, _, err := m.OpenBackup(b.ID)
+	if err != nil {
+		t.Fatalf("OpenBackup: %v", err)
+	}
+	var shipped bytes.Buffer
+	gz := gzip.NewWriter(&shipped)
+	if _, err := io.Copy(gz, f); err != nil {
+		t.Fatalf("gzip copy: %v", err)
+	}
+	_ = gz.Close()
+	_ = f.Close()
+
+	// Simulate host loss: drop the backup record + the source volume.
+	if err := m.DeleteBackup(b.ID); err != nil {
+		t.Fatalf("DeleteBackup: %v", err)
+	}
+	if err := m.Remove("data"); err != nil {
+		t.Fatalf("Remove volume: %v", err)
+	}
+
+	// Import the shipped bytes back (gzip), then restore to a NEW volume.
+	imp, err := m.ImportBackup(ImportMeta{SourceVolume: "data", Compressed: true}, &shipped)
+	if err != nil {
+		t.Fatalf("ImportBackup: %v", err)
+	}
+	if imp.HostID != "testhost" {
+		t.Errorf("imported HostID = %q, want this host (testhost)", imp.HostID)
+	}
+	if imp.SourceVolume != "data" || imp.Consistency != "filesystem" {
+		t.Errorf("imported record unexpected: %+v", imp)
+	}
+	if imp.ID == b.ID {
+		t.Error("import should assign a fresh id, not reuse the origin's")
+	}
+
+	rv, err := m.RestoreTo(imp.ID, "data-restored")
+	if err != nil {
+		t.Fatalf("RestoreTo: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, rv.Name+".img"))
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if !bytes.Equal(got, orig) {
+		t.Fatal("restored volume differs from the original after export→import→restore")
 	}
 }
 

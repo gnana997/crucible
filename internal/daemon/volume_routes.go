@@ -327,6 +327,33 @@ func (s *Server) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleImportBackup — POST /backups/import?source=<vol>&consistency=<c>&compress=gzip|none.
+// Streams a backup's bytes onto the host (the CP pushes them from an object
+// store during restore) and registers a record; RestoreTo then materialises a
+// volume. The body is an unbounded stream (a backup is large), so it is NOT
+// size-capped. Default gzip, symmetric with export. Gated by volume_backup.
+func (s *Server) handleImportBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	source := r.URL.Query().Get("source")
+	if source == "" {
+		writeError(w, http.StatusBadRequest, errors.New("import: ?source=<volume> is required"))
+		return
+	}
+	meta := volume.ImportMeta{
+		SourceVolume: source,
+		Consistency:  r.URL.Query().Get("consistency"),
+		Compressed:   r.URL.Query().Get("compress") != "none",
+	}
+	rec, err := s.cfg.Volumes.ImportBackup(meta, r.Body)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIBackup(rec))
+}
+
 func volumeErrStatus(err error) int {
 	switch {
 	case errors.Is(err, volume.ErrNotFound), errors.Is(err, volume.ErrBackupNotFound):

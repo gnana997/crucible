@@ -100,6 +100,10 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		switch {
 		case path == "/sandboxes":
 			return policy.OpCreate, true
+		// POST /backups/import streams a backup's DATA onto the host — the
+		// same default-deny op as export, not a snapshot-grade create.
+		case path == "/backups/import":
+			return policy.OpVolumeBackup, true
 		// Creating an app configures an entrypoint the daemon runs — exec-grade.
 		case path == "/apps":
 			return policy.OpExec, true

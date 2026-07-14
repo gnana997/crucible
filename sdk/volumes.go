@@ -118,6 +118,43 @@ func (c *Client) ExportBackup(ctx context.Context, id string, opt ExportOptions,
 	return size, nil
 }
 
+// ImportOptions describes an incoming backup stream: the volume it came from
+// (recorded for the catalog), its consistency level (default "filesystem"), and
+// whether the stream is gzip-compressed (as ExportBackup produces by default).
+type ImportOptions struct {
+	SourceVolume string
+	Consistency  string
+	Raw          bool // the stream is uncompressed (default: gzip)
+}
+
+// ImportBackup streams a backup's bytes onto the host (POST /backups/import) and
+// returns the new record; RestoreBackup then materialises a volume from it. This
+// is how the control plane restores an off-host backup onto a (possibly fresh)
+// host. Requires the `volume_backup` scoped-token op.
+func (c *Client) ImportBackup(ctx context.Context, opt ImportOptions, r io.Reader) (api.Backup, error) {
+	q := url.Values{}
+	q.Set("source", opt.SourceVolume)
+	if opt.Consistency != "" {
+		q.Set("consistency", opt.Consistency)
+	}
+	if opt.Raw {
+		q.Set("compress", "none")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/backups/import?"+q.Encode(), r)
+	if err != nil {
+		return api.Backup{}, err
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return api.Backup{}, fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+	}
+	return decodeInto[api.Backup](resp) // handles status >= 400 + closes the body
+}
+
 // DeleteBackup removes a backup and its backing file (DELETE /backups/{id}).
 func (c *Client) DeleteBackup(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, http.MethodDelete, "/backups/"+url.PathEscape(id), nil)
