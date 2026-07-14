@@ -62,6 +62,15 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(s.MemoryMiB))
 	defer cancel()
 
+	// Disk-admission floor: a sleep writes a full guest-RAM-sized memory file
+	// (plus state + a rootfs clone) under WorkBase, so refuse before touching the
+	// guest when disk is already low — the app stays running rather than filling
+	// the disk with a snapshot. Checked before the transition marker so a refused
+	// sleep leaves the instance cleanly routable.
+	if err := m.admitSleep(); err != nil {
+		return "", err
+	}
+
 	// Mark the transition before the guest stops answering: from here until the
 	// asleep state is published (or the sleep fails and the guest resumes), the
 	// instance must not be routed to — ingress sees ErrAsleep and queues the

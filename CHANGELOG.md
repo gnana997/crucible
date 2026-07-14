@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.5] — 2026-07-15
+
+Capacity guards for scale-to-zero at scale. Density is the whole economic bet —
+pack more sleeping apps than host RAM — which makes "everything wakes at once" a
+designed-for scenario. This release proves that herd is graceful and adds the
+missing disk half of the admission story.
+
+### Added
+
+- **Sleep disk-admission floor.** A sleep (snapshot) writes a full
+  guest-RAM-sized memory file under `--work-base`, so a fleet snapshotting to a
+  nearly-full disk could otherwise fill it. `--sleep-min-free-disk-mib` (default
+  1024) refuses a sleep when free disk is below the floor; the app stays running
+  (RAM-backed, the safe degraded state, and the signal to add disk). This is the
+  disk complement to the existing `--wake-min-free-mib` RAM floor; both are
+  fail-open (a `statfs` / `/proc` read error admits).
+- **Mass-wake load test.** `scripts/bench_masswake.sh` boots N scale-to-zero
+  apps, drains them with `app sleep --all`, then fires N **concurrent** wakes and
+  reports the wake-latency distribution (p50/p90/p99/max, client and daemon),
+  how many wakes the RAM floor deferred to a clean `503` + retry, and the host
+  MemAvailable low-water mark. Measured on a 16 GiB-free box: 20 concurrent wakes
+  served with a p99 of ~430 ms (daemon) / ~520 ms (client) and **no meaningful
+  RAM movement** — lazy paging faults in only each guest's working set, not its
+  full allocation, so the herd is safe by construction ([apps.md](docs/apps.md),
+  [benchmarks.md](docs/benchmarks.md)).
+
 ## [0.6.4] — 2026-07-15
 
 Operate with confidence. Upgrade the daemon without losing your apps: drain the

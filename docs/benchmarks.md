@@ -127,3 +127,7 @@ sudo … FS=ext4  scripts/bench_reflink.sh      # ext4 numbers   → bench-ext4-
 Knobs: `DENSITY`, `SAMPLES`, `PHASES`, `IMG_SIZE`, `KEEP=1` (keep the loopback for repeat runs). Add `volumewake` to `PHASES` for the volume-app snapshot-wake number (the daemon runs with a `--volume-dir`). To drive an existing daemon by hand instead, point `crucible-bench --addr … --reflink-path <daemon work-base>` and add `--phases proxywake --proxy-addr … --proxy-domain …` for the wake number. `crucible-bench --help` lists every knob.
 
 The end-to-end serverless story — a **postgres** on a volume, snapshot-wake vs cold-boot, timed from the wake trigger to a query answering — is a separate one-command run: `sudo … scripts/bench_serverless.sh` (boots its own daemon, needs `psql` on the host).
+
+## Mass wake (the herd)
+
+Scale-to-zero packs more sleeping apps than host RAM, so "everything wakes at once" is a designed-for scenario. `sudo … N=20 MEM=256 scripts/bench_masswake.sh` boots N scale-to-zero apps, drains them with `app sleep --all`, then fires N **concurrent** wakes and reports the wake-latency distribution (p50/p90/p99/max, both client end-to-end and daemon-measured), how many wakes the `--wake-min-free-mib` floor deferred to a clean `503` + retry (graceful degradation, not failure), and the host MemAvailable low-water mark. It only fails if an app never serves even after a sequential retry. Knobs: `N`, `MEM`, `WAKE_MIN_FREE`, `KEEP=1`.

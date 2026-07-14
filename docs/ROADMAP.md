@@ -163,7 +163,14 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.6.4: Operate with confidence *(current)*
+### v0.6.5: Capacity guards *(current)*
+
+Prove the wake herd and guard the disk, so density (more sleeping apps than host RAM) is safe to charge for ([apps.md](apps.md), [benchmarks.md](benchmarks.md)).
+
+- [x] **Sleep disk floor:** `--sleep-min-free-disk-mib` (default 1024) refuses a sleep when free disk under `--work-base` is low — a snapshot writes a full guest-RAM-sized memory file, so a fleet snapshotting to a full disk would fill it. The app stays running (safe degraded state). The disk complement to the `--wake-min-free-mib` RAM floor; both fail-open.
+- [x] **Mass-wake load test:** `scripts/bench_masswake.sh` sleeps a fleet with `app sleep --all` and fires N concurrent wakes, reporting the wake-latency distribution and how gracefully the RAM floor defers to `503` + retry. Measured: 20 concurrent wakes, p99 ~430 ms, with RAM barely moving — lazy paging faults in only each guest's working set, so "everything wakes at once" is safe by construction.
+
+### v0.6.4: Operate with confidence
 
 Upgrade the daemon without dropping apps, back up the control plane in one command, and see scale-to-zero's disk cost — the operability layer under the platform ([upgrades.md](upgrades.md), [backups.md](backups.md)).
 

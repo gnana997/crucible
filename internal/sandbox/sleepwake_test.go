@@ -117,6 +117,43 @@ func TestWakeAdmissionRefusesWhenMemoryLow(t *testing.T) {
 	}
 }
 
+// TestSleepAdmissionRefusesWhenDiskLow: a sleep (snapshot) is refused when free
+// disk under WorkBase is below the floor, the app stays running (not asleep,
+// still routable), and it is admitted once disk recovers.
+func TestSleepAdmissionRefusesWhenDiskLow(t *testing.T) {
+	m, _ := newTestManager(t)
+	ctx := context.Background()
+	free := 4096
+	m.cfg.SleepMinFreeDiskMiB = 1024
+	m.cfg.DiskFreeMiB = func(string) (int, error) { return free, nil }
+
+	s, err := m.Create(ctx, CreateConfig{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Disk is low → refuse before touching the guest.
+	free = 100
+	if _, err := m.SleepInPlace(ctx, s.ID); !errors.Is(err, ErrInsufficientDisk) {
+		t.Fatalf("sleep under low disk err = %v, want ErrInsufficientDisk", err)
+	}
+	// A refused sleep must leave the instance running, not stuck half-slept: the
+	// transition marker (sleeping) was never set — which is exactly what keeps it
+	// routable (Routable returns false for a sleeping instance).
+	m.mu.RLock()
+	asleep, sleeping := s.asleep != nil, s.sleeping
+	m.mu.RUnlock()
+	if asleep || sleeping {
+		t.Fatalf("refused sleep left bad state: asleep=%v sleeping=%v (want both false)", asleep, sleeping)
+	}
+
+	// Disk recovers → admit.
+	free = 4096
+	if _, err := m.SleepInPlace(ctx, s.ID); err != nil {
+		t.Fatalf("sleep after disk recovered: %v", err)
+	}
+}
+
 // TestSleepRegistersDurableSnapshotAndGCs covers the durability model: each
 // sleep registers a DURABLE snapshot (so a slept app survives a daemon restart
 // via re-adoption); an in-place wake KEEPS that snapshot (it backs the woken

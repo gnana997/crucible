@@ -162,6 +162,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// this floor, so scale-to-zero wakes can't drive the host into OOM. 0
 		// disables the check.
 		wakeMinFree = fs.Int("wake-min-free-mib", envInt("CRUCIBLE_WAKE_MIN_FREE_MIB", 256), "refuse to wake a slept app when host MemAvailable is below this many MiB (0 = disabled); env CRUCIBLE_WAKE_MIN_FREE_MIB")
+		// sleepMinFreeDisk refuses to sleep (snapshot) an app when free disk under
+		// --work-base is below this floor, so a fleet writing memory files can't
+		// fill the disk. 0 disables the check.
+		sleepMinFreeDisk = fs.Int("sleep-min-free-disk-mib", envInt("CRUCIBLE_SLEEP_MIN_FREE_DISK_MIB", 1024), "refuse to sleep (snapshot) an app when free disk under --work-base is below this many MiB (0 = disabled); env CRUCIBLE_SLEEP_MIN_FREE_DISK_MIB")
 		// Network flags: when --network-egress-iface is set AND
 		// --jailer-bin is set, the daemon can provision per-sandbox
 		// netns + nft + DHCP + DNS proxy. Without both, sandbox
@@ -514,9 +518,10 @@ Required flags:
 		ReloadAllowlist: func(patterns []string) (sandbox.NetworkAllowlist, error) {
 			return network.New(patterns)
 		},
-		QuotaPolicy:    quotaPolicy,
-		MaxForkCount:   *maxFork,
-		WakeMinFreeMiB: *wakeMinFree,
+		QuotaPolicy:         quotaPolicy,
+		MaxForkCount:        *maxFork,
+		WakeMinFreeMiB:      *wakeMinFree,
+		SleepMinFreeDiskMiB: *sleepMinFreeDisk,
 	}
 	if netMgr != nil {
 		mgrCfg.Network = daemon.NewNetworkAdapter(netMgr)

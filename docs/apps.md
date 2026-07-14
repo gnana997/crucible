@@ -180,9 +180,21 @@ wake, and a wake that can't be served in time gets a clean `503`. `--min-scale
 start, and the first post-restart request wakes a fresh instance from the
 snapshot. A wake is refused (the request gets a `503`, the app stays asleep) when
 host free memory is below `--wake-min-free-mib` (daemon flag, default 256) rather
-than thrashing the box. Sleeping drains in-flight requests; idle keepalive TCP
-connections are reset at sleep, and the proxy never reuses a pre-sleep upstream
-connection.
+than thrashing the box. Symmetrically, a **sleep** is refused (the app stays
+running) when free disk under `--work-base` is below `--sleep-min-free-disk-mib`
+(default 1024): a sleep writes a full guest-RAM-sized memory file, so a fleet
+snapshotting to a nearly-full disk would otherwise fill it — staying RAM-backed
+is the safe degraded state, and the signal to add disk. Both floors are
+fail-open (a `/proc` or `statfs` read error admits). Sleeping drains in-flight
+requests; idle keepalive TCP connections are reset at sleep, and the proxy never
+reuses a pre-sleep upstream connection.
+
+These two floors are what make "everything wakes at once" a designed-for case
+rather than an outage: `scripts/bench_masswake.sh` sleeps a fleet with
+`app sleep --all` and fires N concurrent wakes, reporting the wake-latency
+distribution and how many wakes the RAM floor gracefully deferred to a `503` +
+retry. Watch it (and the disk each sleeping app costs) on `/metrics`:
+`snapshot_disk_bytes`, `app_asleep`, `app_last_wake_latency_ms`.
 
 ## App-to-app networking
 

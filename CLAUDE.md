@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.4 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.6.5 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -94,8 +94,16 @@ contract); and **IPv6 at the edge** (proxy + published ports accept v6 on a
 wildcard bind and family-hop to the v4 guest; `-p '[::1]:8080:80'` pins a v6
 address; guests stay v4-only). Also fixed a mid-sleep routing race (a request
 racing `app sleep` could be reset; the instance is now marked non-routable
-before it pauses). See the ROADMAP for what's next (off-host + incremental
-backups, TLS/ACME).
+before it pauses). **v0.6.5** "capacity guards": a **sleep disk-admission floor**
+(`--sleep-min-free-disk-mib`, default 1024) refuses a snapshot when free disk
+under `--work-base` is low so a snapshotting fleet can't fill the disk — the app
+stays running (safe degraded state), the disk complement to the existing
+`--wake-min-free-mib` RAM floor, both fail-open; plus `scripts/bench_masswake.sh`,
+the mass-wake load test (drain with `app sleep --all`, fire N concurrent wakes,
+report the latency distribution + how gracefully the RAM floor defers to
+`503`+retry) — measured 20 concurrent wakes at ~430 ms p99 with RAM barely
+moving (lazy paging faults in only each guest's working set). See the ROADMAP
+for what's next (off-host + incremental backups, TLS/ACME).
 
 ## Working style
 

@@ -427,6 +427,18 @@ type ManagerConfig struct {
 	// when WakeMinFreeMiB > 0.
 	MemAvailableMiB func() (int, error)
 
+	// SleepMinFreeDiskMiB is the sleep-admission floor: a sleep is refused when
+	// free disk under WorkBase (where the snapshot's state + full guest-RAM
+	// memory file land) is below this, so a fleet snapshotting to disk can't
+	// fill it. Zero disables the check. The app stays running (RAM-backed) when
+	// a sleep is refused — the safe degraded state, and the signal to add disk.
+	SleepMinFreeDiskMiB int
+
+	// DiskFreeMiB reports free disk under a path, in MiB. Nil uses statfs
+	// (production); tests inject a stub. Consulted only when
+	// SleepMinFreeDiskMiB > 0.
+	DiskFreeMiB func(path string) (int, error)
+
 	// QuotaPolicy selects how host-side cgroup v2 limits are set on each
 	// sandbox's VMM. The zero value (QuotaPolicyOff) applies no limits,
 	// so tests and library callers get today's behavior by default; the
