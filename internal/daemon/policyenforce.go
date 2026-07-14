@@ -72,6 +72,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if path == "/admin/backup" {
 			return policy.OpAdminBackup, true
 		}
+		// GET /backups/{id}/export streams a volume backup's DATA off the host.
+		// Its own default-deny op, not a read.
+		if strings.HasSuffix(path, "/export") {
+			return policy.OpVolumeBackup, true
+		}
 		return policy.OpRead, true
 	case http.MethodDelete:
 		// Removing a registry credential is credential management, not a

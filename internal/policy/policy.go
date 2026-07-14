@@ -39,12 +39,17 @@ const (
 	// Its tarball carries usable registry secrets and the full token/policy
 	// state, so like capture it must be granted explicitly on scoped tokens.
 	OpAdminBackup Operation = "admin_backup"
+	// OpVolumeBackup gates streaming a volume backup off the host (export) or
+	// onto it (import) — moving volume DATA across the API boundary. Like
+	// capture/admin_backup it exfiltrates data, so it must be granted
+	// explicitly. Creating a backup on-box stays snapshot-grade (not this op).
+	OpVolumeBackup Operation = "volume_backup"
 )
 
 // KnownOperations returns the valid operation verbs, in a stable order (useful
 // for error messages and docs).
 func KnownOperations() []Operation {
-	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup}
+	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup, OpVolumeBackup}
 }
 
 func isKnownOp(op Operation) bool {

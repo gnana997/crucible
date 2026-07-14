@@ -429,6 +429,33 @@ func (m *Manager) GetBackup(id string) (BackupRecord, error) {
 	return rec, nil
 }
 
+// OpenBackup opens a backup's backing file for reading (streaming it off-host),
+// returning the open file, its record, and the on-disk byte size. The caller
+// closes the file. ErrBackupNotFound if the record or file is gone. The file is
+// a static, already-consistent point-in-time image, so no quiesce is needed.
+func (m *Manager) OpenBackup(id string) (*os.File, BackupRecord, int64, error) {
+	rec, ok, err := m.st.getBackup(id)
+	if err != nil {
+		return nil, BackupRecord{}, 0, err
+	}
+	if !ok {
+		return nil, BackupRecord{}, 0, ErrBackupNotFound
+	}
+	f, err := os.Open(rec.Path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, BackupRecord{}, 0, ErrBackupNotFound
+		}
+		return nil, BackupRecord{}, 0, fmt.Errorf("volume: open backup %s: %w", id, err)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, BackupRecord{}, 0, fmt.Errorf("volume: stat backup %s: %w", id, err)
+	}
+	return f, rec, fi.Size(), nil
+}
+
 // DeleteBackup removes a backup's backing file and record. ErrBackupNotFound if
 // absent.
 func (m *Manager) DeleteBackup(id string) error {

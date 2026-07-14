@@ -2,8 +2,12 @@ package crucible
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/gnana997/crucible/sdk/api"
 )
@@ -71,6 +75,47 @@ func (c *Client) ListBackups(ctx context.Context, volumeName string) (Page[api.B
 	}
 	out, err := decodeInto[api.BackupListResponse](resp)
 	return Page[api.Backup]{Items: out.Backups}, err
+}
+
+// ExportOptions configures a backup export. Raw streams the backing file
+// uncompressed; the default (Raw false) gzips it, which collapses the sparse
+// ext4 image's holes over the wire.
+type ExportOptions struct {
+	Raw bool
+}
+
+// ExportBackup streams a backup's bytes off the host to w (GET
+// /backups/{id}/export), so a caller (the control plane) can ship it to an
+// object store. Requires the `volume_backup` scoped-token op — it moves volume
+// data across the boundary. Returns the decompressed byte size (the
+// X-Crucible-Backup-Size header), which the caller can verify against what it
+// stores. Gzip by default; pass ExportOptions{Raw: true} for the raw stream.
+func (c *Client) ExportBackup(ctx context.Context, id string, opt ExportOptions, w io.Writer) (int64, error) {
+	u := c.base + "/backups/" + url.PathEscape(id) + "/export"
+	if opt.Raw {
+		u += "?compress=none"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("connect to daemon at %s: %w", c.base, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return 0, fmt.Errorf("export failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	size, _ := strconv.ParseInt(resp.Header.Get("X-Crucible-Backup-Size"), 10, 64)
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		return size, err
+	}
+	return size, nil
 }
 
 // DeleteBackup removes a backup and its backing file (DELETE /backups/{id}).

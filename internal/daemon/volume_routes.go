@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/volume"
@@ -274,6 +276,55 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleExportBackup — GET /backups/{id}/export[?compress=gzip|none]. Streams a
+// backup's backing file off the host so the control plane can ship it to an
+// object store; the daemon stays provider-agnostic. Default gzip (the .img is a
+// sparse ext4 image, so gzip collapses the holes over the wire); `none` streams
+// raw for a caller that dedups its own way. X-Crucible-Backup-Size carries the
+// decompressed byte size (what import reconstructs); Content-Length is set only
+// for the raw stream. Gated by the default-deny volume_backup op.
+func (s *Server) handleExportBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	id := r.PathValue("id")
+	f, rec, size, err := s.cfg.Volumes.OpenBackup(id)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	gzipped := r.URL.Query().Get("compress") != "none"
+	w.Header().Set("X-Crucible-Backup-Size", strconv.FormatInt(size, 10))
+	w.Header().Set("X-Crucible-Backup-Consistency", rec.Consistency)
+	if gzipped {
+		w.Header().Set("Content-Type", "application/gzip")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.img.gz"`)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.img"`)
+	}
+	// Headers (and 200) are committed on the first write; a mid-stream failure
+	// can only be signalled by truncating the body (the CP verifies the size),
+	// so log it, mirroring handleAdminBackup.
+	if !gzipped {
+		if _, err := io.Copy(w, f); err != nil {
+			s.cfg.Logger.Error("volume backup export failed mid-stream", "backup", id, "err", err)
+		}
+		return
+	}
+	gz := gzip.NewWriter(w)
+	if _, err := io.Copy(gz, f); err != nil {
+		s.cfg.Logger.Error("volume backup export failed mid-stream", "backup", id, "err", err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		s.cfg.Logger.Error("volume backup export gzip close failed", "backup", id, "err", err)
+	}
 }
 
 func volumeErrStatus(err error) int {

@@ -116,6 +116,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /volumes/{name}/backups", s.handleListBackups)
 	mux.HandleFunc("GET /backups", s.handleListBackups)
 	mux.HandleFunc("DELETE /backups/{id}", s.handleDeleteBackup)
+	// Off-host export: stream a backup's bytes off the host (the CP ships them
+	// to a provider). Gates as `volume_backup` (default-deny, moves volume data).
+	mux.HandleFunc("GET /backups/{id}/export", s.handleExportBackup)
 	// Restore/clone create a new volume — gate as `create`.
 	mux.HandleFunc("POST /volumes/{name}/restore", s.handleRestoreVolume)
 	mux.HandleFunc("POST /volumes/{name}/clone", s.handleCloneVolume)

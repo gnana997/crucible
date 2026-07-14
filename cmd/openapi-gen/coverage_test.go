@@ -26,6 +26,7 @@ var routesExcludedFromSpec = map[string]string{
 	// not modelable as an OpenAPI operation (like /metrics). SDK: Client.Capture.
 	"GET /sandboxes/{id}/capture": "binary pcap stream (not JSON); SDK Client.Capture, docs/network.md",
 	"GET /admin/backup":           "binary tar.gz stream (not JSON); SDK Client.AdminBackup, docs/backups.md",
+	"GET /backups/{id}/export":    "binary backup stream (not JSON); SDK Client.ExportBackup, docs/backups.md",
 }
 
 // TestOpenAPICoversAllRoutes is the drift guard for the reflection-based generator.

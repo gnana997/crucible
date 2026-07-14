@@ -3,6 +3,7 @@ package volume
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,6 +225,43 @@ func TestDiskBytesAccounting(t *testing.T) {
 	}
 	if got := m.BackupDiskBytes(); got != 0 {
 		t.Fatalf("BackupDiskBytes after delete = %d, want 0", got)
+	}
+}
+
+func TestOpenBackupStreamsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	m := newMgr(t, dir)
+	if _, err := m.Create("data", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	b, err := m.Backup("data")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+
+	f, rec, size, err := m.OpenBackup(b.ID)
+	if err != nil {
+		t.Fatalf("OpenBackup: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if rec.ID != b.ID {
+		t.Errorf("OpenBackup record id = %q, want %q", rec.ID, b.ID)
+	}
+	// The reported size is the on-disk file, and the bytes match the backup file.
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if int64(len(got)) != size {
+		t.Errorf("read %d bytes, OpenBackup reported %d", len(got), size)
+	}
+	onDisk, _ := os.ReadFile(b.Path)
+	if !bytes.Equal(got, onDisk) {
+		t.Error("streamed bytes differ from the backup file")
+	}
+
+	if _, _, _, err := m.OpenBackup("nope-does-not-exist"); !errors.Is(err, ErrBackupNotFound) {
+		t.Errorf("OpenBackup(missing) err = %v, want ErrBackupNotFound", err)
 	}
 }
 

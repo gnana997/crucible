@@ -1,10 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
+	client "github.com/gnana997/crucible/sdk"
 	"github.com/gnana997/crucible/sdk/api"
 )
 
@@ -84,7 +89,50 @@ func newVolumeBackupCmd(o *globalOpts) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o))
+	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o), newVolumeBackupExportCmd(o))
+	return cmd
+}
+
+func newVolumeBackupExportCmd(o *globalOpts) *cobra.Command {
+	var out string
+	var raw bool
+	cmd := &cobra.Command{
+		Use:   "export <id>",
+		Short: "Stream a backup off the host (needs the 'volume_backup' scoped op)",
+		Long: "Stream a backup's bytes to a file or stdout so you can ship it off the host\n" +
+			"(the control plane does this to push backups to an object store). Gzip by\n" +
+			"default (the image is sparse); --raw streams the backing file uncompressed.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var w io.Writer
+			if out != "" {
+				f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = f.Close() }()
+				w = f
+			} else {
+				if term.IsTerminal(int(os.Stdout.Fd())) {
+					return errors.New("refusing to write a binary backup to a terminal; use -w <file> or pipe it")
+				}
+				w = cmd.OutOrStdout()
+			}
+			_, err := o.client().ExportBackup(cmd.Context(), args[0], client.ExportOptions{Raw: raw}, w)
+			if err != nil {
+				if out != "" {
+					_ = os.Remove(out) // don't leave a truncated file
+				}
+				return err
+			}
+			if out != "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), out)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&out, "write", "w", "", "write the backup to this file (default: stdout when piped)")
+	cmd.Flags().BoolVar(&raw, "raw", false, "stream the backing file uncompressed (default: gzip)")
 	return cmd
 }
 
