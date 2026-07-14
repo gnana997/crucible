@@ -163,9 +163,18 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.6.3: Volume backups *(current)*
+### v0.6.4: Operate with confidence *(current)*
 
-A volume now has a point-in-time backup you can restore into a new volume, plus a clone, so stateful data survives more than a running host: an accidental `rm`, a bad migration, application-level corruption, and (off-host) disk death ([backups.md](backups.md)).
+Upgrade the daemon without dropping apps, back up the control plane in one command, and see scale-to-zero's disk cost — the operability layer under the platform ([upgrades.md](upgrades.md), [backups.md](backups.md)).
+
+- [x] **Upgrade without drop:** `app sleep --all` drains the fleet to durable snapshots; after a daemon restart apps are re-adopted asleep and wake in place on demand. `scripts/smoke_upgrade.sh` rehearses it against the previous release — a stateless and a volume app sleep under the old daemon and wake **warm** under the new one, data intact — so cross-version snapshot-wake is measured, not assumed. A volume app that can't wake warm falls back to a cold create automatically.
+- [x] **daemon backup:** `crucible admin backup` streams a tar.gz of the app store, tokens, volume records, and registry credentials (hot, via bbolt read transactions) plus a manifest; restore is a documented procedure onto a stopped daemon, after which the reconciler re-creates every app. Gated by a default-deny `admin_backup` scoped op. Volume *data* stays with `volume backup`.
+- [x] **Disk visibility:** `snapshot_disk_bytes` / `volume_disk_bytes` / `backup_disk_bytes` on `/metrics` (sparse-aware), a Grafana disk panel, and a verified latest-per-instance snapshot-retention contract, so density is visible as disk, not just RAM.
+- [x] **IPv6 at the edge:** the proxy and published ports accept IPv6 on a wildcard bind and do the family hop to the v4 guest; a published port can pin a v6 address (`-p '[::1]:8080:80'`). Guests remain IPv4-only.
+
+### v0.6.3: Volume backups
+
+A volume has a point-in-time backup you can restore into a new volume, plus a clone, so stateful data survives more than a running host: an accidental `rm`, a bad migration, application-level corruption, and (off-host) disk death ([backups.md](backups.md)).
 
 - [x] **`volume backup` / `restore` / `clone`:** a consistency-aware, point-in-time copy of a volume, restorable into a new volume (never overwrites) or cloned straight into a new one. Copies reflink (O(1)) when the backup dir shares the volume filesystem, a full byte copy otherwise.
 - [x] **Consistency by state:** a detached volume is copied directly; a slept app's volume is copied from its already-fsync'd backing file; a **live** volume is `FIFREEZE`d (only the volume mount, never the guest root), copied, then thawed, with an agent-side watchdog that auto-thaws if the daemon fails to.
@@ -176,7 +185,7 @@ A volume now has a point-in-time backup you can restore into a new volume, plus 
 
 ### Next: Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, and volume backups exist (v0.4.0–v0.6.3); next is off-host and incremental backups and the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, volume backups, upgrade-without-drop, and daemon backup exist (v0.4.0–v0.6.4); next is off-host and incremental backups and the rest of production-grade deploys.
 
 - • **TLS termination at the ingress proxy**: ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
 - • **Native cloud-registry auth**: ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.

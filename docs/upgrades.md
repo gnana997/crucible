@@ -13,7 +13,7 @@ the binary, wake on demand — rather than a feature you wait for:
 ## The runbook
 
 ```bash
-# 1. Seatbelt: capture the control-plane state first (see docs/backups.md).
+# 1. Seatbelt: capture the daemon's state first (see docs/backups.md).
 crucible admin backup
 
 # 2. Drain: sleep every running app.

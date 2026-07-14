@@ -18,7 +18,7 @@ type Record struct {
 	SizeBytes int64     `json:"size_bytes"`
 	CreatedAt time.Time `json:"created_at"`
 	Formatted bool      `json:"formatted"` // true once mkfs has succeeded on the backing file
-	HostID    string    `json:"host_id"`   // host-pin (P5 placement); recorded at create
+	HostID    string    `json:"host_id"`   // host-pin for future multi-host placement; recorded at create
 }
 
 // BackupRecord is the persisted metadata of one volume backup, keyed by ID. A

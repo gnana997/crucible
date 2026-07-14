@@ -13,7 +13,7 @@ import (
 func newAdminCmd(o *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "admin",
-		Short: "Operator commands (control-plane backup)",
+		Short: "Operator commands (daemon backup)",
 	}
 	cmd.AddCommand(newAdminBackupCmd(o))
 	return cmd
@@ -23,8 +23,8 @@ func newAdminBackupCmd(o *globalOpts) *cobra.Command {
 	var out string
 	cmd := &cobra.Command{
 		Use:   "backup",
-		Short: "Download a control-plane backup (needs the 'admin_backup' scoped op)",
-		Long: "Stream a tar.gz of the daemon's control-plane state: the app store, token\n" +
+		Short: "Download a daemon backup (needs the 'admin_backup' scoped op)",
+		Long: "Stream a tar.gz of the daemon's persistent state: the app store, token\n" +
 			"file, volume records, and registry credentials, plus a manifest. Volume DATA\n" +
 			"is not included — pair with `crucible volume backup`. The archive contains\n" +
 			"usable registry secrets; store it like a credential file.",

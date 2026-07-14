@@ -131,9 +131,9 @@ verify the data), a slept-app backup, a live backup via fsfreeze on a reflink
 filesystem, a restore into a new volume, and an independent clone. See also
 [volumes.md](volumes.md) and [serverless.md](serverless.md).
 
-## Control-plane backup (`crucible admin backup`)
+## Daemon backup (`crucible admin backup`)
 
-Volume backups protect your *data*; the control-plane backup protects the
+Volume backups protect your *data*; the daemon backup protects the
 daemon's *knowledge of everything else* — without it, a rebuilt host has
 volumes but no apps, tokens, or pull credentials. One command captures it all,
 hot, while the daemon keeps serving:
@@ -184,6 +184,6 @@ On startup the reconciler treats the restored app records as desired state and
 coming back, it is the apps healing themselves. Pre-disaster API keys work
 immediately (the token store is the same file).
 
-Acceptance: `scripts/smoke_cp_backup.sh` runs the full disaster: state created,
+Acceptance: `scripts/smoke_daemon_backup.sh` runs the full disaster: state created,
 archive taken, every store deleted, archive restored, and the app observed
 self-healing back to running with the old token still valid.

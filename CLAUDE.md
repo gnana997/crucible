@@ -11,11 +11,12 @@ Start with `README.md`. Deeper docs live in `docs/`: [VISION](docs/VISION.md)
 fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/api.md), [wire](docs/wire.md), [cli](docs/cli.md), [mcp](docs/mcp.md),
 [tui](docs/tui.md), [policy](docs/policy.md),
 [profiles](docs/profiles.md), [network](docs/network.md),
-[benchmarks](docs/benchmarks.md), and
+[backups](docs/backups.md), [upgrades](docs/upgrades.md),
+[observability](docs/observability.md), [benchmarks](docs/benchmarks.md), and
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.3 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.6.4 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -75,8 +76,26 @@ backups: `volume backup`/`restore`/`clone` (a point-in-time copy restorable to a
 volume), consistency-aware (a detached/slept volume is copied directly; a live one is
 FIFREEZE'd via new guest `/freeze`+`/thaw` agent ops, only the volume mount, with a
 watchdog auto-thaw), reflink (O(1)) when the `--backup-dir` shares the volume
-filesystem; a live backup requires a reflink FS (btrfs/XFS). See the ROADMAP for
-what's next (off-host + incremental backups).
+filesystem; a live backup requires a reflink FS (btrfs/XFS). **v0.6.4**
+"operate with confidence": **upgrade the daemon without dropping apps** —
+`app sleep --all` drains the fleet to durable snapshots, the restart re-adopts
+every app as asleep, and they wake in place on demand (`docs/upgrades.md`;
+`scripts/smoke_upgrade.sh` rehearses it against the previous release tag and
+confirms a stateless + a volume app wake **warm** under the new binary, with an
+automatic cold-create fallback if a warm cross-version wake ever fails); a
+one-command **daemon backup** (`crucible admin backup` → tar.gz of the
+app store, tokens, volume records, and registry creds via hot bbolt read-txns +
+a manifest, gated by a default-deny `admin_backup` scoped op; restore is a
+documented stopped-daemon procedure after which the reconciler re-creates every
+app — volume *data* stays with `volume backup`); **disk-usage metrics**
+(`snapshot_disk_bytes`/`volume_disk_bytes`/`backup_disk_bytes`, sparse-aware,
++ a Grafana disk panel + a verified latest-per-instance snapshot-retention
+contract); and **IPv6 at the edge** (proxy + published ports accept v6 on a
+wildcard bind and family-hop to the v4 guest; `-p '[::1]:8080:80'` pins a v6
+address; guests stay v4-only). Also fixed a mid-sleep routing race (a request
+racing `app sleep` could be reset; the instance is now marked non-routable
+before it pauses). See the ROADMAP for what's next (off-host + incremental
+backups, TLS/ACME).
 
 ## Working style
 

@@ -82,7 +82,7 @@ so the MCP server can mirror a policy by advertising only the tools it permits.
 | `read` | all `GET` | `list_sandboxes`, `inspect_sandbox`, `list_snapshots`, `list_profiles` |
 | `registry` | `POST`/`DELETE /registry/credentials` | *(none — operator action, no MCP tool)* |
 | `capture` | `GET /sandboxes/{id}/capture` | `capture` — **default-deny; grant explicitly.** Packet capture exposes traffic payloads, so it is never implied by `read`. |
-| `admin_backup` | `GET /admin/backup` | *(none — operator action, no MCP tool)* — **default-deny; grant explicitly.** The control-plane backup streams token state and usable registry secrets. |
+| `admin_backup` | `GET /admin/backup` | *(none — operator action, no MCP tool)* — **default-deny; grant explicitly.** The daemon backup streams token state and usable registry secrets. |
 
 `run` creates → execs → deletes in one call, so it needs `create`+`exec`+`delete`
 — a token lacking any of those won't be offered `run`.

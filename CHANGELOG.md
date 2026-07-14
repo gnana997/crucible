@@ -6,6 +6,61 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.6.4] — 2026-07-15
+
+Operate with confidence. Upgrade the daemon without losing your apps: drain the
+fleet to sleep, swap the binary, and every app is re-adopted and wakes on demand
+— rehearsed against the previous release so cross-version snapshot-wake is
+measured, not hoped for. Plus a one-command daemon backup, disk-usage
+visibility for scale-to-zero density, and IPv6 at the edge.
+
+### Added
+
+- **Upgrade-without-drop.** `crucible app sleep --all` drains every running app
+  to a durable snapshot; after a daemon restart the apps are re-adopted asleep
+  and wake in place on the next request. The runbook is
+  [docs/upgrades.md](docs/upgrades.md), and `scripts/smoke_upgrade.sh` rehearses
+  it end-to-end against the previous release tag — a stateless app and a
+  volume-backed app sleep under the old daemon and wake warm under the new one,
+  data intact. Warm cross-version wake is the measured result; a volume app that
+  can't wake warm falls back automatically to a cold create from its image.
+- **`crucible admin backup`.** Streams a tar.gz of the daemon's persistent
+  state — the app store, token file, volume records, and registry credentials,
+  plus a manifest — taken hot (bbolt read transactions) while the daemon keeps
+  serving. Volume *data* is not included; pair it with `volume backup`. Restore
+  is a documented procedure onto a stopped daemon
+  ([docs/backups.md](docs/backups.md)); on restart the reconciler re-creates
+  every app from the restored records. Gated by a new **default-deny
+  `admin_backup`** scoped-token op (the archive carries usable registry
+  secrets). SDK `AdminBackup`.
+- **Disk-usage metrics.** `snapshot_disk_bytes`, `volume_disk_bytes`, and
+  `backup_disk_bytes` on `/metrics` (sparse-aware — allocated blocks, not
+  logical size), so scale-to-zero density is visible as disk, not just RAM.
+  Reference Grafana dashboard gains a disk panel. A slept app keeps exactly one
+  snapshot set (retention is verified in `scripts/smoke_leaks.sh`).
+- **IPv6 at the edge.** The ingress proxy and published ports accept IPv6 on a
+  wildcard bind (`--proxy-listen :80`, `-p 8080:80`) — the proxy does the family
+  hop to the v4 guest. A published port can be pinned to a v6 address with
+  docker's bracket syntax (`-p '[::1]:8080:80'`). Guests remain IPv4-only
+  ([docs/network.md](docs/network.md)).
+
+### Fixed
+
+- **No dropped connection when a request races `app sleep`.** A connection that
+  arrived while an app was mid-snapshot could be reset instead of held: the
+  instance was marked non-routable only *after* its VM stopped, so the ingress
+  resolver's brief cache window still routed to the paused guest. The sleep
+  transition now marks the instance non-routable before it pauses, so a racing
+  request resolves as asleep and is queued behind the wake.
+
+### Security
+
+- **App→app authorization is bound to the caller's source IP, verified.**
+  `scripts/smoke_leaks.sh` now asserts that an un-granted app is refused a peer
+  another app may reach (the grant follows the source IP, so a recycled guest
+  `/30` cannot inherit a deleted app's reach), and that a proxied response
+  exposes no internal guest IP to external clients.
+
 ## [0.6.3] — 2026-07-14
 
 Volume backups. A persistent volume now has a point-in-time backup you can restore

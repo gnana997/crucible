@@ -67,7 +67,7 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasSuffix(path, "/capture") {
 			return policy.OpCapture, true
 		}
-		// GET /admin/backup streams the control-plane stores — token state
+		// GET /admin/backup streams the daemon's stores — token state
 		// and usable registry secrets. Its own default-deny op, like capture.
 		if path == "/admin/backup" {
 			return policy.OpAdminBackup, true

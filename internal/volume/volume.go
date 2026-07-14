@@ -282,7 +282,7 @@ func (m *Manager) Remove(name string) error {
 
 // BackupStoreTo streams a consistent copy of the volume-record store's bbolt
 // file (records + backup catalog, NOT volume data — data is `volume backup`'s
-// job). Used by the daemon's control-plane backup; see store.backupTo.
+// job). Used by the daemon's daemon backup; see store.backupTo.
 func (m *Manager) BackupStoreTo(frame func(size int64) (io.Writer, error)) error {
 	return m.st.backupTo(frame)
 }

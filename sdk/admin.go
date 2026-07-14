@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// AdminBackup streams a control-plane backup (tar.gz of the daemon's app,
+// AdminBackup streams a daemon backup (tar.gz of the daemon's app,
 // token, volume-record, and registry-credential stores plus a manifest) to w.
 // Requires the `admin_backup` scoped-token op — the archive carries usable
 // registry secrets. Volume DATA is not included; pair with volume backups.

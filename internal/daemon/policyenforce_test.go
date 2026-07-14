@@ -62,7 +62,7 @@ func TestOperationGateDeniesUnlistedVerbs(t *testing.T) {
 }
 
 func TestAdminBackupNeedsItsOwnOp(t *testing.T) {
-	// A read-scoped token must NOT reach the control-plane backup (it streams
+	// A read-scoped token must NOT reach the daemon backup (it streams
 	// token state + usable registry secrets) — admin_backup is its own grant.
 	srv, tok := scopedServer(t, &policy.Policy{Operations: []policy.Operation{policy.OpRead}}, 0)
 	if code, body := call(t, srv, "GET", "/admin/backup", tok, ""); code != 403 {

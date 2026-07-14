@@ -35,7 +35,7 @@ const (
 	OpRead     Operation = "read"     // GET (list / inspect / profiles)
 	OpRegistry Operation = "registry" // POST/DELETE /registry/credentials (manage private-registry creds)
 	OpCapture  Operation = "capture"  // GET /sandboxes/{id}/capture (packet capture — exposes traffic payloads)
-	// OpAdminBackup gates GET /admin/backup — the control-plane backup stream.
+	// OpAdminBackup gates GET /admin/backup — the daemon backup stream.
 	// Its tarball carries usable registry secrets and the full token/policy
 	// state, so like capture it must be granted explicitly on scoped tokens.
 	OpAdminBackup Operation = "admin_backup"

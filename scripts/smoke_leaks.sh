@@ -26,6 +26,14 @@
 #      second app B's rootfs (separate per-VM disks, no shared writable layer)
 #   08 cross-app network: B cannot reach A's guest IP directly (per-sandbox netns
 #      isolation holds even with app→app networking enabled)
+#   08a app→app authorization is bound to the CALLER's guest IP, not global: a
+#      granted app reaches a peer over <peer>.internal, but an un-granted third
+#      app is refused the SAME peer — the grant follows the source IP (so a
+#      recycled /30 can't inherit a deleted app's reach; the authorizer resolves
+#      IP→owner live, per call)
+#   08b no internal-IP leak to external clients: a proxied response carries none
+#      of the app's guest IP (10.20.x.x) in its headers or body — the front door
+#      never reflects internal network topology outward
 #   09 fork clone-safety: two forks of one snapshot get distinct machine-id and
 #      distinct kernel-RNG UUIDs (no shared secrets/entropy)
 #   10 fork COW isolation: a write in one fork is invisible to its sibling
@@ -357,6 +365,44 @@ else
 fi
 cli app rm web  >/dev/null 2>&1
 cli app rm webb >/dev/null 2>&1
+wait_fc 0 20 >/dev/null || true
+
+echo "== 08a app→app grant follows the caller's IP (an un-granted app is refused a reachable peer)"
+# frontend may call backend; stranger may call nothing. backend is reachable
+# over the internal zone — but only from the source IP the grant names.
+cli app create backend  --image "$IMAGE" --pull missing --port 80 --restart always --memory 256 >/dev/null 2>&1
+cli app create frontend --image "$IMAGE" --pull missing --port 80 --restart always --memory 256 --can-call backend >/dev/null 2>&1
+cli app create stranger --image "$IMAGE" --pull missing --port 80 --restart always --memory 256 >/dev/null 2>&1
+if wait_phase backend running >/dev/null && wait_phase frontend running >/dev/null && wait_phase stranger running >/dev/null; then
+  GRANTED="$(exec_app frontend wget -T 5 -q -O - "http://backend.internal/" 2>/dev/null)"
+  DENIED="$(exec_app stranger wget -T 5 -q -O - "http://backend.internal/" 2>/dev/null)"
+  if [[ "$GRANTED" == *nginx* || "$GRANTED" == *html* ]]; then
+    pass "granted app reached backend.internal (grant honored for its source IP)"
+  else
+    fail "granted frontend could NOT reach backend.internal (got: '${GRANTED:0:60}')"
+  fi
+  if [[ -z "$DENIED" ]]; then
+    pass "un-granted app refused the SAME peer (authorization binds to caller IP, not global reachability)"
+  else
+    fail "SECURITY: un-granted app reached backend.internal (got: '${DENIED:0:60}') — grant not caller-scoped"
+  fi
+
+  echo "== 08b proxied response leaks no internal guest IP to external clients"
+  FIP="$(guest_ip "$(app_inst frontend)")"
+  RESP="$(curl -s -D - -H "Host: frontend.$DOMAIN" "http://127.0.0.1:$PROXY_PORT/" 2>/dev/null)"
+  if [[ -z "$FIP" ]]; then
+    fail "could not read frontend's guest IP for the leak check"
+  elif grep -q "nginx\|html" <<<"$RESP" && ! grep -qF "$FIP" <<<"$RESP" && ! grep -qE '10\.20\.[0-9]' <<<"$RESP"; then
+    pass "external response served without exposing the guest IP ($FIP) or any 10.20.x.x topology"
+  else
+    fail "SECURITY: internal IP leaked to an external client (guest $FIP in the proxied response)"
+  fi
+else
+  fail "app→app isolation apps did not all come up"
+fi
+cli app rm frontend >/dev/null 2>&1
+cli app rm stranger >/dev/null 2>&1
+cli app rm backend  >/dev/null 2>&1
 wait_fc 0 20 >/dev/null || true
 
 echo "== 09 fork clone-safety: forks get distinct machine-id + kernel-RNG uuid"

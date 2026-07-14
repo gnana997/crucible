@@ -287,7 +287,7 @@ type Manager struct {
 }
 
 // BackupStoreTo streams a consistent copy of the app store's bbolt file; see
-// Store.BackupTo. Used by the daemon's control-plane backup.
+// Store.BackupTo. Used by the daemon's daemon backup.
 func (m *Manager) BackupStoreTo(frame func(size int64) (io.Writer, error)) error {
 	return m.store.BackupTo(frame)
 }

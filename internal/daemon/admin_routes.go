@@ -12,7 +12,7 @@ import (
 	"github.com/gnana997/crucible/internal/version"
 )
 
-// backupManifest is the last entry in a control-plane backup tarball: what was
+// backupManifest is the last entry in a daemon backup tarball: what was
 // captured, by which daemon, when — so a restore can sanity-check versions
 // before laying files down.
 type backupManifest struct {
@@ -22,7 +22,7 @@ type backupManifest struct {
 	Entries         []string  `json:"entries"`
 }
 
-// handleAdminBackup streams a tar.gz of the daemon's control-plane state:
+// handleAdminBackup streams a tar.gz of the daemon's persistent state:
 // the app store (bbolt), the token file, the volume-record store (bbolt),
 // and the registry-credential file — each present only when its component is
 // configured — plus a trailing manifest.json. The bolt stores are copied via
