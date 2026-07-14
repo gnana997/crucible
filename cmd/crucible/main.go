@@ -128,6 +128,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newCpCmd(opts),
 		newMcpCmd(opts),
 		newPolicyCmd(opts),
+		newAdminCmd(opts),
 		newTuiCmd(opts),
 	)
 	return root

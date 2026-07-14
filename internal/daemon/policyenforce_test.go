@@ -61,6 +61,20 @@ func TestOperationGateDeniesUnlistedVerbs(t *testing.T) {
 	}
 }
 
+func TestAdminBackupNeedsItsOwnOp(t *testing.T) {
+	// A read-scoped token must NOT reach the control-plane backup (it streams
+	// token state + usable registry secrets) — admin_backup is its own grant.
+	srv, tok := scopedServer(t, &policy.Policy{Operations: []policy.Operation{policy.OpRead}}, 0)
+	if code, body := call(t, srv, "GET", "/admin/backup", tok, ""); code != 403 {
+		t.Errorf("read-only token: GET /admin/backup = %d (%s), want 403", code, body)
+	}
+
+	srv2, tok2 := scopedServer(t, &policy.Policy{Operations: []policy.Operation{policy.OpAdminBackup}}, 0)
+	if code, body := call(t, srv2, "GET", "/admin/backup", tok2, ""); code != 200 {
+		t.Errorf("admin_backup token: GET /admin/backup = %d (%s), want 200", code, body)
+	}
+}
+
 func TestReadDeniedWithoutReadOp(t *testing.T) {
 	srv, tok := scopedServer(t, &policy.Policy{Operations: []policy.Operation{policy.OpCreate}}, 0)
 	if code, _ := call(t, srv, "GET", "/sandboxes", tok, ""); code != 403 {

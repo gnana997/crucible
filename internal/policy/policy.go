@@ -35,12 +35,16 @@ const (
 	OpRead     Operation = "read"     // GET (list / inspect / profiles)
 	OpRegistry Operation = "registry" // POST/DELETE /registry/credentials (manage private-registry creds)
 	OpCapture  Operation = "capture"  // GET /sandboxes/{id}/capture (packet capture — exposes traffic payloads)
+	// OpAdminBackup gates GET /admin/backup — the control-plane backup stream.
+	// Its tarball carries usable registry secrets and the full token/policy
+	// state, so like capture it must be granted explicitly on scoped tokens.
+	OpAdminBackup Operation = "admin_backup"
 )
 
 // KnownOperations returns the valid operation verbs, in a stable order (useful
 // for error messages and docs).
 func KnownOperations() []Operation {
-	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture}
+	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup}
 }
 
 func isKnownOp(op Operation) bool {

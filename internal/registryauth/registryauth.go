@@ -146,6 +146,21 @@ func (s *Store) saveLocked() error {
 	return nil
 }
 
+// Dump returns the raw bytes of the credential file for the control-plane
+// backup, read under the store lock so it can't interleave with a save. A
+// missing file (no credentials yet) dumps as empty, not an error. NOTE: unlike
+// the token store, these bytes hold USABLE registry secrets — the backup
+// endpoint is gated by its own default-deny scoped op for exactly this reason.
+func (s *Store) Dump() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
 // Upsert stores (or replaces) the credential for host. username may be empty
 // for registries that authenticate on the secret alone; secret is required.
 func (s *Store) Upsert(host, username, secret string) error {

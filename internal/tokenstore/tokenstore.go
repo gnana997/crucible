@@ -180,6 +180,20 @@ type Store struct {
 // Open returns a Store backed by path. The file is read lazily on first use.
 func Open(path string) *Store { return &Store{path: path} }
 
+// Dump returns the raw bytes of the token file for the control-plane backup,
+// read under the store lock. A missing file (no tokens yet) dumps as empty,
+// not an error — the backup just omits it. Contents are key HASHES plus
+// policies, so a backup restores auth state without holding usable secrets.
+func (s *Store) Dump() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
 func (s *Store) reload() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

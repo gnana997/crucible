@@ -130,3 +130,60 @@ Acceptance: `scripts/smoke_backups.sh` covers a detached backup (loop-mounted to
 verify the data), a slept-app backup, a live backup via fsfreeze on a reflink
 filesystem, a restore into a new volume, and an independent clone. See also
 [volumes.md](volumes.md) and [serverless.md](serverless.md).
+
+## Control-plane backup (`crucible admin backup`)
+
+Volume backups protect your *data*; the control-plane backup protects the
+daemon's *knowledge of everything else* — without it, a rebuilt host has
+volumes but no apps, tokens, or pull credentials. One command captures it all,
+hot, while the daemon keeps serving:
+
+```bash
+crucible admin backup                       # writes crucible-backup-<ts>.tar.gz
+crucible admin backup -w cp.tar.gz          # explicit filename
+crucible admin backup | ssh vault 'cat > crucible.tar.gz'   # piped = streamed
+```
+
+The archive holds up to five entries — each present only when its component is
+configured:
+
+| Entry | Store | How it's captured |
+|---|---|---|
+| `app.db` | durable app records (`--app-db`) | bbolt read transaction — consistent, hot |
+| `tokens.json` | API keys + policies (`--token-file`) | read under the store lock (hashes, not usable keys) |
+| `volume-index.db` | volume + backup records (`--volume-dir`) | bbolt read transaction |
+| `registry-credentials.json` | registry logins (`--registry-store`) | read under the store lock — **usable secrets** |
+| `manifest.json` | version, timestamp, hostname, entry list | written last |
+
+Each store's copy is individually consistent; the archive as a whole is not a
+cross-store transaction (the stores are independent, and skew between them is
+harmless). **Volume data is deliberately not included** — pair this with
+`crucible volume backup`, ideally with `--backup-dir` on off-host storage.
+
+The endpoint (`GET /admin/backup`) is gated by the **default-deny
+`admin_backup`** scoped-token op: the archive carries usable registry secrets
+and the full token/policy state, so treat the file like a credential file
+(it is written `0600`).
+
+### Restore procedure
+
+Restore is deliberately a documented procedure onto a **stopped** daemon, not a
+command — laying store files under a live daemon invites corruption:
+
+1. Stop the daemon (`systemctl stop crucible`).
+2. Extract the archive and copy each entry to its configured path:
+   `app.db` → `--app-db`, `tokens.json` → `--token-file`,
+   `volume-index.db` → `<volume-dir>/index.db`,
+   `registry-credentials.json` → `--registry-store`.
+3. Restore volume *data* from your volume backups if this is a fresh host
+   (`volume restore` needs the daemon up — do it after step 4).
+4. Start the daemon.
+
+On startup the reconciler treats the restored app records as desired state and
+**re-creates every app that was running** — a restore is not just records
+coming back, it is the apps healing themselves. Pre-disaster API keys work
+immediately (the token store is the same file).
+
+Acceptance: `scripts/smoke_cp_backup.sh` runs the full disaster: state created,
+archive taken, every store deleted, archive restored, and the app observed
+self-healing back to running with the old token still valid.

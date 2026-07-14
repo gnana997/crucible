@@ -3,6 +3,7 @@ package volume
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -65,6 +66,20 @@ func openStore(path string) (*store, error) {
 }
 
 func (s *store) close() error { return s.db.Close() }
+
+// backupTo streams a consistent point-in-time copy of the store's bbolt file;
+// same contract as internal/app Store.BackupTo (frame gets the exact size from
+// the pinning read transaction and returns the destination writer).
+func (s *store) backupTo(frame func(size int64) (io.Writer, error)) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		w, err := frame(tx.Size())
+		if err != nil {
+			return err
+		}
+		_, err = tx.WriteTo(w)
+		return err
+	})
+}
 
 func (s *store) put(rec Record) error {
 	return s.db.Update(func(tx *bolt.Tx) error {

@@ -12,6 +12,7 @@ package volume
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,6 +278,13 @@ func (m *Manager) Remove(name string) error {
 		return fmt.Errorf("volume: remove backing file: %w", err)
 	}
 	return nil
+}
+
+// BackupStoreTo streams a consistent copy of the volume-record store's bbolt
+// file (records + backup catalog, NOT volume data — data is `volume backup`'s
+// job). Used by the daemon's control-plane backup; see store.backupTo.
+func (m *Manager) BackupStoreTo(frame func(size int64) (io.Writer, error)) error {
+	return m.st.backupTo(frame)
 }
 
 // DiskBytes returns the allocated on-disk bytes of all volume backing files

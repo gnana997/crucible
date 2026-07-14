@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -71,6 +72,21 @@ func Open(path string) (*Store, error) {
 
 // Close releases the store's file lock.
 func (s *Store) Close() error { return s.db.Close() }
+
+// BackupTo streams a consistent point-in-time copy of the store's bbolt file
+// (a read transaction pins the snapshot while the daemon keeps serving).
+// frame receives the exact byte count — from the same transaction, so
+// tar-style callers can write a correct header — and returns the destination.
+func (s *Store) BackupTo(frame func(size int64) (io.Writer, error)) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		w, err := frame(tx.Size())
+		if err != nil {
+			return err
+		}
+		_, err = tx.WriteTo(w)
+		return err
+	})
+}
 
 // Put upserts a record by its ID.
 func (s *Store) Put(rec Record) error {

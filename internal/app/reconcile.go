@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"sync"
@@ -283,6 +284,12 @@ type Manager struct {
 	trigger chan struct{}
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
+}
+
+// BackupStoreTo streams a consistent copy of the app store's bbolt file; see
+// Store.BackupTo. Used by the daemon's control-plane backup.
+func (m *Manager) BackupStoreTo(frame func(size int64) (io.Writer, error)) error {
+	return m.store.BackupTo(frame)
 }
 
 // NewManager returns a control-plane manager over store, instantiating
