@@ -20,7 +20,11 @@ This page is the implementation-level companion to [Networking](../network.md): 
 
 Deliberate exclusions, not oversights:
 
-- **IPv6.** All allocation and rules are IPv4-only (deferred).
+- **Guest-side IPv6.** Guest allocation and egress rules are IPv4-only
+  (deferred). The *edge* is dual-stack: the ingress proxy and published host
+  ports accept IPv6 when bound to a wildcard address (e.g. `--proxy-listen
+  :80`, `-p 8080:80`) or pinned to a v6 address (`-p '[::1]:8080:80'`) — the
+  userspace forwarders do the family hop, dialing the guest over v4.
 - **Reaching private ranges.** No opt-in exists for RFC1918, link-local, or metadata egress. Private inter-app networking is separate future work, under a tenancy model.
 - **Port allowlists** (`pypi.org:443`). Any port to allowed IPs; ports are not constrained.
 - **Protocol allowlists.** TCP, UDP, and ICMP are all allowed to allowed IPs.

@@ -84,6 +84,22 @@ Networking is egress-shaped, but port publish (`-p`) and the [ingress proxy](pro
 - **Peers cannot reach each other.** Each sandbox has its own `/30` in its own netns, and RFC1918 egress is always blocked, so one guest cannot reach a neighbor's guest IP, published port or not.
 - **The proxy is not a lateral path.** A guest cannot reach the proxy or publish listeners at all — the host input chain drops every guest-initiated packet to any host-local address (`iifname vh-* drop`, after the established/DNS accepts), even under full egress and even to the host's public IP. So one app can never reach another app's instance through the proxy, published or not; the only route to a guest is the daemon dialing in over its own veth.
 
+## IPv6 at the edge
+
+Guests are IPv4-only, but the inbound edge is dual-stack. The proxy and publish
+listeners are plain TCP listeners in the daemon, so a wildcard bind accepts
+both families, and the daemon dials the guest over v4 — clients never see the
+family hop:
+
+- `--proxy-listen :80` serves the proxy over IPv4 **and** IPv6.
+- `-p 8080:80` publishes on all interfaces, both families.
+- `-p '[::1]:8080:80'` pins a published port to a specific IPv6 address
+  (bracketed, as in docker); a specific v4 address stays v4-only — an explicit
+  address is the operator's choice, not a hint to mirror it.
+
+`X-Forwarded-For` carries the client's address in either family. Guest-side
+IPv6 (v6 guest addresses, v6 egress rules) remains deferred.
+
 ## Packet capture (debug)
 
 `crucible sandbox capture <id>` (or `app capture <name>`) streams a live packet

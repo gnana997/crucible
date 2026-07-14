@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -192,7 +193,7 @@ func validatePublish(mappings []api.PortMapping) ([]sandbox.PortMapping, error) 
 		if m.GuestPort < 1 || m.GuestPort > 65535 {
 			return nil, fmt.Errorf("publish: guest_port %d out of range (1..65535)", m.GuestPort)
 		}
-		key := m.HostIP + ":" + strconv.Itoa(m.HostPort)
+		key := net.JoinHostPort(m.HostIP, strconv.Itoa(m.HostPort))
 		if seen[key] {
 			return nil, fmt.Errorf("publish: host port %s mapped more than once", key)
 		}

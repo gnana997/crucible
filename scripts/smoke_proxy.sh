@@ -99,7 +99,7 @@ start_daemon() {
     --chroot-base "$CHROOT_BASE" --kernel "$KERNEL" --rootfs "$KERNEL" \
     --work-base "$WORK_BASE" --image-dir "$IMAGE_DIR" --log-dir "$LOG_DIR" \
     --app-db "$APP_DB" --network-egress-iface "$EGRESS_IFACE" \
-    --proxy-listen "127.0.0.1:$PROXY_PORT" --proxy-domain "$DOMAIN" \
+    --proxy-listen ":$PROXY_PORT" --proxy-domain "$DOMAIN" \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
   for _ in {1..150}; do
@@ -190,6 +190,35 @@ if [[ "$PEER" == sbx_* ]]; then
   cli sandbox rm "$PEER" >/dev/null 2>&1 || true
 else
   fail "create peer sandbox failed"
+fi
+
+echo "== 06 IPv6 at the edge: dual-stack proxy + bracketed v6 port publish"
+# The proxy binds a wildcard ":port" (dual-stack); guests stay v4 — the proxy
+# does the family hop. Skipped when the host has no v6 loopback.
+if ip -6 addr show dev lo 2>/dev/null | grep -q '::1'; then
+  BODY6="$(curl -sg --max-time 4 -H "Host: web.$DOMAIN" "http://[::1]:$PROXY_PORT/" 2>/dev/null || true)"
+  if [[ "$BODY6" == *nginx* || "$BODY6" == *html* ]]; then
+    pass "proxy serves the app over IPv6 ([::1] → v4 guest)"
+  else
+    fail "proxy did not serve over IPv6: '${BODY6:0:80}'"
+  fi
+  # A published port pinned to a v6 address ([::1]:PORT:80, docker syntax).
+  V6_PORT=$((PROXY_PORT+1))
+  if cli app update web --image "$IMAGE" -p "[::1]:$V6_PORT:80" --restart always \
+      --health "http:80:/" --memory 256 >/dev/null 2>&1; then
+    SERVED6=0
+    for _ in $(seq 1 40); do
+      B="$(curl -sg --max-time 3 "http://[::1]:$V6_PORT/" 2>/dev/null || true)"
+      [[ "$B" == *nginx* || "$B" == *html* ]] && { SERVED6=1; break; }
+      sleep 0.5
+    done
+    [[ "$SERVED6" -eq 1 ]] && pass "published port bound to [::1] serves over IPv6" \
+      || fail "published port [::1]:$V6_PORT never served"
+  else
+    fail "app update with a bracketed v6 publish spec was rejected"
+  fi
+else
+  echo "   SKIP: no IPv6 loopback on this host"
 fi
 
 cli app rm web >/dev/null 2>&1 || true
