@@ -17,6 +17,10 @@ var (
 	// ErrPolicyDenied matches a 403: the token's policy forbids the
 	// operation (or the request exceeds a policy cap).
 	ErrPolicyDenied = errors.New("policy denied")
+	// ErrConflict matches a 409: a name collision, an in-use resource, or a
+	// lifecycle-state mismatch. Use Error.Code (see api.Code* constants) to
+	// tell the specific conflict apart.
+	ErrConflict = errors.New("conflict")
 )
 
 // Error is a structured error from the daemon. Status is the HTTP status
@@ -43,6 +47,8 @@ func (e *Error) Unwrap() error {
 		return ErrUnauthorized
 	case http.StatusForbidden:
 		return ErrPolicyDenied
+	case http.StatusConflict:
+		return ErrConflict
 	}
 	return nil
 }

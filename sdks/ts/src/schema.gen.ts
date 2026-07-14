@@ -784,6 +784,9 @@ export interface components {
             boot_args?: string;
             /** Format: int64 */
             disk_bytes?: number;
+            env?: {
+                [key: string]: string;
+            };
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
             network?: components["schemas"]["NetworkRequest"];
@@ -803,6 +806,7 @@ export interface components {
             size_bytes?: number;
         };
         ErrorResponse: {
+            code?: string;
             error?: string;
         };
         ExecReq: {

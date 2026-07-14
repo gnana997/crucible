@@ -36,6 +36,7 @@ class CreateVolumeRequest(BaseModel):
 
 
 class ErrorResponse(BaseModel):
+    code: str | None = None
     error: str | None = None
 
 
@@ -301,6 +302,7 @@ class CreateAppRequest(BaseModel):
 class CreateSandboxRequest(BaseModel):
     boot_args: str | None = None
     disk_bytes: int | None = None
+    env: dict[str, str] | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
     network: NetworkRequest | None = None

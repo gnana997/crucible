@@ -98,6 +98,13 @@ type CreateSandboxRequest struct {
 	// use and reattached by name thereafter, so data survives the sandbox
 	// (and daemon restarts). Requires the daemon to have a volume directory.
 	Volumes []VolumeMount `json:"volumes,omitempty"`
+
+	// Env adds environment variables to the sandbox's entrypoint (the image
+	// ENTRYPOINT/CMD or an explicit Service), docker `-e` style: these win
+	// over the image's ENV. It applies only when the sandbox has an entrypoint
+	// service; a bare profile sandbox with no long-lived process gets its env
+	// per-command via ExecRequest.Env instead.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // VolumeMount attaches a durable, named block-device volume at an absolute
@@ -347,4 +354,24 @@ type ImageListResponse struct {
 // ErrorResponse is the body of any non-2xx response.
 type ErrorResponse struct {
 	Error string `json:"error"`
+	// Code is a stable, machine-readable error code for the cases a
+	// programmatic client needs to branch on (name collisions, in-use
+	// conflicts, lifecycle-state mismatches). Empty for errors with no
+	// dedicated code. See the Code* constants.
+	Code string `json:"code,omitempty"`
 }
+
+// Error codes returned in ErrorResponse.Code. Stable strings a client can
+// switch on without matching human-readable messages. Empty means "no
+// dedicated code" (branch on the HTTP status instead).
+const (
+	CodeNameTaken        = "name_taken"         // 409: an app/volume of that name exists
+	CodeInUse            = "in_use"             // 409: volume attached to a live sandbox
+	CodeNotFound         = "not_found"          // 404: no such resource
+	CodeNotRunning       = "not_running"        // 409: no running instance (e.g. sleep)
+	CodeNotAsleep        = "not_asleep"         // 409: not asleep (e.g. wake)
+	CodeInvalidName      = "invalid_name"       // 400: name failed validation
+	CodeInvalidConfig    = "invalid_config"     // 400: bad sandbox/app config
+	CodeSnapshotNotFound = "snapshot_not_found" // 404: no such snapshot
+	CodeBackupNotFound   = "backup_not_found"   // 404: no such backup
+)

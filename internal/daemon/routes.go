@@ -365,6 +365,14 @@ func (s *Server) buildCreateConfig(ctx context.Context, req *api.CreateSandboxRe
 		}
 	}
 
+	// Sandbox-level env is merged into the entrypoint's environment (req.Env
+	// wins over the image ENV), exactly like an app's env. A bare profile
+	// sandbox has no entrypoint service, so its env applies only to explicit
+	// exec (ExecRequest.Env), not here.
+	if len(req.Env) > 0 && req.Service != nil {
+		mergeAppEnv(req.Service, req.Env)
+	}
+
 	if req.Service != nil {
 		if err := validateServiceSpec(req.Service); err != nil {
 			return sandbox.CreateConfig{}, &imageErr{http.StatusBadRequest, err}
@@ -1187,5 +1195,5 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, api.ErrorResponse{Error: err.Error()})
+	writeJSON(w, status, api.ErrorResponse{Error: err.Error(), Code: errCode(err)})
 }

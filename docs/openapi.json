@@ -2903,6 +2903,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "env": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
           },
@@ -2962,6 +2968,9 @@
       "ErrorResponse": {
         "type": "object",
         "properties": {
+          "code": {
+            "type": "string"
+          },
           "error": {
             "type": "string"
           }

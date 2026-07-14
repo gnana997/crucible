@@ -581,5 +581,5 @@ func errorFrom(resp *http.Response) error {
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
 	}
-	return &Error{Status: resp.StatusCode, Message: msg}
+	return &Error{Status: resp.StatusCode, Code: e.Code, Message: msg}
 }

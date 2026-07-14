@@ -156,6 +156,7 @@ func TestTypedErrors(t *testing.T) {
 		{http.StatusNotFound, ErrNotFound},
 		{http.StatusUnauthorized, ErrUnauthorized},
 		{http.StatusForbidden, ErrPolicyDenied},
+		{http.StatusConflict, ErrConflict},
 	} {
 		c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(tc.status)
@@ -169,6 +170,21 @@ func TestTypedErrors(t *testing.T) {
 		if !errors.As(err, &de) || de.Status != tc.status || de.Message != "nope" {
 			t.Fatalf("status %d: not a structured *Error: %v", tc.status, err)
 		}
+	}
+}
+
+func TestErrorCodeParsed(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(api.ErrorResponse{Error: "taken", Code: api.CodeNameTaken})
+	})
+	_, err := c.CreateVolume(context.Background(), api.CreateVolumeRequest{Name: "v"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("err = %v, want ErrConflict", err)
+	}
+	var de *Error
+	if !errors.As(err, &de) || de.Code != api.CodeNameTaken {
+		t.Fatalf("Code = %q, want %q", de.Code, api.CodeNameTaken)
 	}
 }
 
