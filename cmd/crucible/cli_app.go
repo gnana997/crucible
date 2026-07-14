@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -39,18 +40,94 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 }
 
 func newAppSleepCmd(o *globalOpts) *cobra.Command {
-	return &cobra.Command{
-		Use:   "sleep <name>",
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "sleep <name> | --all",
 		Short: "Snapshot the app and free its RAM (scale-to-zero); it wakes on demand",
-		Args:  cobra.ExactArgs(1),
+		Long: "Snapshot an app and stop its VM: RAM drops to ~zero, identity and data are\n" +
+			"kept, and the next request (or `app wake`) restores it in place.\n\n" +
+			"--all sleeps every running app, sequentially — the drain step of the\n" +
+			"upgrade-without-drop runbook (docs/upgrades.md): drain, restart the daemon,\n" +
+			"and slept apps are re-adopted and wake on demand.",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := o.client().SleepApp(cmd.Context(), args[0])
-			if err != nil {
-				return err
+			if !all {
+				if len(args) != 1 {
+					return errors.New("app sleep: give an app name, or --all")
+				}
+				resp, err := o.client().SleepApp(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				return printJSON(cmd.OutOrStdout(), resp)
 			}
-			return printJSON(cmd.OutOrStdout(), resp)
+			if len(args) != 0 {
+				return errors.New("app sleep: --all takes no app name")
+			}
+			return sleepAllApps(cmd, o)
 		},
 	}
+	cmd.Flags().BoolVar(&all, "all", false, "sleep every running app (drain, e.g. before a daemon upgrade)")
+	return cmd
+}
+
+// sleepAllApps sleeps every running app sequentially and reports per-app
+// results. Already-asleep apps count as fine; apps in any other phase
+// (pending, crashlooping, stopped) are skipped — sleep requires running.
+// Returns an error (nonzero exit) if any sleep failed.
+func sleepAllApps(cmd *cobra.Command, o *globalOpts) error {
+	page, err := o.client().ListApps(cmd.Context())
+	if err != nil {
+		return err
+	}
+	type result struct {
+		Name   string `json:"name"`
+		Result string `json:"result"` // slept | already-asleep | skipped (<phase>) | error
+		Error  string `json:"error,omitempty"`
+	}
+	var results []result
+	failed := 0
+	for _, a := range page.Items {
+		phase := ""
+		if a.Status != nil {
+			phase = a.Status.Phase
+		}
+		switch phase {
+		case "running", "unhealthy":
+			if _, err := o.client().SleepApp(cmd.Context(), a.Name); err != nil {
+				failed++
+				results = append(results, result{Name: a.Name, Result: "error", Error: err.Error()})
+			} else {
+				results = append(results, result{Name: a.Name, Result: "slept"})
+			}
+		case "asleep":
+			results = append(results, result{Name: a.Name, Result: "already-asleep"})
+		default:
+			results = append(results, result{Name: a.Name, Result: "skipped (" + phase + ")"})
+		}
+	}
+	if o.isJSON() {
+		if err := printJSON(cmd.OutOrStdout(), results); err != nil {
+			return err
+		}
+	} else {
+		tw := newTable(cmd.OutOrStdout())
+		_, _ = fmt.Fprintln(tw, "APP\tRESULT")
+		for _, r := range results {
+			line := r.Result
+			if r.Error != "" {
+				line += ": " + r.Error
+			}
+			_, _ = fmt.Fprintf(tw, "%s\t%s\n", r.Name, line)
+		}
+		if err := tw.Flush(); err != nil {
+			return err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("app sleep --all: %d of %d apps failed to sleep", failed, len(results))
+	}
+	return nil
 }
 
 func newAppWakeCmd(o *globalOpts) *cobra.Command {
