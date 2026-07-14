@@ -62,6 +62,22 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, snapshotTimeout(s.MemoryMiB))
 	defer cancel()
 
+	// Mark the transition before the guest stops answering: from here until the
+	// asleep state is published (or the sleep fails and the guest resumes), the
+	// instance must not be routed to — ingress sees ErrAsleep and queues the
+	// connection behind the wake instead of dialing a paused guest.
+	m.mu.Lock()
+	s.sleeping = true
+	m.mu.Unlock()
+	success := false
+	defer func() {
+		if !success {
+			m.mu.Lock()
+			s.sleeping = false
+			m.mu.Unlock()
+		}
+	}()
+
 	if s.execClient != nil {
 		if err := s.execClient.Quiesce(ctx); err != nil {
 			slog.Default().Warn("sleep: quiesce failed; snapshot will be crash-consistent",
@@ -164,7 +180,9 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 	oldSnapID := s.memSnapshotID
 	s.memSnapshotID = snapID
 	s.asleep = st
+	s.sleeping = false // asleep now carries the not-routable state
 	m.mu.Unlock()
+	success = true
 
 	if m.store != nil {
 		if err := m.store.putSnapshot(snapshotRecordOf(snap)); err != nil {

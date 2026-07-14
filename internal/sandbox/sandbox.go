@@ -195,6 +195,14 @@ type Sandbox struct {
 	// surviving a daemon restart while asleep is handled by the durable snapshot.
 	asleep *sleepState
 
+	// sleeping marks a sleep transition in progress: set by SleepInPlace before
+	// it pauses the guest, cleared on a failed sleep (the guest resumes) or
+	// subsumed by asleep on success. Routable checks it so ingress never routes
+	// to a guest that is paused mid-snapshot — without it, a resolver cache hit
+	// validated against a still-registered instance would dial a frozen guest
+	// and the connection would be dropped instead of queued behind the wake.
+	sleeping bool
+
 	// memSnapshotID is the id of the DURABLE snapshot backing this instance's
 	// memory: set when the sandbox is slept (a real, journaled snapshot under
 	// WorkBase, so a slept app survives a daemon restart via re-adoption), and
@@ -1201,15 +1209,16 @@ func (m *Manager) SnapshotCount() int {
 }
 
 // Routable returns the guest IP to route inbound traffic to, or ("", false)
-// when the sandbox is unknown, has no network, or is asleep — a slept sandbox's
-// VMM is stopped, so its IP must not be routed to until it is woken. Reads the
-// asleep flag under the registry lock (it is written under the same lock by
-// SleepInPlace/WakeInPlace), so this is race-free.
+// when the sandbox is unknown, has no network, is asleep, or is mid-sleep — a
+// slept sandbox's VMM is stopped, and a sleeping one is paused for its
+// snapshot, so its IP must not be routed to until it is woken. Reads the
+// asleep/sleeping flags under the registry lock (they are written under the
+// same lock by SleepInPlace/WakeInPlace), so this is race-free.
 func (m *Manager) Routable(id string) (string, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s, ok := m.sandboxes[id]
-	if !ok || s.asleep != nil || s.Network == nil || s.Network.GuestIP == "" {
+	if !ok || s.asleep != nil || s.sleeping || s.Network == nil || s.Network.GuestIP == "" {
 		return "", false
 	}
 	return s.Network.GuestIP, true
