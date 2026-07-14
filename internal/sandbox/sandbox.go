@@ -1208,6 +1208,25 @@ func (m *Manager) SnapshotCount() int {
 	return len(m.snapshots)
 }
 
+// SnapshotDiskBytes returns the allocated on-disk bytes of every registered
+// snapshot's artifact set (state + memory + rootfs; sparse-aware, so a
+// lazily-faulted memory file counts what it occupies, not its logical size).
+// Gauge source, read at scrape time; the dir list is copied under the lock and
+// the stats run outside it.
+func (m *Manager) SnapshotDiskBytes() int64 {
+	m.mu.RLock()
+	dirs := make([]string, 0, len(m.snapshots))
+	for _, s := range m.snapshots {
+		dirs = append(dirs, s.Dir)
+	}
+	m.mu.RUnlock()
+	var total int64
+	for _, d := range dirs {
+		total += fsutil.DirAllocatedBytes(d)
+	}
+	return total
+}
+
 // Routable returns the guest IP to route inbound traffic to, or ("", false)
 // when the sandbox is unknown, has no network, is asleep, or is mid-sleep — a
 // slept sandbox's VMM is stopped, and a sleeping one is paused for its

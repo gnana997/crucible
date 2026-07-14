@@ -190,6 +190,43 @@ func TestBackfillAdoptsBareImg(t *testing.T) {
 	}
 }
 
+func TestDiskBytesAccounting(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	if got := m.DiskBytes(); got != 0 {
+		t.Fatalf("DiskBytes with no volumes = %d, want 0", got)
+	}
+	if _, err := m.Create("data", testSize); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got := m.DiskBytes()
+	if got <= 0 {
+		t.Fatalf("DiskBytes = %d, want > 0 after Create", got)
+	}
+	// The backing file is sparse: a fresh ext4 image occupies its metadata,
+	// not the full provisioned size.
+	if got >= testSize {
+		t.Fatalf("DiskBytes = %d, want below the %d provisioned size (sparse)", got, int64(testSize))
+	}
+
+	if got := m.BackupDiskBytes(); got != 0 {
+		t.Fatalf("BackupDiskBytes with no backups = %d, want 0", got)
+	}
+	b, err := m.Backup("data")
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if got := m.BackupDiskBytes(); got <= 0 {
+		t.Fatalf("BackupDiskBytes = %d, want > 0 after Backup", got)
+	}
+	if err := m.DeleteBackup(b.ID); err != nil {
+		t.Fatalf("DeleteBackup: %v", err)
+	}
+	if got := m.BackupDiskBytes(); got != 0 {
+		t.Fatalf("BackupDiskBytes after delete = %d, want 0", got)
+	}
+}
+
 func TestBackupCreatesListsAndDeletes(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)

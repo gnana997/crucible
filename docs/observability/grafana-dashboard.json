@@ -124,6 +124,18 @@
       "targets": [
         { "expr": "app_sleep_total{app=~\"$app\"}", "legendFormat": "{{app}}", "refId": "A" }
       ]
+    },
+    {
+      "title": "Disk: snapshots / volumes / backups",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 }, "overrides": [] },
+      "targets": [
+        { "expr": "snapshot_disk_bytes", "legendFormat": "snapshots", "refId": "A" },
+        { "expr": "volume_disk_bytes", "legendFormat": "volumes", "refId": "B" },
+        { "expr": "backup_disk_bytes", "legendFormat": "backups", "refId": "C" }
+      ]
     }
   ]
 }

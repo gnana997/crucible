@@ -284,10 +284,45 @@ if wait_flip sleeper "$SOLD"; then
   else
     fail "wake did not restore exactly one VM: fc=$(fc_count)"
   fi
+
+  # SNAPSHOT RETENTION: repeated sleep/wake cycles must not accumulate
+  # snapshot sets — each sleep supersedes (deletes) the previous one, so a
+  # long-lived scale-to-zero app owns exactly ONE durable snapshot, and its
+  # disk usage is visible on /metrics (snapshot_disk_bytes, sparse-aware).
+  metric() { curl -s "$BASE_URL/metrics" 2>/dev/null | awk -v m="$1" '$1==m {print $2; exit}'; }
+  for _ in 1 2; do
+    cli app sleep sleeper >/dev/null 2>&1; wait_phase sleeper asleep >/dev/null
+    cli app wake sleeper  >/dev/null 2>&1; wait_phase sleeper running >/dev/null
+  done
+  cli app sleep sleeper >/dev/null 2>&1; wait_phase sleeper asleep >/dev/null
+  SNAPS="$(metric snapshots_active)"; SNAP_BYTES="$(metric snapshot_disk_bytes)"
+  if [[ "$SNAPS" == "1" ]]; then
+    pass "3 sleep/wake cycles left exactly 1 snapshot set (retention: latest-per-instance)"
+  else
+    fail "snapshot retention leak: snapshots_active=$SNAPS after 3 cycles (want 1)"
+  fi
+  if [[ -n "$SNAP_BYTES" ]] && awk -v b="$SNAP_BYTES" 'BEGIN{exit !(b>0)}'; then
+    pass "snapshot_disk_bytes reports the slept app's disk ($SNAP_BYTES bytes)"
+  else
+    fail "snapshot_disk_bytes missing or zero for a slept app: '$SNAP_BYTES'"
+  fi
 else
   fail "sleeper update never flipped (sleep-mid-drain not exercised)"
 fi
 cli app rm sleeper >/dev/null 2>&1; wait_fc 0 20 >/dev/null || true
+# Deleting the app must release its snapshot disk too (GC runs in the reconcile
+# teardown, so poll briefly rather than racing it).
+SNAP_BYTES_AFTER=""
+for _ in $(seq 1 20); do
+  SNAP_BYTES_AFTER="$(curl -s "$BASE_URL/metrics" 2>/dev/null | awk '$1=="snapshot_disk_bytes" {print $2; exit}')"
+  [[ "$SNAP_BYTES_AFTER" == "0" ]] && break
+  sleep 0.5
+done
+if [[ "$SNAP_BYTES_AFTER" == "0" ]]; then
+  pass "app rm released the snapshot disk (snapshot_disk_bytes 0)"
+else
+  fail "snapshot disk survived app rm: snapshot_disk_bytes=$SNAP_BYTES_AFTER (want 0)"
+fi
 
 # =============================================================================
 # DATA LEAKS / ISOLATION

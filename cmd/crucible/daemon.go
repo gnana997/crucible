@@ -544,6 +544,14 @@ Required flags:
 	// reconcile.
 	mx.SetActiveSandboxSource(func() int { return len(mgr.List()) })
 	mx.SetSnapshotSource(mgr.SnapshotCount)
+	// Disk gauges (same pull model): what snapshots, volumes, and backups
+	// actually occupy, so scale-to-zero density is visible as disk, not just
+	// counts. Volume/backup series exist only when volumes are enabled.
+	var volDisk, bakDisk func() int64
+	if volMgr != nil {
+		volDisk, bakDisk = volMgr.DiskBytes, volMgr.BackupDiskBytes
+	}
+	mx.SetDiskSources(mgr.SnapshotDiskBytes, volDisk, bakDisk)
 
 	// OCI image store (optional). Enabled by --image-dir; the injected
 	// Private-registry credential store (optional). Empty path disables it —

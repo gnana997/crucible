@@ -279,6 +279,38 @@ func (m *Manager) Remove(name string) error {
 	return nil
 }
 
+// DiskBytes returns the allocated on-disk bytes of all volume backing files
+// (sparse-aware: a mostly-empty volume counts what it occupies, not its
+// provisioned size). Gauge source, read at scrape time; errors count as 0 — a
+// metrics read must never fail.
+func (m *Manager) DiskBytes() int64 {
+	recs, err := m.st.list()
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, r := range recs {
+		total += fsutil.AllocatedBytes(filepath.Join(m.dir, r.Name+".img"))
+	}
+	return total
+}
+
+// BackupDiskBytes returns the allocated on-disk bytes of all volume backups.
+// Reflink-shared blocks (a same-filesystem backup) are counted per file, so
+// this reports logical allocation, not unique physical blocks. Gauge source,
+// same error contract as DiskBytes.
+func (m *Manager) BackupDiskBytes() int64 {
+	recs, err := m.st.listBackups()
+	if err != nil {
+		return 0
+	}
+	var total int64
+	for _, r := range recs {
+		total += fsutil.AllocatedBytes(r.Path)
+	}
+	return total
+}
+
 // Sync fsyncs a volume's backing file so writes the host buffered for it
 // (cache_type=Writeback defers them until a guest FLUSH) reach persistent
 // storage. Called at snapshot-sleep time: Firecracker does NOT flush drive

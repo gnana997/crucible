@@ -109,6 +109,33 @@ func (m *Metrics) SetSnapshotSource(fn func() int) {
 	}, func() float64 { return float64(fn()) }))
 }
 
+// SetDiskSources registers the disk-usage gauges — snapshot_disk_bytes,
+// volume_disk_bytes, backup_disk_bytes — each read from its source at scrape
+// time, like SetSnapshotSource. All three are sparse-aware (allocated blocks,
+// not logical size): scale-to-zero density must not silently become disk
+// bloat, and these are what a capacity watermark reads. A nil source skips its
+// gauge (no volume manager → no volume/backup series). Call at most once.
+func (m *Metrics) SetDiskSources(snapshots, volumes, backups func() int64) {
+	if m == nil {
+		return
+	}
+	register := func(name, help string, fn func() int64) {
+		if fn == nil {
+			return
+		}
+		m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: name,
+			Help: help,
+		}, func() float64 { return float64(fn()) }))
+	}
+	register("snapshot_disk_bytes",
+		"Allocated on-disk bytes of registered snapshots (state + memory + rootfs; sparse-aware).", snapshots)
+	register("volume_disk_bytes",
+		"Allocated on-disk bytes of volume backing files (sparse-aware).", volumes)
+	register("backup_disk_bytes",
+		"Allocated on-disk bytes of volume backups (sparse-aware; reflink-shared blocks counted per file).", backups)
+}
+
 // IncInternalRequest bumps app_internal_requests_total. Call once per authorized
 // app→app request the ingress proxy routes.
 func (m *Metrics) IncInternalRequest() {

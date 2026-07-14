@@ -44,12 +44,37 @@ Plus the existing global series: `sandboxes_active`, `sandboxes_created_total`,
 `snapshots_active`, `fork_duration_seconds`, `snapshot_restore_duration_seconds`,
 `app_wake_latency_seconds` (aggregate histogram), `app_internal_requests_total`.
 
+### Disk usage
+
+Scale-to-zero trades RAM for disk: every sleeping app owns a snapshot set.
+Three global gauges make that visible, so density never silently becomes disk
+bloat:
+
+| Metric | Meaning |
+|---|---|
+| `snapshot_disk_bytes` | allocated bytes of all registered snapshots (state + memory + rootfs) |
+| `volume_disk_bytes` | allocated bytes of volume backing files |
+| `backup_disk_bytes` | allocated bytes of volume backups |
+
+All three are **sparse-aware** (allocated blocks, not logical file size): a
+lazily-faulted memory file or a mostly-empty volume counts what it actually
+occupies. Reflink-shared blocks are counted per file, so on btrfs/XFS the
+gauges report logical allocation, an upper bound on unique physical usage.
+The volume/backup series exist only when volumes are enabled (`--volume-dir`).
+
+Retention contract behind `snapshot_disk_bytes`: a sleeping app owns **exactly
+one snapshot set** — each sleep supersedes and deletes the previous one — plus
+at most one golden template per scaled-out app generation, and deleting an app
+releases its snapshots. Growth in this gauge tracks the number of slept apps,
+not their sleep history.
+
 ### Reference dashboard
 
 Import [`docs/observability/grafana-dashboard.json`](observability/grafana-dashboard.json)
 into Grafana (Dashboards → Import → upload JSON, pick your Prometheus source). It
 charts RPS and 5xx ratio per app, request-latency percentiles, replicas
-(desired vs ready), the fraction of the fleet asleep, and wake-latency p95.
+(desired vs ready), the fraction of the fleet asleep, wake-latency p95, and
+disk usage (snapshots / volumes / backups).
 
 ## Profiling — `--pprof-listen`
 

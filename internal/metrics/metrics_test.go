@@ -15,6 +15,28 @@ func scrape(t *testing.T, m *Metrics) (int, string) {
 	return rec.Code, rec.Body.String()
 }
 
+func TestDiskGauges(t *testing.T) {
+	m := New()
+	// backups source nil: its series must be absent, the others present.
+	m.SetDiskSources(func() int64 { return 4096 }, func() int64 { return 1 << 20 }, nil)
+
+	code, body := scrape(t, m)
+	if code != 200 {
+		t.Fatalf("scrape status = %d, want 200", code)
+	}
+	for _, want := range []string{
+		"snapshot_disk_bytes 4096",
+		"volume_disk_bytes 1.048576e+06",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "backup_disk_bytes") {
+		t.Error("backup_disk_bytes present despite nil source")
+	}
+}
+
 func TestExposition(t *testing.T) {
 	m := New()
 	m.SetActiveSandboxSource(func() int { return 3 })
