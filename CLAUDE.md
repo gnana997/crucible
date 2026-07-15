@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.7.2 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests **+ egress bytes**), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.7.3 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -140,8 +140,16 @@ chain's `ct established` short-circuit) counts each sandbox's accepted external
 outbound bytes via a named `egbytes_<id>` counter; `network.Manager.EgressByteMap`
 → `sandbox.Manager` (re-keys sanitized→real id) → the ledger folds it as a
 per-instance delta (redeploy resets the counter → summed, not lost/double). Only
-outbound + external (downloads + intra-host DNS/app→app excluded). See the ROADMAP
-for what's next (incremental backups, wildcard/DNS-01, multi-host fleet).
+outbound + external (downloads + intra-host DNS/app→app excluded). **v0.7.3** adds
+**app lifecycle events** — an in-memory ring (`internal/appevents`, `--events-buffer`)
+of created/phase_changed/health/domain/deleted transitions, served by `GET /events`
+(cursor-follow, read-gated), `crucible events -f`, and OTLP log records. Emitted via
+a Manager `emitPhase` dedup helper: exact sleep/wake boundaries emit directly (with
+`wake_latency_ms`) and a reconcile-pass sweep (`emitPhaseChanges`, step 4 of
+reconcile) catches reconciler-driven transitions centrally — no missed net phase
+change, no 12-site refactor. Resolves the CP billing poll-vs-push question (exact
+awake-intervals). NEXT: **v0.7.4 secrets** (encrypted store, reference-based). See
+the ROADMAP for what's after (secrets, incremental backups, wildcard/DNS-01, fleet).
 
 ## Working style
 

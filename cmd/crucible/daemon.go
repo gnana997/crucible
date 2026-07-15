@@ -216,6 +216,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// memory, requests, storage) that survive a daemon restart. This is the
 		// accrual/flush cadence; it also bounds loss on an unclean crash.
 		usageInterval = fs.Duration("usage-interval", 60*time.Second, "cadence for accruing/persisting per-app usage metrics so they survive a daemon restart")
+		eventsBuffer  = fs.Int("events-buffer", 1024, "size of the in-memory app lifecycle event ring served by GET /events")
 		// App→app service networking (v0.5.1, experimental). Off by default:
 		// reachability is default-deny — an app reaches a peer only if its spec
 		// grants it (`app create --can-call <peer>`); ungranted calls get
@@ -642,6 +643,7 @@ Required flags:
 		} else {
 			appStore = as
 			appMgr = app.NewManager(as, srv.NewAppInstantiator(), logger)
+			appMgr.SetEventsBuffer(*eventsBuffer) // before any subscriber attaches
 			srv.SetAppManager(appMgr)
 			// Wire request-activity tracking + the L4 waking forwarders BEFORE Start
 			// so the idle monitor and wake-on-connect path are live from the first

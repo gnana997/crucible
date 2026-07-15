@@ -6,6 +6,35 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.7.3] — 2026-07-15
+
+App lifecycle events. A stream of what happened to your apps — created, booted,
+slept, woke, crashed, health-flipped, updated, deleted — where the metrics
+endpoint only gives a numeric snapshot. A control plane renders an activity
+timeline from it, and computes exact awake-intervals for billing from the precise
+sleep/wake timestamps a metrics poll can only approximate.
+
+### Added
+
+- **`GET /events?since=<seq>&app=<name>`** — a batch of app lifecycle events after
+  a monotonic cursor, plus the current max cursor; poll with it to follow (client
+  side, like `logs`). `read`-gated. Event types: `created`, `updated`, `deleted`,
+  `domain_added` / `domain_removed`, `phase_changed` (carrying `from`/`to` and, on
+  wake, `wake_latency_ms`), `health_changed`, `rollout`.
+- **`crucible events [--app <name>] [-f]`** and **`crucible app events <name>`** —
+  print recent events and tail new ones. SDK `Events(ctx, since, app)`.
+- **OTLP export** — each event is also pushed as a structured OTel log record
+  (`event.type`, `crucible.app`, `phase.from`/`phase.to`, `event.seq`) when OTLP
+  is configured, so an OTel-native consumer gets them without polling.
+- **`--events-buffer`** (default 1024) sizes the in-memory event ring.
+
+### Notes
+
+- The stream is a bounded in-memory ring: a consumer offline longer than the ring
+  loses old events, but usage **totals** stay correct (reconcile against
+  `/usage`) — it's a best-effort activity signal, not an event-sourcing log.
+  `phase_changed` de-dups (only an actual change emits), so a steady app is quiet.
+
 ## [0.7.2] — 2026-07-15
 
 Egress bytes — the fifth usage dimension. v0.7.1 metered compute, memory,

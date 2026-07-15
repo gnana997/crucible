@@ -163,7 +163,13 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.7.2: Egress bytes *(current)*
+### v0.7.3: App lifecycle events *(current)*
+
+A stream of app transitions — the activity timeline, and the exact sleep/wake timing that makes awake-interval billing precise ([observability.md](observability.md#app-lifecycle-events--get-events)).
+
+- [x] **App lifecycle event stream:** `created` / `phase_changed` (booted/slept/woke/crashed, carrying `from`/`to` + `wake_latency_ms`) / `health_changed` / `domain_*` / `deleted`, on `GET /events?since=&app=` (cursor-follow, `read`-gated), `crucible events -f` / `crucible app events`, and as OTLP log records. In-memory ring (`--events-buffer`, default 1024); a slow consumer never back-pressures an app (drop-on-full). Emitted via an `emitPhase` de-dup helper — exact sleep/wake boundaries emit directly, a reconcile-pass sweep catches the rest, so no net phase change is missed and none is emitted twice. `scripts/smoke_events.sh` drives create→boot→sleep→wake→update→delete and asserts the ordered, monotonic stream + a `?since` resume.
+
+### v0.7.2: Egress bytes
 
 The fifth usage dimension, completing the ledger ([observability.md](observability.md#persistent-usage-metrics)).
 

@@ -383,6 +383,15 @@ func (m *Manager) SetUsageInterval(d time.Duration) {
 // Start; nil leaves egress at 0.
 func (m *Manager) SetEgressSource(f func() map[string]uint64) { m.egress = f }
 
+// SetEventsBuffer sizes the app lifecycle event ring (default 1024). Call before
+// Start / before any subscriber attaches — it recreates the store, which is
+// empty until the reconciler runs. A non-positive size is ignored.
+func (m *Manager) SetEventsBuffer(n int) {
+	if n > 0 {
+		m.events = appevents.New(n)
+	}
+}
+
 // RecordRequest attributes one ingress-proxy request (by HTTP status class) to
 // an app's durable usage counters. Cheap (in-memory bump); a name that maps to
 // no live app is dropped. Wired into the proxy's OnRequest callback.

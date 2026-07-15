@@ -180,6 +180,41 @@ back-pressure the app (records drop rather than block). Disable with
 `--otlp-logs=false` (metrics-only). Logs remain locally readable via `crucible
 logs` / `crucible app logs -f` regardless.
 
+## App lifecycle events — `GET /events`
+
+A stream of app lifecycle transitions — `created`, `phase_changed`
+(booted / slept / woke / crashed), `health_changed`, `domain_added` /
+`domain_removed`, `updated`, `deleted`. Where `/metrics` is a numeric snapshot,
+this is the *timeline*: what happened, in order, with exact timestamps. A control
+plane renders an activity feed from it and — because `phase_changed` carries the
+exact sleep/wake moments — computes precise awake-intervals for billing that a
+60s metrics poll can only approximate.
+
+```bash
+crucible events -f                 # tail all apps
+crucible app events web -f         # tail one app
+```
+
+```
+2026-07-15T20:52:01Z  web  created
+2026-07-15T20:52:04Z  web  phase pending→running   (reconcile)
+2026-07-15T21:07:36Z  web  phase running→asleep    (sleep)
+2026-07-15T21:09:12Z  web  phase asleep→running    (wake)
+```
+
+- **`GET /events?since=<seq>&app=<name>`** returns a batch of events after the
+  cursor plus the current max cursor; poll with that cursor to follow (client
+  side, like `logs`). `read`-gated. `app=` filters to one app.
+- **OTLP**: each event is also pushed as a structured OTel **log record**
+  (`event.type`, `crucible.app`, `phase.from`/`phase.to`, `event.seq`) when OTLP
+  is configured — so an OTel-native consumer gets them without polling.
+
+The stream is an **in-memory ring** (`--events-buffer`, default 1024): a consumer
+offline longer than the ring loses old events, but usage **totals** stay correct
+(reconcile against [`/usage`](#persistent-usage-metrics)) — the ring is a
+best-effort activity signal, not an event-sourcing log. `phase_changed` de-dups:
+only an actual phase change emits, so a steady app is quiet.
+
 ## Traces over OTLP (coming)
 
 Trace export is the next milestone (deploy / sleep / wake / proxy spans).
