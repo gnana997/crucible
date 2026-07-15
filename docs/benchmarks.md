@@ -131,3 +131,31 @@ The end-to-end serverless story — a **postgres** on a volume, snapshot-wake vs
 ## Mass wake (the herd)
 
 Scale-to-zero packs more sleeping apps than host RAM, so "everything wakes at once" is a designed-for scenario. `sudo … N=20 MEM=256 scripts/bench_masswake.sh` boots N scale-to-zero apps, drains them with `app sleep --all`, then fires N **concurrent** wakes and reports the wake-latency distribution (p50/p90/p99/max, both client end-to-end and daemon-measured), how many wakes the `--wake-min-free-mib` floor deferred to a clean `503` + retry (graceful degradation, not failure), and the host MemAvailable low-water mark. It only fails if an app never serves even after a sequential retry. Knobs: `N`, `MEM`, `WAKE_MIN_FREE`, `KEEP=1`.
+
+## Encryption overhead (v0.8.0)
+
+[Volume encryption](encryption.md) at rest is per-volume LUKS (AES-256-XTS). What does it cost? `scripts/bench_encryption.sh` A/Bs a plaintext vs. an encrypted volume across the paths that have a real cost, on a **reflink btrfs** `--work-base` (so wake isn't byte-copy-inflated) and an **AES-NI** host. Single box, same caveat as the rest of this page.
+
+| Metric | Plaintext | Encrypted | Cost |
+|---|---|---|---|
+| Snapshot wake, daemon restore | ~114 ms | ~157 ms | **+~43 ms** (one `luksOpen`) |
+| Snapshot wake, client e2e | ~150 ms | ~197 ms | **+~47 ms**, still **sub-second** |
+| Volume create (format) | ~29 ms | ~200–250 ms | one-time `luksFormat`, once per volume |
+| Secret injection at boot (envFrom, 25-key bundle) | — | — | **no measurable cost** (within boot noise) |
+| AES-XTS-512 cipher (host `cryptsetup benchmark`) | — | ~8–9 GB/s enc/dec | dwarfs real I/O — never the bottleneck |
+
+The shape:
+
+- **Wake pays a fixed one-time cost** — one `luksOpen` when the volume re-attaches on wake (mostly the `cryptsetup` process spawn, not the KDF, which is a fast keyslot). It's ~45 ms *added*, not a proportional tax, and the app is still up in well under a quarter-second.
+- **Encrypting the memory snapshot is free.** With `--work-base` itself on dm-crypt (the full "nothing plaintext on disk" setup — `WORK_ENCRYPT=1` in the bench), the wake baseline is unchanged (~114 ms either way): device-mapper decrypts pages as the snapshot pager faults them in, so there's no per-page cost. Encrypt `--work-base` for complete at-rest coverage without a wake penalty.
+- **Steady-state I/O is not cipher-bound.** AES-XTS runs at ~8–9 GB/s here — far above any real disk or guest→host rate — so dm-crypt never bounds throughput. (The bench's guest-write row is dominated by the host Writeback cache, not the cipher; read it as guest→host bandwidth, not encryption cost.)
+- **Secrets injection is free** — decrypting a bundle and merging its keys at boot is lost in the noise of VM startup.
+
+Reproduce (needs `cryptsetup`, `mkfs.btrfs`, a pullable `nginx:alpine`):
+
+```bash
+sudo … scripts/bench_encryption.sh                  # per-volume encryption on a reflink work root
+sudo … WORK_ENCRYPT=1 scripts/bench_encryption.sh   # also encrypt --work-base (memory snapshot at rest)
+```
+
+The `WORK_ENCRYPT=1` run also confirms the startup advisory goes silent on an encrypted `--work-base` (and fires on a plaintext one). Knobs: `R_WAKE`, `IO_MIB`, `SECRET_KEYS`, `VOL_SIZE`, `MEM`, `PORT_BASE`, `KEEP=1`.

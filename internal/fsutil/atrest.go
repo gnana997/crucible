@@ -3,9 +3,12 @@ package fsutil
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 // AtRest classifies how the storage backing a path protects data at rest. It is
@@ -39,19 +42,27 @@ func PathAtRest(path string) AtRest {
 	if err != nil {
 		return AtRestUnknown
 	}
-	return classifyAtRest(abs, mi, sysfsDMUUID, sysfsSlaves)
+	return classifyAtRest(abs, mi, statDevMajMin, sysfsDMUUID, sysfsSlaves)
 }
 
-// classifyAtRest is the testable core: it takes the mountinfo bytes and the two
-// sysfs lookups as seams so a test can drive any device topology without root.
-func classifyAtRest(path string, mountinfo []byte, dmUUID func(majMin string) (string, bool), slaves func(majMin string) []string) AtRest {
-	majMin, fstype, ok := backingMount(path, mountinfo)
+// classifyAtRest is the testable core: it takes the mountinfo bytes, a device
+// stat, and the two sysfs lookups as seams so a test can drive any device
+// topology without root.
+func classifyAtRest(path string, mountinfo []byte, statDev func(devPath string) (string, bool), dmUUID func(majMin string) (string, bool), slaves func(majMin string) []string) AtRest {
+	majMin, fstype, source, ok := backingMount(path, mountinfo)
 	if !ok {
 		return AtRestUnknown
 	}
 	switch fstype {
 	case "tmpfs", "ramfs":
 		return AtRestEphemeral
+	}
+	// Prefer the maj:min of the mount's SOURCE device over the mountinfo field:
+	// btrfs (and other multi-device filesystems) report a synthetic anon device
+	// number there, so trusting it would miss a dm-crypt backing device entirely.
+	// The source path (e.g. /dev/mapper/foo, /dev/sda1) stats to the real device.
+	if mm, ok := statDev(source); ok {
+		majMin = mm
 	}
 	return deviceAtRest(majMin, dmUUID, slaves, 0)
 }
@@ -88,8 +99,9 @@ func deviceAtRest(majMin string, dmUUID func(string) (string, bool), slaves func
 }
 
 // backingMount finds the mountinfo entry whose mount point most specifically
-// covers path, returning its device major:minor and filesystem type.
-func backingMount(path string, mountinfo []byte) (majMin, fstype string, ok bool) {
+// covers path, returning its device major:minor, filesystem type, and source
+// device (e.g. /dev/mapper/foo).
+func backingMount(path string, mountinfo []byte) (majMin, fstype, source string, ok bool) {
 	best := ""
 	sc := bufio.NewScanner(bytes.NewReader(mountinfo))
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -103,7 +115,7 @@ func backingMount(path string, mountinfo []byte) (majMin, fstype string, ok bool
 		right := strings.Fields(line[sep+3:])
 		// left: id parent maj:min root mountpoint options [optional fields…]
 		// right: fstype source superopts
-		if len(left) < 5 || len(right) < 1 {
+		if len(left) < 5 || len(right) < 2 {
 			continue
 		}
 		mp := left[4]
@@ -111,10 +123,22 @@ func backingMount(path string, mountinfo []byte) (majMin, fstype string, ok bool
 			continue
 		}
 		if len(mp) >= len(best) { // the longest (most specific) mount point wins
-			best, majMin, fstype, ok = mp, left[2], right[0], true
+			best, majMin, fstype, source, ok = mp, left[2], right[0], right[1], true
 		}
 	}
 	return
+}
+
+// statDevMajMin stats a device path and returns its block-device major:minor.
+func statDevMajMin(devPath string) (string, bool) {
+	var st unix.Stat_t
+	if err := unix.Stat(devPath, &st); err != nil {
+		return "", false
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFBLK {
+		return "", false
+	}
+	return fmt.Sprintf("%d:%d", unix.Major(st.Rdev), unix.Minor(st.Rdev)), true
 }
 
 // mountCovers reports whether mount point mp contains path.
