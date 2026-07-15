@@ -51,10 +51,14 @@ seized, or decommissioned disk), not confidential computing.
   holds the live device-mapper) — the AWS-EBS model. Closing that gap needs
   confidential computing, which Firecracker does not support and which is
   incompatible with the lazy-paging behind sub-second wake.
+- A **slept** app's memory snapshot (which can hold cached rows) is written under
+  `--work-base`. Put that directory on an encrypted filesystem to keep it
+  ciphertext at rest — device-mapper encryption is transparent, so the snapshot
+  pager pays no wake cost; the daemon deliberately does not encrypt the memory file
+  itself, which would tax the wake path. When volume encryption is on and
+  `--work-base` is provably on unencrypted storage, the daemon **warns at startup**.
 - `volume clone` of an encrypted volume is not yet supported (an independent clone
-  needs a fresh key); restore a backup instead. To encrypt snapshot-memory and
-  rootfs too, put `--work-base` on an encrypted filesystem — device-mapper
-  encryption is transparent, so everything above it works unchanged.
+  needs a fresh key); restore a backup instead.
 
 ## [0.7.4] — 2026-07-15
 

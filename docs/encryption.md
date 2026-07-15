@@ -141,11 +141,49 @@ the lazy-paging that powers sub-second [scale-to-zero](serverless.md) wake. So t
 honest claim is **"encryption at rest with per-tenant keys and crypto-shred,"**
 never "we can't read your data."
 
-## Snapshots and rootfs
+## Slept apps and the memory snapshot
 
-Volume encryption covers the **data** volumes. To encrypt the rest of what the
-daemon writes — snapshot memory files and the writable rootfs under
-`--work-base` — put that directory on an encrypted filesystem (LUKS / dm-crypt).
-Because device-mapper encryption is transparent, everything above it (including
-the snapshot pager) works unchanged, and every byte the daemon writes is
-ciphertext at rest.
+Volume encryption covers a workload's **data** on disk. There is one more surface
+to understand for a **slept** [scale-to-zero](serverless.md) app, and it's worth
+being precise about because it's where crucible differs from a stateless
+serverless-database design.
+
+When crucible sleeps an app it **snapshots the whole VM, including its RAM**, to a
+memory file under `--work-base`, so it can **wake warm in ~170 ms** — buffers hot,
+no reconnect, no cold query. That snapshot can contain cached rows (a database's
+`shared_buffers`), so **the memory file is at-rest data too**. A stateless design
+instead discards RAM on suspend and reconnects to storage on wake — no memory
+file, but a **cold** wake that re-warms its buffers on the first queries.
+crucible trades that one extra surface for a much faster wake.
+
+So there are two honest ways to keep a slept database encrypted at rest, and you
+choose per the tradeoff you want:
+
+- **Warm (default):** keep snapshot-wake, and put `--work-base` on an **encrypted
+  filesystem** (LUKS / dm-crypt). Because device-mapper encryption is transparent
+  — the kernel decrypts pages as the snapshot pager faults them in — this adds
+  **no per-page wake cost**, and every byte the daemon writes (the memory file,
+  the writable rootfs, the volume containers) is ciphertext at rest. This is the
+  recommended setup.
+- **Cold:** a stop/start sleep that never writes RAM to disk — zero
+  memory-at-rest surface, at the cost of a cold wake.
+
+> ℹ️ The daemon does **not** encrypt the memory file itself: doing so would force
+> the wake path to decrypt every faulted page, taxing exactly the sub-second wake
+> that scale-to-zero depends on. An encrypted `--work-base` gets the same result
+> for free — the kernel does the crypto below the pager.
+
+### Startup advisory
+
+When volume encryption is enabled but the daemon can positively see that
+`--work-base` sits on **unencrypted** storage, it logs a warning at startup:
+
+```
+volume encryption is on but --work-base is on unencrypted storage: a slept app's
+memory snapshot (cached rows, buffers) is written to disk in the clear. Put
+--work-base on a dm-crypt/LUKS filesystem for full encryption at rest.
+```
+
+It stays silent when `--work-base` is on an encrypted or ephemeral (tmpfs)
+filesystem, or when the backing storage can't be classified — so a warning means
+there is really something to fix.

@@ -61,8 +61,8 @@ queries. Left untouched, one pooled connection would keep the app awake forever.
 So by default the forwarder **reaps a connection after it has been byte-idle for
 `--connection-idle-timeout`** (which defaults to `--idle-timeout`). The pooled
 connection is closed; the client's pool re-establishes it on its next query (the
-Neon / Upstash model); when the client is truly done, connections drain to zero and
-the app sleeps. A bursty-but-active client keeps its connection alive and the app
+standard model for serverless databases); when the client is truly done,
+connections drain to zero and the app sleeps. A bursty-but-active client keeps its connection alive and the app
 awake, correctly, because it is not idle.
 
 This is the mode for **postgres, mysql, redis GET/SET, mongo**: anything

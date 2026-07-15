@@ -29,6 +29,7 @@ import (
 	"github.com/gnana997/crucible/internal/agentbin"
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/daemon"
+	"github.com/gnana997/crucible/internal/fsutil"
 	"github.com/gnana997/crucible/internal/ingress"
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/logstore"
@@ -535,6 +536,13 @@ Required flags:
 				return 2
 			}
 			logger.Info("volume encryption enabled", "default_encrypt", *volumeEncrypt)
+			// Volume encryption protects the data volume, but a slept app's memory
+			// snapshot (which can hold cached rows) is written under --work-base — in
+			// the clear unless that sits on an encrypted filesystem. Advise when we
+			// can positively see it is plaintext; stay silent when unsure.
+			if fsutil.PathAtRest(*workBase) == fsutil.AtRestPlaintext {
+				logger.Warn("volume encryption is on but --work-base is on unencrypted storage: a slept app's memory snapshot (cached rows, buffers) is written to disk in the clear. Put --work-base on a dm-crypt/LUKS filesystem for full encryption at rest — see docs/encryption.md", "work_base", *workBase)
+			}
 		} else if *volumeEncrypt {
 			_, _ = fmt.Fprintf(stderr, "error: --volume-encrypt requires a master key (--volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY)\n")
 			return 2
