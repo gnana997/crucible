@@ -6,6 +6,10 @@ from __future__ import annotations
 from pydantic import AwareDatetime, BaseModel, Field, conint
 
 
+class AddDomainReq(BaseModel):
+    domain: str | None = None
+
+
 class AppExecReq(BaseModel):
     cmd: list[str] | None = None
     cwd: str | None = None
@@ -33,6 +37,10 @@ class CloneVolReq(BaseModel):
 class CreateVolumeRequest(BaseModel):
     name: str | None = None
     size_bytes: int | None = None
+
+
+class DomainListResponse(BaseModel):
+    domains: list[str] | None = None
 
 
 class ErrorResponse(BaseModel):
@@ -282,8 +290,10 @@ class CreateAppRequest(BaseModel):
     can_call: list[str] | None = None
     desired_state: str | None = None
     disk_bytes: int | None = None
+    domains: list[str] | None = None
     env: dict[str, str] | None = None
     health: HealthCheck | None = None
+    http_redirect: bool | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
     name: str | None = None
@@ -295,6 +305,7 @@ class CreateAppRequest(BaseModel):
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
+    tls_mode: str | None = None
     vcpus: int | None = None
     volumes: list[VolumeMount] | None = None
 
@@ -346,8 +357,10 @@ class SnapshotListResponse(BaseModel):
 class UpdateAppReq(BaseModel):
     can_call: list[str] | None = None
     disk_bytes: int | None = None
+    domains: list[str] | None = None
     env: dict[str, str] | None = None
     health: HealthCheck | None = None
+    http_redirect: bool | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
     name: str | None = None
@@ -359,6 +372,7 @@ class UpdateAppReq(BaseModel):
     restart: WireRestartPolicy | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
+    tls_mode: str | None = None
     vcpus: int | None = None
     volumes: list[VolumeMount] | None = None
 
@@ -395,9 +409,11 @@ class AppResponse(BaseModel):
     created_at: AwareDatetime | None = None
     desired_state: str | None = None
     disk_bytes: int | None = None
+    domains: list[str] | None = None
     env: dict[str, str] | None = None
     generation: conint(ge=0) | None = None
     health: HealthCheck | None = None
+    http_redirect: bool | None = None
     id: str | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
@@ -411,6 +427,7 @@ class AppResponse(BaseModel):
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     status: AppStatus | None = None
+    tls_mode: str | None = None
     updated_at: AwareDatetime | None = None
     vcpus: int | None = None
     volumes: list[VolumeMount] | None = None

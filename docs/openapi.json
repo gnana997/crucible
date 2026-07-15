@@ -286,6 +286,198 @@
         }
       }
     },
+    "/apps/{name}/domains": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "List an app's custom domains",
+        "description": "The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each.",
+        "operationId": "listAppDomains",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DomainListResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Attach a custom domain to an app",
+        "description": "Attaches a custom domain (FQDN, globally unique — one domain to one app). A request whose Host is the domain then routes to this app, and in terminate mode the proxy obtains a cert for it.",
+        "operationId": "addAppDomain",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddDomainReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/apps/{name}/domains/{domain}": {
+      "delete": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Detach a custom domain",
+        "description": "Detaches a custom domain from the app (idempotent).",
+        "operationId": "removeAppDomain",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          },
+          {
+            "name": "domain",
+            "in": "path",
+            "description": "The custom domain (FQDN) to detach.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "The custom domain (FQDN) to detach."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/apps/{name}/exec": {
       "get": {
         "tags": [
@@ -2567,6 +2759,14 @@
   },
   "components": {
     "schemas": {
+      "AddDomainReq": {
+        "type": "object",
+        "properties": {
+          "domain": {
+            "type": "string"
+          }
+        }
+      },
       "AppExecReq": {
         "type": "object",
         "properties": {
@@ -2623,6 +2823,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "env": {
             "type": "object",
             "additionalProperties": {
@@ -2635,6 +2841,10 @@
           },
           "health": {
             "$ref": "#/components/schemas/HealthCheck"
+          },
+          "http_redirect": {
+            "type": "boolean",
+            "nullable": true
           },
           "id": {
             "type": "string"
@@ -2677,6 +2887,9 @@
           },
           "status": {
             "$ref": "#/components/schemas/AppStatus"
+          },
+          "tls_mode": {
+            "type": "string"
           },
           "updated_at": {
             "type": "string",
@@ -2837,6 +3050,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "env": {
             "type": "object",
             "additionalProperties": {
@@ -2845,6 +3064,10 @@
           },
           "health": {
             "$ref": "#/components/schemas/HealthCheck"
+          },
+          "http_redirect": {
+            "type": "boolean",
+            "nullable": true
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
@@ -2881,6 +3104,9 @@
           },
           "sleep": {
             "$ref": "#/components/schemas/SleepPolicy"
+          },
+          "tls_mode": {
+            "type": "string"
           },
           "vcpus": {
             "type": "integer"
@@ -2962,6 +3188,18 @@
           "size_bytes": {
             "type": "integer",
             "format": "int64"
+          }
+        }
+      },
+      "DomainListResponse": {
+        "type": "object",
+        "properties": {
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
           }
         }
       },
@@ -3512,6 +3750,12 @@
             "type": "integer",
             "format": "int64"
           },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "env": {
             "type": "object",
             "additionalProperties": {
@@ -3520,6 +3764,10 @@
           },
           "health": {
             "$ref": "#/components/schemas/HealthCheck"
+          },
+          "http_redirect": {
+            "type": "boolean",
+            "nullable": true
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
@@ -3556,6 +3804,9 @@
           },
           "sleep": {
             "$ref": "#/components/schemas/SleepPolicy"
+          },
+          "tls_mode": {
+            "type": "string"
           },
           "vcpus": {
             "type": "integer"

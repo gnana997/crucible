@@ -53,6 +53,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{name}/domains": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an app's custom domains
+         * @description The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each.
+         */
+        get: operations["listAppDomains"];
+        put?: never;
+        /**
+         * Attach a custom domain to an app
+         * @description Attaches a custom domain (FQDN, globally unique — one domain to one app). A request whose Host is the domain then routes to this app, and in terminate mode the proxy obtains a cert for it.
+         */
+        post: operations["addAppDomain"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{name}/domains/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Detach a custom domain
+         * @description Detaches a custom domain from the app (idempotent).
+         */
+        delete: operations["removeAppDomain"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{name}/exec": {
         parameters: {
             query?: never;
@@ -672,6 +716,9 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AddDomainReq: {
+            domain?: string;
+        };
         AppExecReq: {
             cmd?: string[] | null;
             cwd?: string;
@@ -690,11 +737,13 @@ export interface components {
             desired_state?: string;
             /** Format: int64 */
             disk_bytes?: number;
+            domains?: string[];
             env?: {
                 [key: string]: string;
             };
             generation?: number;
             health?: components["schemas"]["HealthCheck"];
+            http_redirect?: boolean | null;
             id?: string;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
@@ -708,6 +757,7 @@ export interface components {
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             status?: components["schemas"]["AppStatus"];
+            tls_mode?: string;
             /** Format: date-time */
             updated_at?: string;
             vcpus?: number;
@@ -762,10 +812,12 @@ export interface components {
             desired_state?: string;
             /** Format: int64 */
             disk_bytes?: number;
+            domains?: string[];
             env?: {
                 [key: string]: string;
             };
             health?: components["schemas"]["HealthCheck"];
+            http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
             name?: string;
@@ -777,6 +829,7 @@ export interface components {
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
+            tls_mode?: string;
             vcpus?: number;
             volumes?: components["schemas"]["VolumeMount"][];
         };
@@ -804,6 +857,9 @@ export interface components {
             name?: string;
             /** Format: int64 */
             size_bytes?: number;
+        };
+        DomainListResponse: {
+            domains?: string[] | null;
         };
         ErrorResponse: {
             code?: string;
@@ -981,10 +1037,12 @@ export interface components {
             can_call?: string[];
             /** Format: int64 */
             disk_bytes?: number;
+            domains?: string[];
             env?: {
                 [key: string]: string;
             };
             health?: components["schemas"]["HealthCheck"];
+            http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
             name?: string;
@@ -996,6 +1054,7 @@ export interface components {
             restart?: components["schemas"]["WireRestartPolicy"];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
+            tls_mode?: string;
             vcpus?: number;
             volumes?: components["schemas"]["VolumeMount"][];
         };
@@ -1297,6 +1356,151 @@ export interface operations {
             path: {
                 /** @description App name (a DNS label, e.g. web). */
                 name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listAppDomains: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DomainListResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    addAppDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AddDomainReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    removeAppDomain: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+                /** @description The custom domain (FQDN) to detach. */
+                domain: string;
             };
             cookie?: never;
         };
