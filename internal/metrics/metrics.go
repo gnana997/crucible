@@ -109,6 +109,20 @@ func (m *Metrics) SetSnapshotSource(fn func() int) {
 	}, func() float64 { return float64(fn()) }))
 }
 
+// SetCertExpirySource registers cert_expiry_seconds: seconds until the
+// soonest-expiring managed TLS cert (the alerting signal — "a cert is about to
+// expire"). fn returns that value; a large sentinel means "no certs yet / all
+// far off", so a `< 7d` alert doesn't fire falsely. Pull-model. Call at most once.
+func (m *Metrics) SetCertExpirySource(fn func() float64) {
+	if m == nil || fn == nil {
+		return
+	}
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "cert_expiry_seconds",
+		Help: "Seconds until the soonest-expiring managed TLS certificate.",
+	}, fn))
+}
+
 // SetDiskSources registers the disk-usage gauges — snapshot_disk_bytes,
 // volume_disk_bytes, backup_disk_bytes — each read from its source at scrape
 // time, like SetSnapshotSource. All three are sparse-aware (allocated blocks,

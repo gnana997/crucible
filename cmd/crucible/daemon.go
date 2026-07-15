@@ -729,6 +729,20 @@ Required flags:
 						logger.Warn("cert pre-warm failed; on-demand will cover it", "domain", domain, "err", err)
 					}
 				})
+				// cert_expiry_seconds = soonest managed-cert expiry (alerting).
+				// Large sentinel (~1yr) when no certs yet, so a "<7d" alert can't
+				// fire falsely before the first issuance.
+				mx.SetCertExpirySource(func() float64 {
+					soonest := 365 * 24 * time.Hour
+					for _, d := range appMgr.AllDomains() {
+						if na, ok := tp.NotAfter(d); ok {
+							if left := time.Until(na); left < soonest {
+								soonest = left
+							}
+						}
+					}
+					return soonest.Seconds()
+				})
 				logger.Info("ingress TLS termination enabled", "cert_dir", cd, "acme", *acmeEmail != "", "ca", *acmeCA)
 			}
 			var internalAuthz ingress.CallerAuthorizer

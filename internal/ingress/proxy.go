@@ -190,6 +190,13 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
 	if !internal && p.certs != nil && p.certs.HandleHTTPChallenge(w, r) {
 		return
 	}
+	// HTTP→HTTPS redirect: a plaintext :80 request (r.TLS == nil) for a
+	// terminate-mode app is 301'd to https, unless the app opted out. Terminated
+	// :443 requests have r.TLS set and skip this.
+	if !internal && p.certs != nil && r.TLS == nil && p.resolver.HTTPSRedirect(r.Host) {
+		http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusMovedPermanently)
+		return
+	}
 	resolveSet, appName := p.resolver.ResolveSet, p.resolver.AppName
 	if internal {
 		resolveSet, appName = p.resolver.ResolveSetInternal, p.resolver.AppNameInternal

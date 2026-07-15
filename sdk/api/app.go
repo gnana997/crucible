@@ -60,6 +60,12 @@ type AppSpec struct {
 	// (which preserves them), and globally unique (one domain → one app).
 	Domains []string `json:"domains,omitempty"`
 
+	// HTTPRedirect controls whether the proxy 301-redirects plaintext :80
+	// requests for this app to HTTPS. Nil/true (default) redirects; false serves
+	// plain HTTP (for apps that legitimately need it). Ignored in passthrough
+	// mode (the guest owns :443) and when TLS termination is disabled.
+	HTTPRedirect *bool `json:"http_redirect,omitempty"`
+
 	// TLSMode selects how the ingress proxy handles this app's HTTPS on :443.
 	// "" / "terminate" (default): the proxy terminates TLS with a managed cert
 	// and forwards plaintext to the guest. "passthrough": the proxy pipes the

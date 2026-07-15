@@ -565,6 +565,20 @@ func (m *Manager) ListDomains(appName string) ([]string, error) {
 	return rec.Spec.Domains, nil
 }
 
+// AllDomains returns every custom domain attached to any app (for the TLS
+// layer's cert-expiry metric). Linear over the app records.
+func (m *Manager) AllDomains() []string {
+	recs, err := m.store.List()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, rec := range recs {
+		out = append(out, rec.Spec.Domains...)
+	}
+	return out
+}
+
 // domainRe is a permissive FQDN check: dot-separated labels of letters, digits,
 // and hyphens (not leading/trailing), at least two labels. Rejects wildcards
 // (not supported — see the TLS plan) and the empty string.

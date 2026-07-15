@@ -218,6 +218,71 @@ func TestProxyHTTP01ChallengeShortCircuits(t *testing.T) {
 	}
 }
 
+// TestProxyHTTPSRedirect: a plaintext :80 request for a terminate-mode app is
+// 301'd to https; an opted-out app (HTTPRedirect=false) and a passthrough app
+// are served plain HTTP (routed, not redirected).
+func TestProxyHTTPSRedirect(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "plain")
+	}))
+	defer backend.Close()
+	ip, port := backendAddr(t, backend.URL)
+
+	off := false
+	term := runningApp("web", port, "sbx_1") // default terminate
+	optOut := runningApp("plain", port, "sbx_2")
+	optOut.HTTPRedirect = &off
+	pass := runningApp("raw", port, "sbx_3")
+	pass.TLSMode = TLSModePassthrough
+	apps := fakeApps{apps: map[string]api.AppResponse{"web": term, "plain": optOut, "raw": pass}}
+	inst := fakeInstances{ips: map[string]string{"sbx_1": ip, "sbx_2": ip, "sbx_3": ip}}
+
+	// certs != nil enables the redirect path; the provider is otherwise unused here.
+	p := New(Config{
+		Resolver: NewResolver(apps, inst, "apps.local", "", 0),
+		Certs:    challengeCerts{},
+		Logger:   quietLog(),
+	})
+	front := httptest.NewServer(p)
+	defer front.Close()
+	// Don't auto-follow redirects.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	req := func(host string) *http.Response {
+		r, _ := http.NewRequest(http.MethodGet, front.URL+"/p?x=1", nil)
+		r.Host = host
+		resp, err := client.Do(r)
+		if err != nil {
+			t.Fatalf("request %s: %v", host, err)
+		}
+		return resp
+	}
+
+	// terminate-mode → 301 to https, preserving path+query.
+	resp := req("web.apps.local")
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("terminate app: status = %d, want 301", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "https://web.apps.local/p?x=1" {
+		t.Errorf("Location = %q, want https://web.apps.local/p?x=1", loc)
+	}
+	_ = resp.Body.Close()
+
+	// opted-out → served plain HTTP (200, routed).
+	resp = req("plain.apps.local")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("opted-out app: status = %d, want 200 (no redirect)", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	// passthrough → served plain HTTP on :80 (the guest owns :443, no redirect).
+	resp = req("raw.apps.local")
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("passthrough app: status = %d, want 200 (no redirect)", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+}
+
 func parsePort(s string) (int, error) {
 	n := 0
 	for _, c := range s {

@@ -212,6 +212,7 @@ type appSpecOpts struct {
 	netAllow, publish, env, netAllowCIDR, canCall []string
 	volumes                                       []string
 	netFullEgress, publishAll, keepConnections    bool
+	noHTTPSRedirect                               bool
 }
 
 func (a *appSpecOpts) register(cmd *cobra.Command) {
@@ -240,6 +241,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.BoolVar(&a.keepConnections, "keep-connections", false, "for a scale-to-zero published (TCP) app: never reap idle connections — sleep only when the last client disconnects (pub/sub, LISTEN, streaming)")
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
 	f.StringVar(&a.tlsMode, "tls-mode", "", "how the ingress proxy handles this app's HTTPS on :443: terminate (default, the proxy manages the cert) or passthrough (the guest owns its cert)")
+	f.BoolVar(&a.noHTTPSRedirect, "no-https-redirect", false, "serve plain HTTP on :80 for this app instead of 301-redirecting to HTTPS (only meaningful with TLS termination)")
 }
 
 func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
@@ -271,6 +273,10 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		Restart:    wire.RestartPolicy{Policy: a.restart},
 		CanCall:    a.canCall,
 		TLSMode:    a.tlsMode,
+	}
+	if a.noHTTPSRedirect {
+		off := false
+		spec.HTTPRedirect = &off
 	}
 	for _, p := range a.publish {
 		pm, perr := parsePublish(p)

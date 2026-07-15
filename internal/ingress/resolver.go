@@ -182,6 +182,22 @@ func (r *Resolver) TLSTerminate(sni string) bool {
 	return resp.TLSMode != TLSModePassthrough
 }
 
+// HTTPSRedirect reports whether a plaintext :80 request for this host should be
+// redirected to HTTPS. True only for a known, terminate-mode app that hasn't
+// opted out (AppSpec.HTTPRedirect == false) — a passthrough app owns :443, and
+// an opted-out app serves plain HTTP.
+func (r *Resolver) HTTPSRedirect(host string) bool {
+	name := r.appNameForHost(host)
+	if name == "" {
+		return false
+	}
+	resp, err := r.apps.GetByName(name)
+	if err != nil || resp.TLSMode == TLSModePassthrough {
+		return false
+	}
+	return resp.HTTPRedirect == nil || *resp.HTTPRedirect
+}
+
 // ResolveName resolves an app directly by name (not a request host) to its
 // current instance target. Used by the L4 waking forwarder, which already knows
 // which app it fronts and only needs the live guest IP (it supplies its own

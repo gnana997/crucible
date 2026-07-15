@@ -8,8 +8,13 @@ package tlscert
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/caddyserver/certmagic"
 	"go.uber.org/zap"
@@ -89,7 +94,53 @@ func New(c Config) (*Provider, error) {
 		})
 		p.magic.Issuers = []certmagic.Issuer{p.issuer}
 	}
+
+	// Manual certs: an operator can drop `<name>.crt` + `<name>.key` pairs into
+	// <CertDir>/manual/ to serve their own certificate for a domain (no ACME).
+	// Loaded unmanaged, so certmagic serves them by SNI but never renews them.
+	if _, err := p.loadManualCerts(filepath.Join(c.CertDir, "manual")); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// loadManualCerts loads every <name>.crt + <name>.key pair in dir as an
+// unmanaged certificate. A missing dir is fine (returns 0). Returns how many
+// pairs loaded.
+func (p *Provider) loadManualCerts(dir string) (int, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("tlscert: read manual dir %s: %w", dir, err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".crt") {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".crt")
+		crt := filepath.Join(dir, e.Name())
+		key := filepath.Join(dir, base+".key")
+		if _, err := os.Stat(key); err != nil {
+			continue // no matching key — skip
+		}
+		if _, err := p.magic.CacheUnmanagedCertificatePEMFile(context.Background(), crt, key, nil); err != nil {
+			return n, fmt.Errorf("tlscert: load manual cert %s: %w", crt, err)
+		}
+		n++
+	}
+	return n, nil
+}
+
+// NotAfter returns the expiry of a managed cert for domain, if one is cached.
+func (p *Provider) NotAfter(domain string) (time.Time, bool) {
+	cert, err := p.magic.CacheManagedCertificate(context.Background(), domain)
+	if err != nil || cert.Leaf == nil {
+		return time.Time{}, false
+	}
+	return cert.Leaf.NotAfter, true
 }
 
 // TLSConfig returns a *tls.Config whose GetCertificate loads or obtains the cert
