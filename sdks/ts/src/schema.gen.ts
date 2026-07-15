@@ -141,6 +141,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{name}/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an app's usage metrics
+         * @description One live app's persistent usage metrics, accrued to now. A deleted app's retained usage is only available via GET /usage.
+         */
+        get: operations["appUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/backups": {
         parameters: {
             query?: never;
@@ -589,6 +609,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List every app's usage metrics
+         * @description Persistent usage metrics: durable, cumulative per-app counters (compute, memory, requests, storage) that survive a daemon restart, including retained records for deleted apps. Values are cumulative — diff two readings to get usage over a window. 501 with no app manager.
+         */
+        get: operations["listUsage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/volumes": {
         parameters: {
             query?: never;
@@ -776,6 +816,24 @@ export interface components {
             replicas?: number;
             restarts?: number;
             sleep_count?: number;
+        };
+        AppUsage: {
+            app_id?: string;
+            app_name?: string;
+            /** Format: double */
+            compute_vcpu_seconds?: number;
+            /** Format: date-time */
+            finalized_at?: string | null;
+            /** Format: double */
+            memory_mib_seconds?: number;
+            requests?: number;
+            requests_by_code?: {
+                [key: string]: number;
+            };
+            /** Format: double */
+            storage_gib_seconds?: number;
+            /** Format: date-time */
+            updated_at?: string;
         };
         Backup: {
             consistency?: string;
@@ -1057,6 +1115,11 @@ export interface components {
             tls_mode?: string;
             vcpus?: number;
             volumes?: components["schemas"]["VolumeMount"][];
+        };
+        UsageListResponse: {
+            /** Format: int64 */
+            snapshot_unix_nano?: number;
+            usage?: components["schemas"]["AppUsage"][] | null;
         };
         Volume: {
             attached_to?: string;
@@ -1684,6 +1747,47 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    appUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description App name (a DNS label, e.g. web). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppUsage"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2918,6 +3022,35 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listUsage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageListResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

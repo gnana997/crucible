@@ -21,6 +21,27 @@ func newTestLedger(t *testing.T) (*usageLedger, *fakeClock, *Store) {
 
 const gib = int64(1) << 30
 
+// usageToAPI converts internal integer sub-units (millis) to the public
+// seconds-based shape; storage additionally converts MiB→GiB.
+func TestUsageToAPIConversion(t *testing.T) {
+	u := Usage{
+		AppID: "app_a", AppName: "a",
+		ComputeVCPUMillis: 7_200_000,     // 7200 s
+		MemoryMiBMillis:   3_600_000,     // 3600 s
+		StorageMiBMillis:  1024 * 60_000, // 1024 MiB · 60 s = 60 GiB·s
+		Requests:          4,
+		RequestsByCode:    map[string]uint64{"2xx": 3, "4xx": 1},
+	}
+	a := usageToAPI(u)
+	if a.ComputeVCPUSeconds != 7200 || a.MemoryMiBSeconds != 3600 || a.StorageGiBSeconds != 60 {
+		t.Fatalf("convert = compute %v mem %v storage %v; want 7200/3600/60",
+			a.ComputeVCPUSeconds, a.MemoryMiBSeconds, a.StorageGiBSeconds)
+	}
+	if a.Requests != 4 || a.RequestsByCode["2xx"] != 3 {
+		t.Fatalf("requests not carried: %d %v", a.Requests, a.RequestsByCode)
+	}
+}
+
 // The first observe on a fresh app must not back-fill any elapsed time — it only
 // seeds the state; accrual starts from there.
 func TestUsageNoBackfillOnFirstObserve(t *testing.T) {

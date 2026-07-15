@@ -263,3 +263,38 @@ type AddDomainRequest struct {
 type DomainListResponse struct {
 	Domains []string `json:"domains"`
 }
+
+// AppUsage is an app's persistent usage metrics: durable, cumulative,
+// monotonic counters the daemon keeps across restarts. Values are cumulative —
+// a reader takes deltas between two reads (and converts seconds→hours) itself;
+// the daemon does no rating or aggregation. Time-based dimensions accrue only
+// while a dimension is "live": compute/memory while the app is awake (a slept
+// app burns none), storage for as long as the volume exists (awake or asleep).
+type AppUsage struct {
+	AppID   string `json:"app_id"`
+	AppName string `json:"app_name"`
+
+	// ComputeVCPUSeconds is Σ vCPUs × seconds awake; MemoryMiBSeconds is
+	// Σ MemoryMiB × seconds awake; StorageGiBSeconds is Σ volume-GiB × seconds.
+	ComputeVCPUSeconds float64 `json:"compute_vcpu_seconds"`
+	MemoryMiBSeconds   float64 `json:"memory_mib_seconds"`
+	StorageGiBSeconds  float64 `json:"storage_gib_seconds"`
+
+	// Requests is total ingress-proxy requests routed to the app;
+	// RequestsByCode splits it by HTTP status class ("2xx", "4xx", …).
+	Requests       uint64            `json:"requests"`
+	RequestsByCode map[string]uint64 `json:"requests_by_code,omitempty"`
+
+	// UpdatedAt is when the counters were last persisted. FinalizedAt, when set,
+	// means the app was deleted and this is its retained final usage.
+	UpdatedAt   time.Time  `json:"updated_at"`
+	FinalizedAt *time.Time `json:"finalized_at,omitempty"`
+}
+
+// UsageListResponse is every app's usage (GET /usage), including retained
+// records for deleted apps. SnapshotUnixNano is when the reading was taken, so
+// a reader can reconcile cumulative values across reads.
+type UsageListResponse struct {
+	Usage            []AppUsage `json:"usage"`
+	SnapshotUnixNano int64      `json:"snapshot_unix_nano"`
+}

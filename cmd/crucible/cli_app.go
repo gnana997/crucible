@@ -36,8 +36,59 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppShellCmd(o),
 		newAppCaptureCmd(o),
 		newAppDomainCmd(o),
+		newAppUsageCmd(o),
 	)
 	return cmd
+}
+
+// newAppUsageCmd is `crucible app usage [<name>]` — the persistent usage
+// metrics (durable per-app counters that survive a daemon restart). With no
+// name it lists every app (including retained records for deleted apps).
+func newAppUsageCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "usage [name]",
+		Short: "Show durable per-app usage counters (compute/memory/requests/storage)",
+		Long: "Persistent usage metrics: cumulative, monotonic per-app counters the daemon\n" +
+			"keeps across restarts. Values are cumulative — diff two readings to get usage\n" +
+			"over a window. Compute/memory accrue only while an app is awake; storage\n" +
+			"accrues while its volume exists. With no name, lists every app.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var rows []api.AppUsage
+			if len(args) == 1 {
+				u, err := o.client().AppUsage(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				rows = []api.AppUsage{u}
+			} else {
+				resp, err := o.client().Usage(cmd.Context())
+				if err != nil {
+					return err
+				}
+				rows = resp.Usage
+			}
+			if o.isJSON() {
+				if len(args) == 1 {
+					return printJSON(cmd.OutOrStdout(), rows[0])
+				}
+				return printJSON(cmd.OutOrStdout(), rows)
+			}
+			tw := newTable(cmd.OutOrStdout())
+			_, _ = fmt.Fprintln(tw, "APP\tSTATE\tCOMPUTE(vCPU·h)\tMEM(MiB·h)\tSTORAGE(GiB·h)\tREQUESTS")
+			for _, u := range rows {
+				state := "live"
+				if u.FinalizedAt != nil {
+					state = "deleted"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%.4f\t%.4f\t%.4f\t%d\n",
+					u.AppName, state,
+					u.ComputeVCPUSeconds/3600, u.MemoryMiBSeconds/3600, u.StorageGiBSeconds/3600,
+					u.Requests)
+			}
+			return tw.Flush()
+		},
+	}
 }
 
 // newAppDomainCmd is `crucible app domain add|rm|ls` — manage the custom domains

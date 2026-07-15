@@ -17,6 +17,18 @@ class AppExecReq(BaseModel):
     timeout_s: int | None = None
 
 
+class AppUsage(BaseModel):
+    app_id: str | None = None
+    app_name: str | None = None
+    compute_vcpu_seconds: float | None = None
+    finalized_at: AwareDatetime | None = None
+    memory_mib_seconds: float | None = None
+    requests: conint(ge=0) | None = None
+    requests_by_code: dict[str, conint(ge=0)] | None = None
+    storage_gib_seconds: float | None = None
+    updated_at: AwareDatetime | None = None
+
+
 class Backup(BaseModel):
     consistency: str | None = None
     created_at: AwareDatetime | None = None
@@ -204,6 +216,11 @@ class SnapshotResponse(BaseModel):
     source_id: str | None = None
     state_path: str | None = None
     vcpus: int | None = None
+
+
+class UsageListResponse(BaseModel):
+    snapshot_unix_nano: int | None = None
+    usage: list[AppUsage] | None = None
 
 
 class Volume(BaseModel):

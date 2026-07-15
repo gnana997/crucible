@@ -36,6 +36,32 @@ func TestAppStateMetrics(t *testing.T) {
 	}
 }
 
+func TestAppUsageMetrics(t *testing.T) {
+	m := New()
+	m.SetUsageSource(func() []AppUsageStat {
+		return []AppUsageStat{{
+			Name:               "web",
+			ComputeVCPUSeconds: 7200,
+			MemoryMiBSeconds:   3600,
+			StorageGiBSeconds:  60,
+			Requests:           4,
+			RequestsByCode:     map[string]uint64{"2xx": 3, "4xx": 1},
+		}}
+	})
+	_, body := scrape(t, m)
+	for _, want := range []string{
+		`app_usage_compute_vcpu_seconds_total{app="web"} 7200`,
+		`app_usage_memory_mib_seconds_total{app="web"} 3600`,
+		`app_usage_storage_gib_seconds_total{app="web"} 60`,
+		`app_usage_requests_total{app="web",code="2xx"} 3`,
+		`app_usage_requests_total{app="web",code="4xx"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("scrape missing %q\n---\n%s", want, body)
+		}
+	}
+}
+
 func TestAppRequestMetricsAndSync(t *testing.T) {
 	m := New()
 	m.ObserveAppRequest("web", "2xx", 10*time.Millisecond)

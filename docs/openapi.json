@@ -709,6 +709,60 @@
         }
       }
     },
+    "/apps/{name}/usage": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "Get an app's usage metrics",
+        "description": "One live app's persistent usage metrics, accrued to now. A deleted app's retained usage is only available via GET /usage.",
+        "operationId": "appUsage",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "App name (a DNS label, e.g. web).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "App name (a DNS label, e.g. web)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppUsage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/backups": {
       "get": {
         "tags": [
@@ -2265,6 +2319,38 @@
         }
       }
     },
+    "/usage": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "List every app's usage metrics",
+        "description": "Persistent usage metrics: durable, cumulative per-app counters (compute, memory, requests, storage) that survive a daemon restart, including retained records for deleted apps. Values are cumulative — diff two readings to get usage over a window. 501 with no app manager.",
+        "operationId": "listUsage",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/volumes": {
       "get": {
         "tags": [
@@ -2946,6 +3032,49 @@
           },
           "sleep_count": {
             "type": "integer"
+          }
+        }
+      },
+      "AppUsage": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "app_name": {
+            "type": "string"
+          },
+          "compute_vcpu_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "finalized_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "memory_mib_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "requests": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requests_by_code": {
+            "type": "object",
+            "additionalProperties": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "storage_gib_seconds": {
+            "type": "number",
+            "format": "double"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -3816,6 +3945,22 @@
             "items": {
               "$ref": "#/components/schemas/VolumeMount"
             }
+          }
+        }
+      },
+      "UsageListResponse": {
+        "type": "object",
+        "properties": {
+          "snapshot_unix_nano": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppUsage"
+            },
+            "nullable": true
           }
         }
       },

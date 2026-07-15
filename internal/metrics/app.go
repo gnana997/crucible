@@ -73,6 +73,62 @@ func (m *Metrics) SetAppStateSource(fn func() []AppState) {
 	m.reg.MustRegister(appStateCollector{source: fn})
 }
 
+// AppUsageStat is a scrape-time snapshot of one app's persistent usage metrics
+// (cumulative counters). Seconds, not the ledger's internal sub-units — the
+// caller has already converted. Wire only LIVE apps: a deleted app drops from
+// /metrics (its retained record is still readable via GET /usage).
+type AppUsageStat struct {
+	Name               string
+	ComputeVCPUSeconds float64
+	MemoryMiBSeconds   float64
+	StorageGiBSeconds  float64
+	Requests           uint64
+	RequestsByCode     map[string]uint64
+}
+
+var (
+	descUsageCompute  = prometheus.NewDesc("app_usage_compute_vcpu_seconds_total", "Cumulative vCPU-seconds an app has been awake.", []string{"app"}, nil)
+	descUsageMemory   = prometheus.NewDesc("app_usage_memory_mib_seconds_total", "Cumulative MiB-seconds of memory an app has been awake for.", []string{"app"}, nil)
+	descUsageStorage  = prometheus.NewDesc("app_usage_storage_gib_seconds_total", "Cumulative GiB-seconds of volume storage an app has occupied.", []string{"app"}, nil)
+	descUsageRequests = prometheus.NewDesc("app_usage_requests_total", "Cumulative ingress-proxy requests routed to an app, by status class.", []string{"app", "code"}, nil)
+)
+
+// usageCollector emits the per-app persistent-usage-metrics counters by reading
+// `source` at each scrape (pull-model, same as appStateCollector). Because the
+// daemon exposes the Prometheus registry to the OTel Prometheus bridge, these
+// series flow over OTLP too with no extra wiring.
+type usageCollector struct{ source func() []AppUsageStat }
+
+func (c usageCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- descUsageCompute
+	ch <- descUsageMemory
+	ch <- descUsageStorage
+	ch <- descUsageRequests
+}
+
+func (c usageCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, a := range c.source() {
+		counter := func(d *prometheus.Desc, v float64, labels ...string) {
+			ch <- prometheus.MustNewConstMetric(d, prometheus.CounterValue, v, labels...)
+		}
+		counter(descUsageCompute, a.ComputeVCPUSeconds, a.Name)
+		counter(descUsageMemory, a.MemoryMiBSeconds, a.Name)
+		counter(descUsageStorage, a.StorageGiBSeconds, a.Name)
+		for code, n := range a.RequestsByCode {
+			counter(descUsageRequests, float64(n), a.Name, code)
+		}
+	}
+}
+
+// SetUsageSource registers the persistent-usage-metrics collector, read from fn
+// at scrape time (fn wraps the app manager's live usage). Call at most once.
+func (m *Metrics) SetUsageSource(fn func() []AppUsageStat) {
+	if m == nil || fn == nil {
+		return
+	}
+	m.reg.MustRegister(usageCollector{source: fn})
+}
+
 // ObserveAppRequest records one ingress-proxy request for a KNOWN app: bumps
 // app_requests_total{app,code} and observes app_request_duration_seconds{app}.
 // The caller (proxy) must pass only real app names and a bounded status class

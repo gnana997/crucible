@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/sdk/api"
@@ -135,6 +136,31 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleListUsage — GET /usage. Every app's persistent usage metrics (including
+// retained records for deleted apps) plus the reading's snapshot time.
+func (s *Server) handleListUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	writeJSON(w, http.StatusOK, api.UsageListResponse{
+		Usage:            s.cfg.AppManager.AllUsage(),
+		SnapshotUnixNano: time.Now().UnixNano(),
+	})
+}
+
+// handleAppUsage — GET /apps/{name}/usage. One live app's usage, accrued to now.
+func (s *Server) handleAppUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	u, err := s.cfg.AppManager.AppUsage(r.PathValue("name"))
+	if err != nil {
+		writeError(w, appErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, u)
 }
 
 // handleListAppDomains — GET /apps/{name}/domains.

@@ -114,6 +114,26 @@ func (c *Client) WakeApp(ctx context.Context, name string) (api.AppResponse, err
 	return decodeInto[api.AppResponse](resp)
 }
 
+// Usage returns every app's persistent usage metrics plus the reading's
+// snapshot time (GET /usage). Values are cumulative — diff two reads to bill.
+func (c *Client) Usage(ctx context.Context) (api.UsageListResponse, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/usage", nil)
+	if err != nil {
+		return api.UsageListResponse{}, err
+	}
+	return decodeInto[api.UsageListResponse](resp)
+}
+
+// AppUsage returns one app's persistent usage metrics by name, accrued to now
+// (GET /apps/{name}/usage).
+func (c *Client) AppUsage(ctx context.Context, name string) (api.AppUsage, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/apps/"+url.PathEscape(name)+"/usage", nil)
+	if err != nil {
+		return api.AppUsage{}, err
+	}
+	return decodeInto[api.AppUsage](resp)
+}
+
 // App returns a handle for one app by name. Purely local until a call.
 func (c *Client) App(name string) App { return App{Name: name, c: c} }
 

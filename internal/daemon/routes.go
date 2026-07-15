@@ -95,6 +95,11 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /apps/{name}/domains", s.handleListAppDomains)
 	mux.HandleFunc("POST /apps/{name}/domains", s.handleAddAppDomain)
 	mux.HandleFunc("DELETE /apps/{name}/domains/{domain}", s.handleRemoveAppDomain)
+	// Persistent usage metrics (v0.7.1): durable per-app usage counters that
+	// survive a daemon restart. Reads, gated as `read`; a control plane diffs
+	// these to bill. 501 when AppManager is nil.
+	mux.HandleFunc("GET /usage", s.handleListUsage)
+	mux.HandleFunc("GET /apps/{name}/usage", s.handleAppUsage)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	// Private-registry credentials (v0.4.4): manage the creds used for image

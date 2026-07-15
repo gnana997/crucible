@@ -415,6 +415,64 @@ func (m *Manager) observeUsage(rec Record, awake bool) {
 	m.usage.observe(rec.ID, rec.Spec.Name, awake, vcpus, memMiB, volBytes)
 }
 
+// AllUsage returns every app's persistent usage metrics, accrued to now: each
+// live app's current counters plus any RETAINED (finalized) records for apps
+// that were deleted. Cumulative — a reader diffs across reads.
+func (m *Manager) AllUsage() []api.AppUsage {
+	recs, err := m.store.List()
+	if err != nil {
+		m.log.Warn("usage: list apps failed", "err", err)
+	}
+	live := make(map[string]struct{}, len(recs))
+	out := make([]api.AppUsage, 0, len(recs))
+	for _, r := range recs {
+		live[r.ID] = struct{}{}
+		out = append(out, usageToAPI(m.usage.Snapshot(r.ID, r.Spec.Name)))
+	}
+	// Retained records for deleted apps (finalized): present in the store but not
+	// in the live set. Emit them straight from storage (already accrued at delete).
+	stored, err := m.store.ListUsage()
+	if err != nil {
+		m.log.Warn("usage: list usage failed", "err", err)
+	}
+	for id, u := range stored {
+		if _, isLive := live[id]; !isLive {
+			out = append(out, usageToAPI(u))
+		}
+	}
+	return out
+}
+
+// AppUsage returns one live app's persistent usage metrics by name, accrued to
+// now. A deleted app's retained usage is only available via AllUsage / GET
+// /usage (its id is gone, so it can't be resolved by name).
+func (m *Manager) AppUsage(name string) (api.AppUsage, error) {
+	rec, found, err := m.store.GetByName(name)
+	if err != nil {
+		return api.AppUsage{}, err
+	}
+	if !found {
+		return api.AppUsage{}, ErrNotFound
+	}
+	return usageToAPI(m.usage.Snapshot(rec.ID, rec.Spec.Name)), nil
+}
+
+// usageToAPI converts the internal integer-sub-unit ledger record to the public
+// seconds-based shape (the caller converts seconds→hours for billing).
+func usageToAPI(u Usage) api.AppUsage {
+	return api.AppUsage{
+		AppID:              u.AppID,
+		AppName:            u.AppName,
+		ComputeVCPUSeconds: float64(u.ComputeVCPUMillis) / 1000,
+		MemoryMiBSeconds:   float64(u.MemoryMiBMillis) / 1000,
+		StorageGiBSeconds:  float64(u.StorageMiBMillis) / 1000 / 1024,
+		Requests:           u.Requests,
+		RequestsByCode:     u.RequestsByCode,
+		UpdatedAt:          u.UpdatedAt,
+		FinalizedAt:        u.FinalizedAt,
+	}
+}
+
 // transitionLock returns the per-app mutex that serializes sleep/wake
 // transitions for appID, creating it on first use.
 func (m *Manager) transitionLock(appID string) *sync.Mutex {

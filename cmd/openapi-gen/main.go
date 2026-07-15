@@ -282,6 +282,15 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodDelete, "/apps/{name}/domains/{domain}", "removeAppDomain", "apps", "Detach a custom domain",
 		"Detaches a custom domain from the app (idempotent).",
 		appDomainParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/usage", "listUsage", "apps", "List every app's usage metrics",
+		"Persistent usage metrics: durable, cumulative per-app counters (compute, memory, requests, "+
+			"storage) that survive a daemon restart, including retained records for deleted apps. Values are "+
+			"cumulative — diff two readings to get usage over a window. 501 with no app manager.",
+		nil, api.UsageListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/apps/{name}/usage", "appUsage", "apps", "Get an app's usage metrics",
+		"One live app's persistent usage metrics, accrued to now. A deleted app's retained usage is only "+
+			"available via GET /usage.",
+		appNameParam{}, api.AppUsage{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
 
 	// --- sandboxes ---
 	// --- registry credentials (v0.4.4) ---

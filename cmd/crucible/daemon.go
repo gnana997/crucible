@@ -691,6 +691,26 @@ Required flags:
 			}
 			return out
 		})
+		// Persistent usage metrics: emit LIVE apps' cumulative counters (a deleted
+		// app's retained record stays readable via GET /usage, but drops off /metrics).
+		mx.SetUsageSource(func() []metrics.AppUsageStat {
+			all := appMgr.AllUsage()
+			out := make([]metrics.AppUsageStat, 0, len(all))
+			for _, u := range all {
+				if u.FinalizedAt != nil {
+					continue // retained (deleted) — not a live series
+				}
+				out = append(out, metrics.AppUsageStat{
+					Name:               u.AppName,
+					ComputeVCPUSeconds: u.ComputeVCPUSeconds,
+					MemoryMiBSeconds:   u.MemoryMiBSeconds,
+					StorageGiBSeconds:  u.StorageGiBSeconds,
+					Requests:           u.Requests,
+					RequestsByCode:     u.RequestsByCode,
+				})
+			}
+			return out
+		})
 	}
 
 	// Ingress proxy (v0.4.2): reach an app by name. Needs the app manager
