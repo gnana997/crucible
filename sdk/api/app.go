@@ -54,6 +54,15 @@ type AppSpec struct {
 	// host-port bypass path.
 	Port int `json:"port,omitempty"`
 
+	// TLSMode selects how the ingress proxy handles this app's HTTPS on :443.
+	// "" / "terminate" (default): the proxy terminates TLS with a managed cert
+	// and forwards plaintext to the guest. "passthrough": the proxy pipes the
+	// raw TLS stream to the guest, which owns its own certificate (for apps that
+	// terminate their own TLS or speak a non-HTTP TLS protocol). Only meaningful
+	// when the daemon has a cert source configured; otherwise :443 is always
+	// passthrough.
+	TLSMode string `json:"tls_mode,omitempty"`
+
 	// Network is the per-app egress policy; nil means default-deny.
 	Network *NetworkRequest `json:"network,omitempty"`
 

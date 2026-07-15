@@ -80,6 +80,20 @@ type Config struct {
 	// it arrived on the internal (app→app) listener. Requests for unknown apps
 	// (404) are not reported, so metric label cardinality stays bounded.
 	OnRequest func(app, code string, latency time.Duration, internal bool)
+
+	// Certs, when set, makes the :443 listener TERMINATE TLS for apps in
+	// terminate mode (the default), using the returned tls.Config's
+	// GetCertificate. Nil keeps today's behavior: every :443 connection is SNI
+	// passthrough (the guest owns its cert), regardless of an app's TLSMode.
+	Certs CertProvider
+}
+
+// CertProvider supplies the tls.Config the proxy uses to terminate app HTTPS.
+// Its GetCertificate must serve the right certificate for the handshake's SNI
+// (and, once ACME lands, answer TLS-ALPN-01 challenges). Satisfied by a manual
+// keypair loader or the certmagic-backed provider.
+type CertProvider interface {
+	TLSConfig() *tls.Config
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -99,7 +113,10 @@ type Proxy struct {
 	httpSrv     *http.Server
 	internalSrv *http.Server
 	tlsLn       net.Listener
-	tlsSem      chan struct{}    // bounds concurrent SNI-passthrough handlers
+	tlsSem      chan struct{} // bounds concurrent SNI-passthrough handlers
+	certs       CertProvider  // nil = passthrough-only :443 (today's behavior)
+	tlsSrv      *http.Server  // serves terminated-TLS conns as HTTP; nil when certs==nil
+	tlsConns    *connChanListener
 	coord       *wakeCoordinator // nil when no Waker configured
 	activity    *ActivityTracker // nil when activity tracking disabled
 	onWake      func(time.Duration)
@@ -123,6 +140,7 @@ func New(cfg Config) *Proxy {
 		authz:          cfg.InternalAuthz,
 		balancer:       NewBalancer(),
 		tlsSem:         make(chan struct{}, maxTLSConns),
+		certs:          cfg.Certs,
 	}
 	if cfg.Waker != nil {
 		p.coord = newWakeCoordinator(cfg.Waker, 0)
@@ -380,6 +398,26 @@ func (p *Proxy) Start() error {
 			return err
 		}
 		p.tlsLn = ln
+		// When a cert source is configured, terminate-mode apps' TLS is decrypted
+		// here and served as HTTP through the same L7 handler as :80. The accept
+		// loop hands each terminated conn to this server via a channel listener;
+		// passthrough conns never reach it (they pipe straight to the guest).
+		if p.certs != nil {
+			p.tlsConns = newConnChanListener(ln.Addr())
+			p.tlsSrv = &http.Server{
+				Handler:           p, // ServeHTTP → external L7 routing, keyed on Host==SNI
+				ReadHeaderTimeout: httpHeaderTimeout,
+				IdleTimeout:       proxyIdleTimeout,
+			}
+			p.wg.Add(1)
+			go func() {
+				defer p.wg.Done()
+				if err := p.tlsSrv.Serve(p.tlsConns); err != nil &&
+					!errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+					p.log.Error("ingress: tls terminate serve", "err", err)
+				}
+			}()
+		}
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
@@ -397,6 +435,12 @@ func (p *Proxy) Stop(ctx context.Context) {
 	}
 	if p.internalSrv != nil {
 		_ = p.internalSrv.Shutdown(ctx)
+	}
+	if p.tlsSrv != nil {
+		_ = p.tlsSrv.Shutdown(ctx) // drain in-flight terminated requests
+	}
+	if p.tlsConns != nil {
+		_ = p.tlsConns.Close() // unblock the terminate server's Accept
 	}
 	if p.tlsLn != nil {
 		_ = p.tlsLn.Close()
@@ -425,16 +469,32 @@ func (p *Proxy) acceptTLS(ln net.Listener) {
 	}
 }
 
-// handleSNI peeks the TLS ClientHello for its SNI, resolves the app, and splices
-// the raw stream to the current instance — no termination, so the guest owns
-// its certificate.
+// handleSNI peeks the TLS ClientHello for its SNI and either TERMINATES TLS for
+// a terminate-mode app (hand the decrypted conn to the L7 server) or, in
+// passthrough mode (or with no cert source), splices the raw stream to the guest
+// so the guest owns its certificate.
 func (p *Proxy) handleSNI(conn net.Conn) {
-	defer func() { _ = conn.Close() }()
 	sni, hello, err := peekSNI(conn, sniPeekTimeout)
 	if err != nil || sni == "" {
 		p.log.Debug("ingress: sni peek", "err", err)
+		_ = conn.Close()
 		return
 	}
+
+	// Terminate: replay the peeked ClientHello into a local tls.Server and hand
+	// the decrypted connection to the L7 http server (which does the handshake,
+	// keep-alive, and Host-based routing). Ownership of conn transfers to that
+	// server — do NOT close it here.
+	if p.certs != nil && p.resolver.TLSTerminate(sni) {
+		tlsConn := tls.Server(&prefixConn{Conn: conn, prefix: hello}, p.certs.TLSConfig())
+		if !p.tlsConns.push(tlsConn) {
+			_ = conn.Close() // proxy stopping
+		}
+		return
+	}
+
+	// Passthrough (guest owns its cert): resolve, dial, replay the hello, splice.
+	defer func() { _ = conn.Close() }()
 	set, err := p.resolver.ResolveSet(sni)
 	if errors.Is(err, ErrAsleep) && p.coord != nil {
 		// Raw TCP has no request context; bound the wake so a stuck restore
@@ -483,6 +543,66 @@ func (p *peekConn) Read(b []byte) (int, error) {
 }
 
 func (p *peekConn) Write(b []byte) (int, error) { return len(b), nil }
+
+// prefixConn replays a buffered prefix (the peeked ClientHello) before reading
+// from the underlying conn, so a local tls.Server sees the full handshake even
+// though peekSNI already consumed the ClientHello off the wire.
+type prefixConn struct {
+	net.Conn
+	prefix []byte
+}
+
+func (c *prefixConn) Read(b []byte) (int, error) {
+	if len(c.prefix) > 0 {
+		n := copy(b, c.prefix)
+		c.prefix = c.prefix[n:]
+		return n, nil
+	}
+	return c.Conn.Read(b)
+}
+
+// connChanListener is a net.Listener the TLS accept loop feeds already-terminated
+// connections into, so a single http.Server can serve them (handshake + HTTP +
+// keep-alive + routing). Accept blocks until a conn is pushed or the listener is
+// closed.
+type connChanListener struct {
+	conns  chan net.Conn
+	addr   net.Addr
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newConnChanListener(addr net.Addr) *connChanListener {
+	return &connChanListener{conns: make(chan net.Conn), addr: addr, closed: make(chan struct{})}
+}
+
+func (l *connChanListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *connChanListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *connChanListener) Addr() net.Addr { return l.addr }
+
+// push hands a terminated conn to the serving http.Server. It returns false
+// (and closes the conn) if the listener is already closed.
+func (l *connChanListener) push(c net.Conn) bool {
+	select {
+	case l.conns <- c:
+		return true
+	case <-l.closed:
+		_ = c.Close()
+		return false
+	}
+}
 
 // peekSNI reads the TLS ClientHello, extracts its SNI, and returns the raw bytes
 // consumed so they can be replayed to the upstream. It aborts the handshake

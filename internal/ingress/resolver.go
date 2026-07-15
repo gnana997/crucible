@@ -144,6 +144,27 @@ func (r *Resolver) ResolveInternal(host string) (Target, error) {
 	return r.resolve(r.AppNameInternal(host))
 }
 
+// TLSModePassthrough is the AppSpec.TLSMode value that keeps the proxy piping
+// the raw TLS stream to the guest instead of terminating it.
+const TLSModePassthrough = "passthrough"
+
+// TLSTerminate reports whether the proxy should TERMINATE TLS for this SNI (vs
+// pass it through to the guest). True when the SNI maps to a known app that has
+// not opted into passthrough. An unknown SNI returns false — there's nothing to
+// terminate for, and the passthrough path resolves-and-fails cleanly. (B3 will
+// extend AppName here to also match attached custom domains.)
+func (r *Resolver) TLSTerminate(sni string) bool {
+	name := r.AppName(normHost(sni))
+	if name == "" {
+		return false
+	}
+	resp, err := r.apps.GetByName(name)
+	if err != nil {
+		return false
+	}
+	return resp.TLSMode != TLSModePassthrough
+}
+
 // ResolveName resolves an app directly by name (not a request host) to its
 // current instance target. Used by the L4 waking forwarder, which already knows
 // which app it fronts and only needs the live guest IP (it supplies its own
