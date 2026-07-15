@@ -6,6 +6,57 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.7.0] — 2026-07-15
+
+TLS termination and custom domains — real HTTPS deploys. Until now the ingress
+proxy's `:443` listener only passed TLS through to a guest that served its own
+cert. This release lets the **proxy own the certificate**: it terminates TLS with
+a cert it issues and renews automatically over ACME (Let's Encrypt), on both the
+generated `<app>.<proxy-domain>` name and any custom domain you attach — so an
+HTTP app is reachable over HTTPS with nothing to configure in the guest.
+
+### Added
+
+- **TLS termination at the ingress proxy.** With `--proxy-tls-listen` open and
+  `--acme-email` (or `--cert-dir`) set, the proxy terminates TLS for app domains
+  and reverse-proxies plain HTTP to the guest. With neither set, `:443` stays
+  SNI-passthrough — the prior behavior — so this is opt-in and back-compatible.
+  Per app, `--tls-mode terminate` (default) / `passthrough` chooses which.
+- **Automatic HTTPS over ACME.** `--acme-email` enables on-demand issuance and
+  background renewal (via CertMagic). `--acme-ca production|staging` picks the
+  Let's Encrypt endpoint; `--acme-ca-url` overrides the directory URL and
+  `--acme-ca-root` trusts a private/test CA's root — for a private ACME server.
+  Certs, keys, and account state live under `--cert-dir` (default
+  `/var/lib/crucible/certs`). HTTP-01 and TLS-ALPN-01 challenges are both served.
+- **Custom domains.** `crucible app domain add|rm|ls <app> [<domain>]` attaches a
+  domain (globally unique across apps) to an app; the proxy then routes it and
+  issues a cert for it, the same as the generated name. New MCP tools
+  `app_domain_add` / `app_domain_rm` / `app_domain_ls`, and SDK `AddDomain` /
+  `RemoveDomain` / `ListDomains`.
+- **HTTPS redirect.** With termination on, `:80` 301-redirects to `https://…`
+  (and serves the ACME HTTP-01 challenge). `app create --no-https-redirect` opts
+  a single app out (serves plain HTTP on `:80` instead).
+- **Manual certificates.** Drop a `<name>.crt` + `<name>.key` pair into
+  `<cert-dir>/manual/` to serve your own certificate for a domain; loaded at
+  start, served by SNI, never auto-renewed. Coexists with ACME.
+
+### Changed
+
+- **On-demand issuance is gated to registered app domains.** A cert is only ever
+  obtained for a name that maps to a live, terminate-mode app (generated or
+  attached); a stray or hostile SNI gets no certificate. This bounds the CA's
+  rate limits and closes an abuse vector — enforced on every handshake, nothing
+  to configure.
+- The `--proxy-tls-listen` help and `docs/proxy.md` now describe terminate vs
+  passthrough; a new **[docs/tls.md](docs/tls.md)** covers the full setup.
+
+### Notes
+
+- Wildcard / DNS-01 issuance isn't included — each name gets its own cert via
+  HTTP-01 / TLS-ALPN-01, so a domain must resolve to the daemon host to be
+  certified. Point DNS first, and use `--acme-ca staging` while testing to avoid
+  the production rate limits.
+
 ## [0.6.6] — 2026-07-15
 
 Off-host backups. A backup under `--backup-dir` still dies with the box; this

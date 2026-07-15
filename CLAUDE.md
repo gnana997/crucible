@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.6.6 — durable apps you deploy, reach, update, pull privately, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.7.0 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -111,8 +111,21 @@ compress away; `--raw` for uncompressed) and `volume backup import --source
 backups over the API and ship them to an object store while the daemon stays
 provider-agnostic (no cloud SDKs/creds). Both gate on a new default-deny
 `volume_backup` scoped op (moves volume data; no MCP tools); backup *create*
-stays snapshot-grade. See the ROADMAP for what's next (incremental backups,
-TLS/ACME).
+stays snapshot-grade. **v0.7.0** **TLS termination + custom domains**: with the
+proxy's TLS listener open and `--acme-email` (or `--cert-dir`) set, the ingress
+proxy terminates TLS with a cert it issues and renews over ACME (CertMagic;
+`--acme-ca production|staging`, `--acme-ca-url`/`--acme-ca-root` for a private/test
+CA, storage under `--cert-dir`) and reverse-proxies plain HTTP to the guest — on
+the generated `<app>.<proxy-domain>` name and on custom domains attached with
+`crucible app domain add|rm|ls` (globally unique; MCP `app_domain_*`; SDK
+`AddDomain`/`RemoveDomain`/`ListDomains`). On-demand issuance is gated to
+registered terminate-mode app domains so a stray SNI can't burn a cert; `:80`
+serves the HTTP-01 challenge and 301-redirects to HTTPS (`--no-https-redirect`
+opts an app out); HTTP-01 + TLS-ALPN-01 both answered; manual certs load from
+`<cert-dir>/manual/`. Per app, `--tls-mode terminate` (default) / `passthrough`;
+with neither `--acme-email` nor `--cert-dir`, `:443` stays SNI-passthrough as
+before (`docs/tls.md`). See the ROADMAP for what's next (metering, incremental
+backups, wildcard/DNS-01).
 
 ## Working style
 

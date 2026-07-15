@@ -65,11 +65,13 @@ func (s staticCerts) TLSConfig() *tls.Config                                    
 func (s staticCerts) HandleHTTPChallenge(http.ResponseWriter, *http.Request) bool { return false }
 
 // tlsClient makes an HTTP client whose TLS dials go to addr with the given SNI
-// and trust pool, regardless of the request URL's host.
+// and trust pool, regardless of the request URL's host. It offers ALPN
+// [h2, http/1.1] like a real browser/curl, so the terminate path must negotiate
+// a protocol or the handshake fails.
 func tlsClient(addr, sni string, pool *x509.CertPool) *http.Client {
 	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
 		DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-			d := &tls.Dialer{Config: &tls.Config{ServerName: sni, RootCAs: pool}}
+			d := &tls.Dialer{Config: &tls.Config{ServerName: sni, RootCAs: pool, NextProtos: []string{"h2", "http/1.1"}}}
 			return d.DialContext(ctx, network, addr)
 		},
 	}}
@@ -91,8 +93,9 @@ func TestProxyTLSTerminates(t *testing.T) {
 	p := New(Config{
 		Resolver:  NewResolver(apps, inst, "apps.local", "", 0),
 		TLSListen: "127.0.0.1:0",
-		Certs:     staticCerts{&tls.Config{Certificates: []tls.Certificate{cert}}},
-		Logger:    quietLog(),
+		// http/1.1 in NextProtos so ALPN negotiates with the client's [h2, http/1.1].
+		Certs:  staticCerts{&tls.Config{Certificates: []tls.Certificate{cert}, NextProtos: []string{"http/1.1"}}},
+		Logger: quietLog(),
 	})
 	if err := p.Start(); err != nil {
 		t.Fatalf("Start: %v", err)

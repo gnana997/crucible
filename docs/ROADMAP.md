@@ -163,7 +163,16 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.6.6: Off-host backups *(current)*
+### v0.7.0: TLS termination & custom domains *(current)*
+
+Real HTTPS deploys: the ingress proxy terminates TLS with a certificate it issues and renews automatically over ACME, on generated and custom domains ([tls.md](tls.md)).
+
+- [x] **TLS termination at the proxy:** with `--proxy-tls-listen` open and `--acme-email` (or `--cert-dir`) set, `:443` terminates TLS with a managed cert and reverse-proxies plain HTTP to the guest; with neither, it stays SNI-passthrough as before. Per app, `--tls-mode terminate` (default) / `passthrough`.
+- [x] **Automatic HTTPS over ACME:** on-demand issuance + background renewal (CertMagic). `--acme-ca production|staging`, `--acme-ca-url` / `--acme-ca-root` for a private/test CA, storage under `--cert-dir`. HTTP-01 and TLS-ALPN-01 both answered; `:80` serves the challenge and 301-redirects to HTTPS (`--no-https-redirect` opts out).
+- [x] **Custom domains:** `crucible app domain add|rm|ls <app> [<domain>]` attaches a globally-unique domain that the proxy routes and certifies like the generated name (MCP `app_domain_*`; SDK `AddDomain`/`RemoveDomain`/`ListDomains`).
+- [x] **Issuance gated to app domains:** a cert is only obtained for a name that maps to a live terminate-mode app, so a stray SNI can't burn a cert or the CA's rate limits. Manual certs load from `<cert-dir>/manual/`. `scripts/smoke_tls.sh` drives issuance end-to-end against a local ACME CA (Pebble).
+
+### v0.6.6: Off-host backups
 
 Let a backup leave the host so it survives host/disk loss — without any cloud SDK or credential in the daemon ([backups.md](backups.md)).
 
@@ -199,9 +208,10 @@ A volume has a point-in-time backup you can restore into a new volume, plus a cl
 
 ### Next: Production images & deploys
 
-The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, volume backups, upgrade-without-drop, and daemon backup exist (v0.4.0–v0.6.4); next is off-host and incremental backups and the rest of production-grade deploys.
+The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, volume backups, off-host backups, upgrade-without-drop, daemon backup, and TLS termination + custom domains exist (v0.4.0–v0.7.0); next is usage metering, incremental backups, and the rest of production-grade deploys.
 
-- • **TLS termination at the ingress proxy**: ACME + custom domains so the proxy can own certs; today the guest terminates its own TLS via SNI passthrough.
+- • **Usage metering**: per-app request / compute / egress accounting, exported for billing and quotas.
+- • **Wildcard / DNS-01 certificates**: a single cert for `*.<domain>` via a DNS-01 solver, for apps whose per-name HTTP-01 challenge can't resolve to the host.
 - • **Native cloud-registry auth**: ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.
 - • **Pause / freeze-for-forensics.** `crucible pause <id>` freezes a suspicious workload and snapshots it for analysis before you kill it, Firecracker pause + snapshot already exist under the hood; this surfaces them as a security-ops action.

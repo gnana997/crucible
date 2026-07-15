@@ -38,6 +38,11 @@ func TestManualModeNoChallenge(t *testing.T) {
 	if p.TLSConfig() == nil {
 		t.Error("TLSConfig should be non-nil even in manual mode")
 	}
+	// The serving config MUST advertise http/1.1 (else a real client offering
+	// h2/http1.1 can't negotiate ALPN and the handshake fails).
+	if !containsStr(p.TLSConfig().NextProtos, "http/1.1") {
+		t.Errorf("TLSConfig NextProtos = %v, want it to include http/1.1", p.TLSConfig().NextProtos)
+	}
 	// Manual mode has no ACME issuer, so it never claims an HTTP-01 challenge.
 	if p.HandleHTTPChallenge(nil, nil) {
 		t.Error("manual mode must not handle HTTP-01 challenges")
@@ -112,4 +117,13 @@ func TestManualCertLoaded(t *testing.T) {
 	if err != nil || cert == nil {
 		t.Fatalf("GetCertificate(shop.acme.com) = %v, %v; want the manual cert", cert, err)
 	}
+}
+
+func containsStr(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }

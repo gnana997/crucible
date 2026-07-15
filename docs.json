@@ -1,160 +1,161 @@
 {
-  "site": {
-    "name": "crucible",
-    "description": "Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.",
-    "url": "https://cruciblehq.dev/docs",
-    "theme": {
-      "accent": {
-        "light": "#C0400A",
-        "dark": "#FF6A1F"
-      },
-      "accentHover": {
-        "light": "#9C3308",
-        "dark": "#FF8442"
-      }
-    },
-    "favicon": "/brand/favicon.svg",
-    "logo": {
-      "light": "/brand/logo-light.svg",
-      "dark": "/brand/logo-dark.svg"
-    },
-    "homeUrl": "https://cruciblehq.dev"
+ "site": {
+  "name": "crucible",
+  "description": "Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.",
+  "url": "https://cruciblehq.dev/docs",
+  "theme": {
+   "accent": {
+    "light": "#C0400A",
+    "dark": "#FF6A1F"
+   },
+   "accentHover": {
+    "light": "#9C3308",
+    "dark": "#FF8442"
+   }
   },
-  "content": {
-    "root": "docs",
-    "home": "../README.md"
+  "favicon": "/brand/favicon.svg",
+  "logo": {
+   "light": "/brand/logo-light.svg",
+   "dark": "/brand/logo-dark.svg"
   },
-  "assets": [
-    {
-      "from": "../demo",
-      "to": "demo"
-    },
-    {
-      "from": "../brand",
-      "to": "brand"
-    }
-  ],
-  "links": {
-    "repo": "https://github.com/gnana997/crucible",
-    "branch": "main"
+  "homeUrl": "https://cruciblehq.dev"
+ },
+ "content": {
+  "root": "docs",
+  "home": "../README.md"
+ },
+ "assets": [
+  {
+   "from": "../demo",
+   "to": "demo"
   },
-  "apiReference": {
-    "spec": "openapi.json",
-    "label": "API Reference",
-    "layout": "pages"
-  },
-  "security": {
-    "csp": {
-      "imgSrc": [
-        "https://img.shields.io"
-      ]
-    }
-  },
-  "tabs": [
-    {
-      "tab": "Guides",
-      "pages": [
-        "README",
-        "install",
-        {
-          "group": "Core concepts",
-          "pages": [
-            "fork",
-            "profiles",
-            "network",
-            "concepts/network-model",
-            "policy",
-            "architecture",
-            "observability",
-            "benchmarks"
-          ]
-        },
-        {
-          "group": "Apps",
-          "pages": [
-            "apps",
-            "proxy",
-            "registry",
-            "volumes",
-            "serverless"
-          ]
-        },
-        {
-          "group": "CLI",
-          "pages": [
-            "cli",
-            "cli/run",
-            "cli/lifecycle",
-            "cli/sandboxes",
-            "cli/snapshots",
-            "cli/apps",
-            "cli/registry",
-            "cli/daemon"
-          ]
-        },
-        {
-          "group": "Interfaces",
-          "pages": [
-            "tui",
-            "mcp"
-          ]
-        },
-        {
-          "group": "Project",
-          "pages": [
-            "vision",
-            "roadmap"
-          ]
-        }
-      ]
-    },
-    {
-      "tab": "API",
-      "pages": [
-        "api",
-        "api/create-sandbox",
-        "api/exec",
-        "api/files",
-        "api/fork"
-      ]
-    },
-    {
-      "tab": "SDKs",
-      "pages": [
-        "sdks/overview",
-        "sdks/go",
-        "sdks/typescript",
-        "sdks/python",
-        "wire"
-      ]
-    },
-    {
-      "tab": "Changelog",
-      "pages": [
-        "changelog"
-      ]
-    }
-  ],
-  "ai": {
-    "chat": {
-      "provider": "gateway",
-      "model": "openai/gpt-4o-mini"
-    },
-    "embedding": {
-      "provider": "gateway",
-      "model": "openai/text-embedding-3-small"
-    },
-    "askAi": {
-      "enabled": true
-    },
-    "limits": {
-      "ask": {
-        "limit": 30,
-        "windowMs": 60000
-      }
-    }
-  },
-  "mcp": {
-    "path": "/mcp-server"
+  {
+   "from": "../brand",
+   "to": "brand"
   }
+ ],
+ "links": {
+  "repo": "https://github.com/gnana997/crucible",
+  "branch": "main"
+ },
+ "apiReference": {
+  "spec": "openapi.json",
+  "label": "API Reference",
+  "layout": "pages"
+ },
+ "security": {
+  "csp": {
+   "imgSrc": [
+    "https://img.shields.io"
+   ]
+  }
+ },
+ "tabs": [
+  {
+   "tab": "Guides",
+   "pages": [
+    "README",
+    "install",
+    {
+     "group": "Core concepts",
+     "pages": [
+      "fork",
+      "profiles",
+      "network",
+      "concepts/network-model",
+      "policy",
+      "architecture",
+      "observability",
+      "benchmarks"
+     ]
+    },
+    {
+     "group": "Apps",
+     "pages": [
+      "apps",
+      "proxy",
+      "tls",
+      "registry",
+      "volumes",
+      "serverless"
+     ]
+    },
+    {
+     "group": "CLI",
+     "pages": [
+      "cli",
+      "cli/run",
+      "cli/lifecycle",
+      "cli/sandboxes",
+      "cli/snapshots",
+      "cli/apps",
+      "cli/registry",
+      "cli/daemon"
+     ]
+    },
+    {
+     "group": "Interfaces",
+     "pages": [
+      "tui",
+      "mcp"
+     ]
+    },
+    {
+     "group": "Project",
+     "pages": [
+      "vision",
+      "roadmap"
+     ]
+    }
+   ]
+  },
+  {
+   "tab": "API",
+   "pages": [
+    "api",
+    "api/create-sandbox",
+    "api/exec",
+    "api/files",
+    "api/fork"
+   ]
+  },
+  {
+   "tab": "SDKs",
+   "pages": [
+    "sdks/overview",
+    "sdks/go",
+    "sdks/typescript",
+    "sdks/python",
+    "wire"
+   ]
+  },
+  {
+   "tab": "Changelog",
+   "pages": [
+    "changelog"
+   ]
+  }
+ ],
+ "ai": {
+  "chat": {
+   "provider": "gateway",
+   "model": "openai/gpt-4o-mini"
+  },
+  "embedding": {
+   "provider": "gateway",
+   "model": "openai/text-embedding-3-small"
+  },
+  "askAi": {
+   "enabled": true
+  },
+  "limits": {
+   "ask": {
+    "limit": 30,
+    "windowMs": 60000
+   }
+  }
+ },
+ "mcp": {
+  "path": "/mcp-server"
+ }
 }

@@ -120,9 +120,17 @@ func (r *Resolver) AppName(host string) string {
 // appNameForHost maps an external request host to an app name: the proxy-domain
 // subdomain (web.apps.local → web), or, failing that, a custom domain attached
 // to an app (shop.acme.com → the app it's bound to). "" when neither matches.
+//
+// The proxy-domain name is only used if that app actually exists — otherwise we
+// fall through to the custom-domain lookup. That makes a custom domain that
+// happens to sit under the proxy zone (shop.<proxy-domain>) still route to the
+// app it's attached to, instead of being shadowed by the <app>.<proxy-domain>
+// interpretation of a nonexistent "shop" app.
 func (r *Resolver) appNameForHost(host string) string {
 	if name := r.AppName(host); name != "" {
-		return name
+		if _, err := r.apps.GetByName(name); err == nil {
+			return name
+		}
 	}
 	if resp, ok := r.apps.GetByDomain(normHost(host)); ok {
 		return resp.Name

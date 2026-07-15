@@ -159,6 +159,29 @@ func TestResolveCustomDomain(t *testing.T) {
 	}
 }
 
+// A custom domain that sits UNDER the proxy zone (shop.apps.local attached to
+// app "web") must still route to "web" — not be shadowed by the nonexistent
+// <app="shop">.apps.local interpretation.
+func TestResolveCustomDomainUnderProxyZone(t *testing.T) {
+	web := runningApp("web", 80, "sbx_1")
+	web.Domains = []string{"shop.apps.local"}
+	apps := fakeApps{apps: map[string]api.AppResponse{"web": web}}
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
+	r := NewResolver(apps, inst, "apps.local", "", 0)
+
+	tg, err := r.Resolve("shop.apps.local")
+	if err != nil {
+		t.Fatalf("Resolve(shop.apps.local): %v (should fall through to the custom-domain lookup)", err)
+	}
+	if tg.GuestIP != "10.20.0.2" {
+		t.Errorf("target = %+v, want the 'web' app's guest", tg)
+	}
+	// The real <app>.<proxy-domain> still works.
+	if _, err := r.Resolve("web.apps.local"); err != nil {
+		t.Errorf("Resolve(web.apps.local): %v", err)
+	}
+}
+
 func TestResolveErrors(t *testing.T) {
 	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
 

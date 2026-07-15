@@ -209,6 +209,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		acmeEmail   = fs.String("acme-email", "", "ACME account email — enables automatic HTTPS (Let's Encrypt) for app domains on --proxy-tls-listen. Empty = no ACME.")
 		acmeCA      = fs.String("acme-ca", "production", "ACME CA: production | staging (Let's Encrypt), used when --acme-email is set")
 		acmeCAURL   = fs.String("acme-ca-url", "", "override the ACME directory URL (e.g. a Pebble/private-CA endpoint); takes precedence over --acme-ca")
+		acmeCARoot  = fs.String("acme-ca-root", "", "PEM file of root CA(s) to trust for the ACME server (a private/test CA whose endpoint isn't publicly trusted, e.g. Pebble); empty = system roots")
 		certDir     = fs.String("cert-dir", "", "directory for TLS certs, keys, and ACME state (default /var/lib/crucible/certs when TLS termination is enabled)")
 		proxyDomain = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
 		// App→app service networking (v0.5.1, experimental). Off by default:
@@ -709,12 +710,22 @@ Required flags:
 				if cd == "" {
 					cd = "/var/lib/crucible/certs"
 				}
+				var caRootPEM []byte
+				if *acmeCARoot != "" {
+					b, rerr := os.ReadFile(*acmeCARoot)
+					if rerr != nil {
+						logger.Error("reading --acme-ca-root failed", "err", rerr)
+						return 1
+					}
+					caRootPEM = b
+				}
 				tp, terr := tlscert.New(tlscert.Config{
-					CertDir: cd,
-					Email:   *acmeEmail,
-					CAURL:   *acmeCAURL,
-					Staging: *acmeCA == "staging",
-					Allow:   resolver.TLSTerminate,
+					CertDir:   cd,
+					Email:     *acmeEmail,
+					CAURL:     *acmeCAURL,
+					Staging:   *acmeCA == "staging",
+					CARootPEM: caRootPEM,
+					Allow:     resolver.TLSTerminate,
 				})
 				if terr != nil {
 					logger.Error("TLS termination setup failed", "err", terr)
@@ -743,7 +754,11 @@ Required flags:
 					}
 					return soonest.Seconds()
 				})
-				logger.Info("ingress TLS termination enabled", "cert_dir", cd, "acme", *acmeEmail != "", "ca", *acmeCA)
+				effCA := *acmeCA
+				if *acmeCAURL != "" {
+					effCA = *acmeCAURL // explicit override (private/test CA)
+				}
+				logger.Info("ingress TLS termination enabled", "cert_dir", cd, "acme", *acmeEmail != "", "ca", effCA)
 			}
 			var internalAuthz ingress.CallerAuthorizer
 			if internalListen != "" {

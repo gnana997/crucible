@@ -63,12 +63,15 @@ extra caps, and apps are then reachable at plain `http://web.apps.local/`.
 | Listener | Layer | What it does |
 |---|---|---|
 | `--proxy-listen` (default `:7879`) | L7 (HTTP) | Routes by the `Host` header, reverse-proxies to the instance (keep-alive, chunked, `X-Forwarded-*`). |
-| `--proxy-tls-listen` (off by default) | L4 (TLS SNI) | Reads the TLS ClientHello's SNI and **passes the raw stream through** to the instance — **the guest terminates its own TLS**. The proxy holds no certificates. |
+| `--proxy-tls-listen` (off by default) | L4/L7 (TLS) | Per app, either **terminates** TLS with a proxy-managed cert (default) or reads the ClientHello's SNI and **passes the raw stream through** to a guest that owns its own cert. |
 
-The TLS listener is opt-in because it only works with a guest that serves its own
-TLS — enable it with `--proxy-tls-listen :7880` (or `:443`). TLS *termination* at
-the proxy (with ACME / custom domains) is later work; today the guest owns its
-cert and the proxy just routes by SNI.
+The TLS listener is opt-in — enable it with `--proxy-tls-listen :7880` (or
+`:443`). What it does then depends on whether the daemon is set up to manage
+certs: with `--acme-email` (or `--cert-dir`) it **terminates** TLS for app
+domains — automatic HTTPS over ACME, on generated and custom domains — see
+[tls.md](tls.md). Without either, it stays **SNI passthrough**: the guest
+terminates its own TLS and the proxy just routes by SNI. A single app opts out of
+termination with `--tls-mode passthrough`.
 
 ## When there's no instance
 

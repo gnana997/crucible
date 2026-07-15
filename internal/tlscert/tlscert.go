@@ -8,11 +8,13 @@ package tlscert
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +35,11 @@ type Config struct {
 	// Staging selects the Let's Encrypt staging CA (higher rate limits, untrusted
 	// certs) when CAURL is empty. Ignored when CAURL is set.
 	Staging bool
+	// CARootPEM, when non-empty, is a PEM bundle of root CA(s) to trust when
+	// connecting to the ACME server — for a private or test CA (e.g. Pebble,
+	// step-ca) whose endpoint isn't signed by a public root. Empty uses the
+	// system roots. Does not affect image pulls or other daemon TLS.
+	CARootPEM []byte
 	// Allow gates on-demand issuance: it must return true only for domains that
 	// map to a real, terminate-mode app, so a stray SNI can never trigger a cert
 	// (abuse / rate-limit guard). Required when Email is set.
@@ -44,6 +51,7 @@ type Provider struct {
 	cache  *certmagic.Cache
 	magic  *certmagic.Config
 	issuer *certmagic.ACMEIssuer // nil when Email == "" (manual-cert-only)
+	tlsCfg *tls.Config           // built once; on-demand GetCertificate + ALPN protos
 }
 
 // New builds a provider. With Email set it enables ACME/on-demand; without, it
@@ -87,11 +95,19 @@ func New(c Config) (*Provider, error) {
 				ca = certmagic.LetsEncryptStagingCA
 			}
 		}
-		p.issuer = certmagic.NewACMEIssuer(p.magic, certmagic.ACMEIssuer{
+		issTmpl := certmagic.ACMEIssuer{
 			CA:     ca,
 			Email:  c.Email,
 			Agreed: true,
-		})
+		}
+		if len(c.CARootPEM) > 0 {
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(c.CARootPEM) {
+				return nil, fmt.Errorf("tlscert: CARootPEM contains no valid certificates")
+			}
+			issTmpl.TrustedRoots = pool
+		}
+		p.issuer = certmagic.NewACMEIssuer(p.magic, issTmpl)
 		p.magic.Issuers = []certmagic.Issuer{p.issuer}
 	}
 
@@ -100,6 +116,15 @@ func New(c Config) (*Provider, error) {
 	// Loaded unmanaged, so certmagic serves them by SNI but never renews them.
 	if _, err := p.loadManualCerts(filepath.Join(c.CertDir, "manual")); err != nil {
 		return nil, err
+	}
+
+	// Build the serving tls.Config once. certmagic's TLSConfig advertises only
+	// "acme-tls/1" (the TLS-ALPN-01 challenge); add "http/1.1" so a real client
+	// (which offers h2/http1.1) can negotiate ALPN. h2 is omitted: the proxy
+	// feeds terminated conns to a plain http.Server not configured for HTTP/2.
+	p.tlsCfg = p.magic.TLSConfig()
+	if !slices.Contains(p.tlsCfg.NextProtos, "http/1.1") {
+		p.tlsCfg.NextProtos = append(p.tlsCfg.NextProtos, "http/1.1")
 	}
 	return p, nil
 }
@@ -143,9 +168,10 @@ func (p *Provider) NotAfter(domain string) (time.Time, bool) {
 	return cert.Leaf.NotAfter, true
 }
 
-// TLSConfig returns a *tls.Config whose GetCertificate loads or obtains the cert
-// for the handshake SNI on-demand, and handles TLS-ALPN-01 challenges.
-func (p *Provider) TLSConfig() *tls.Config { return p.magic.TLSConfig() }
+// TLSConfig returns the serving *tls.Config: GetCertificate loads or obtains the
+// cert for the handshake SNI on-demand, handles TLS-ALPN-01 challenges, and
+// advertises http/1.1 (plus acme-tls/1) for ALPN.
+func (p *Provider) TLSConfig() *tls.Config { return p.tlsCfg }
 
 // HandleHTTPChallenge serves an ACME HTTP-01 challenge, returning true when the
 // request was a challenge (and was handled). False for a normal request, or when
