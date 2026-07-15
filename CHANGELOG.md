@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.7.1] — 2026-07-15
+
+Persistent usage metrics and TLS certificate status — see what an app has used,
+and whether its domains are actually certified. Usage counters now survive a
+daemon restart (the previous per-app metrics reset with the daemon), and every
+domain's certificate state is observable so a mis-pointed domain shows up rather
+than silently failing.
+
+### Added
+
+- **Persistent usage metrics.** A durable, cumulative per-app ledger across four
+  dimensions — compute (vCPU-seconds while awake), memory (MiB-seconds while
+  awake), storage (GiB-seconds while the volume exists), and requests — persisted
+  alongside the app records, so the numbers survive a daemon restart. A slept app
+  accrues no compute/memory; storage accrues awake or asleep. Read via
+  **`crucible app usage [<name>]`**, **`GET /usage`** / **`GET /apps/{name}/usage`**
+  (`read`-gated; cumulative values plus a snapshot timestamp for reconciliation),
+  and Prometheus `app_usage_compute_vcpu_seconds_total` / `_memory_mib_seconds_total`
+  / `_storage_gib_seconds_total` / `_requests_total{code}` (exported over OTLP via
+  the existing bridge). A deleted app's final usage is retained so it can still be
+  read. Accrual is checkpointed on a tick (`--usage-interval`, default 60s) and at
+  each lifecycle transition; a restart does not back-fill the downtime.
+- **TLS certificate status.** Per-domain certificate state — `active`, `expiring`,
+  `pending`, `failed` (with the ACME error, e.g. DNS not pointed at the host),
+  `manual`, or `passthrough`. On `crucible app domain ls` (a status table), on
+  `GET /apps/{name}/domains?detail=1` (a `details` array, including the app's
+  generated `<app>.<proxy-domain>` name), and as Prometheus/OTLP metrics
+  `app_cert_state{app,domain,state}` + `app_cert_not_after_seconds{app,domain}`
+  for alerting on expiry or a failed renewal.
+
+### Notes
+
+- `GET /apps/{name}/domains` without `?detail=1` still returns the plain
+  `{"domains": [...]}` name list — unchanged, so existing clients keep working.
+- No egress dimension yet: per-connection egress accounting (a per-sandbox
+  counter) is planned for a later release.
+
 ## [0.7.0] — 2026-07-15
 
 TLS termination and custom domains — real HTTPS deploys. Until now the ingress

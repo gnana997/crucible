@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.7.0 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.7.1 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart**, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -124,8 +124,18 @@ serves the HTTP-01 challenge and 301-redirects to HTTPS (`--no-https-redirect`
 opts an app out); HTTP-01 + TLS-ALPN-01 both answered; manual certs load from
 `<cert-dir>/manual/`. Per app, `--tls-mode terminate` (default) / `passthrough`;
 with neither `--acme-email` nor `--cert-dir`, `:443` stays SNI-passthrough as
-before (`docs/tls.md`). See the ROADMAP for what's next (metering, incremental
-backups, wildcard/DNS-01).
+before (`docs/tls.md`). **v0.7.1** adds **persistent usage metrics** — a durable,
+cumulative per-app ledger (a `usageBucket` in the app-store bbolt) across compute
+vCPU-seconds *awake*, memory MiB-seconds *awake*, storage GiB-seconds (awake or
+asleep), and requests; accrued on lifecycle hooks + a `--usage-interval` tick,
+surviving a daemon restart with no downtime back-fill. Read via `crucible app
+usage`, `GET /usage` + `/apps/{name}/usage` (`read`-gated), and `app_usage_*`
+Prometheus/OTLP counters; a deleted app's final usage is retained. Plus
+**per-domain TLS cert status** (active/expiring/pending/failed/manual/passthrough)
+on `app domain ls`, `GET /apps/{name}/domains?detail=1`, and `app_cert_state` /
+`app_cert_not_after_seconds` metrics. (Egress accounting is deferred to a later
+release.) See the ROADMAP for what's next (egress, incremental backups,
+wildcard/DNS-01).
 
 ## Working style
 

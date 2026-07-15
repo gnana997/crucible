@@ -68,6 +68,59 @@ at most one golden template per scaled-out app generation, and deleting an app
 releases its snapshots. Growth in this gauge tracks the number of slept apps,
 not their sleep history.
 
+### Persistent usage metrics
+
+Per-app usage counters that **survive a daemon restart**: unlike the Prometheus
+series above (which reset when the daemon does), these are a durable, cumulative
+ledger persisted alongside the app records. Read them to see how much an app has
+used over any window — take two readings and subtract.
+
+Four dimensions accrue per app:
+
+| Dimension | Accrues while | Unit (API / metric) |
+|---|---|---|
+| compute | the app is **awake** (a slept app burns none) | vCPU-seconds |
+| memory | the app is **awake** | MiB-seconds |
+| storage | its volume **exists** (awake *or* asleep — a slept app still holds its disk) | GiB-seconds |
+| requests | always (per ingress-proxy request, split by status class) | count |
+
+Read them three ways, all from one durable source:
+
+- **`crucible app usage [<name>]`** — a table (or `-o json`), including retained
+  records for **deleted** apps (a deleted app's final usage is kept so you can
+  still read it).
+- **`GET /usage`** and **`GET /apps/{name}/usage`** — the same, as JSON.
+  Cumulative values plus a `snapshot_unix_nano`, so a reader reconciles readings
+  across restarts and scrape gaps. Gated by the `read` scoped-token op.
+- **Prometheus** (and OTLP, via the bridge below):
+
+  | Metric | Type | Labels |
+  |---|---|---|
+  | `app_usage_compute_vcpu_seconds_total` | counter | `app` |
+  | `app_usage_memory_mib_seconds_total` | counter | `app` |
+  | `app_usage_storage_gib_seconds_total` | counter | `app` |
+  | `app_usage_requests_total` | counter | `app`, `code` |
+
+Accrual is checkpointed on a tick (`--usage-interval`, default 60s) and at each
+lifecycle transition, so an unclean crash loses at most one interval. A daemon
+restart **does not** back-fill the downtime — the app wasn't serving, so it
+accrues nothing for that gap.
+
+### TLS certificate status
+
+For a TLS-terminating app, per-domain certificate state is both a metric and an
+API field — so a domain whose DNS isn't pointed at the host (issuance failing)
+is visible, not silent:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `app_cert_state` | gauge (1 for the current state) | `app`, `domain`, `state` |
+| `app_cert_not_after_seconds` | gauge | `app`, `domain` |
+
+`state` is one of `passthrough`, `pending`, `active`, `expiring`, `failed`,
+`manual`. The same detail is on `GET /apps/{name}/domains?detail=1` and
+`crucible app domain ls` — see [tls.md](tls.md#certificate-status).
+
 ### Reference dashboard
 
 Import [`docs/observability/grafana-dashboard.json`](observability/grafana-dashboard.json)

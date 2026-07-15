@@ -12,12 +12,16 @@
 #   02  daemon up with TLS termination: --acme-email + --acme-ca-url <pebble> +
 #       --acme-ca-root <minica> + --cert-dir
 #   03  an app is created and a custom domain attached to it
-#   04  an HTTPS request to the domain through the proxy is TERMINATED with a
-#       Pebble-issued cert (verified against Pebble's root) and routed to the
-#       guest — the marquee path
+#   04  an HTTPS request to the custom domain AND to the app's generated
+#       <app>.<proxy-domain> name are both TERMINATED with a Pebble-issued cert
+#       (verified against Pebble's root) and routed to the guest — the marquee path
 #   05  DecisionFunc gate: a handshake for an UNREGISTERED domain gets no cert
 #       (issuance denied) and fails — a stray SNI can't burn a cert
 #   06  a passthrough-mode app still pipes the guest's own cert (not terminated)
+#   07  per-domain cert status (app domain ls / ?detail=1): the issued custom
+#       domain + the generated name are 'active' with a plausible future expiry,
+#       a SECOND domain independently gets its own cert, an un-requested one is
+#       'pending'
 #
 # Pebble runs with PEBBLE_VA_ALWAYS_VALID=1, so it issues WITHOUT connecting back
 # to validate the challenge — this exercises the full certmagic<->ACME issuance +
@@ -155,6 +159,18 @@ done
 [[ "$served" -eq 1 ]] && ok "HTTPS terminated with an ACME cert (verified vs Pebble root) + routed to the guest" \
   || { bad "HTTPS request never served"; tail -25 "$DAEMON_LOG"; }
 
+# The app's GENERATED name (web.apps.local) must also get a cert on-demand — not
+# just attached custom domains. A real unknown: the default endpoint is HTTPS too.
+GEN_DOMAIN="web.apps.local"
+gserved=0
+for _ in $(seq 1 15); do
+  https_get "$GEN_DOMAIN" "$PEBBLE_ROOT" "nginx" && { gserved=1; break; }
+  https_get "$GEN_DOMAIN" "$PEBBLE_ROOT" "html"  && { gserved=1; break; }
+  sleep 1
+done
+[[ "$gserved" -eq 1 ]] && ok "generated name $GEN_DOMAIN also terminates on-demand with an ACME cert" \
+  || bad "generated name $GEN_DOMAIN never served over HTTPS"
+
 echo "== 05 DecisionFunc gate: an unregistered domain gets no cert"
 # No app owns this domain → issuance denied → the handshake can't complete.
 if curl -s --max-time 15 --cacert "$PEBBLE_ROOT" --resolve "unclaimed.crucible-tls.test:$TLS_PORT:127.0.0.1" \
@@ -178,6 +194,62 @@ if curl -s --max-time 10 --cacert "$PEBBLE_ROOT" --resolve "$RAW_DOMAIN:$TLS_POR
 else
   ok "passthrough app not terminated by the proxy (piped to the guest, which owns its cert)"
 fi
+echo "== 07 per-domain cert status is reported (app domain ls / ?detail=1)"
+# The custom domain got a cert in step 04 → 'active' with an expiry. A freshly
+# attached domain that hasn't been requested yet → 'pending'. (A 'failed' state
+# — e.g. DNS not pointed — is covered by the unit tests; Pebble's always-valid
+# VA can't produce a natural issuance failure here.)
+run app domain add web pending.crucible-tls.test >/dev/null 2>&1
+# cert_of DOMAIN -> "<state>|<not_after>" for that domain from the detail JSON.
+cert_of() {
+  run app domain ls web -o json 2>/dev/null | python3 -c '
+import json,sys
+want=sys.argv[1]
+for d in json.load(sys.stdin):
+    if d.get("domain")==want:
+        c=d.get("cert",{}); print(c.get("state",""),"|",c.get("not_after",""));break
+else: print("|")
+' "$1"
+}
+# state_of DOMAIN / notafter_of DOMAIN — split fields of cert_of's "state | ts".
+state_of()    { local s; s="$(cert_of "$1")"; echo "${s%% |*}"; }
+notafter_of() { local s; s="$(cert_of "$1")"; echo "${s##*| }"; }
+
+# The issued custom domain is active, with an expiry plausibly in the future.
+[[ "$(state_of "$DOMAIN")" =~ ^(active|expiring)$ ]] \
+  && ok "issued custom domain reports '$(state_of "$DOMAIN")'" || bad "issued domain cert = '$(cert_of "$DOMAIN")' (want active/expiring)"
+na="$(notafter_of "$DOMAIN")"
+if [[ -n "$na" ]] && python3 - "$na" <<'PY'; then
+import sys, datetime
+try:
+    exp = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    sys.exit(0 if exp > now + datetime.timedelta(hours=24) else 1)
+except Exception:
+    sys.exit(1)
+PY
+  ok "issued cert not_after is plausibly in the future ($na)"
+else
+  bad "issued cert not_after implausible or missing ($na)"
+fi
+
+# The GENERATED name got a cert in step 04 → it should read active too.
+[[ "$(state_of "$GEN_DOMAIN")" =~ ^(active|expiring)$ ]] \
+  && ok "generated name $GEN_DOMAIN reports '$(state_of "$GEN_DOMAIN")'" || bad "generated name cert = '$(cert_of "$GEN_DOMAIN")' (want active)"
+
+# A SECOND custom domain attached and hit concurrently must also get its own cert
+# (issuance isn't a one-shot; multiple domains on one app each get certified).
+SECOND_DOMAIN="shop2.crucible-tls.test"
+run app domain add web "$SECOND_DOMAIN" >/dev/null 2>&1
+s2=0
+for _ in $(seq 1 15); do https_get "$SECOND_DOMAIN" "$PEBBLE_ROOT" "html" && { s2=1; break; }; https_get "$SECOND_DOMAIN" "$PEBBLE_ROOT" "nginx" && { s2=1; break; }; sleep 1; done
+[[ "$s2" -eq 1 && "$(state_of "$SECOND_DOMAIN")" =~ ^(active|expiring)$ ]] \
+  && ok "a second custom domain independently got its own active cert" || bad "second domain not independently certified (served=$s2 state=$(state_of "$SECOND_DOMAIN"))"
+
+# A domain attached but never requested stays 'pending' (no cert burned for it).
+[[ "$(state_of pending.crucible-tls.test)" == "pending" ]] && ok "un-requested domain reports 'pending'" \
+  || bad "un-requested domain cert = '$(cert_of pending.crucible-tls.test)' (want pending)"
+
 run app rm web >/dev/null 2>&1; run app rm rawapp >/dev/null 2>&1
 
 echo "==============================================================="

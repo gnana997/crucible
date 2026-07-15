@@ -163,7 +163,14 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.7.0: TLS termination & custom domains *(current)*
+### v0.7.1: Usage metrics & cert status *(current)*
+
+See what an app has used, and whether its domains are certified ([observability.md](observability.md#persistent-usage-metrics)).
+
+- [x] **Persistent usage metrics:** a durable, cumulative per-app ledger (compute vCPU-seconds while awake, memory MiB-seconds while awake, storage GiB-seconds, requests) persisted with the app records, so it survives a daemon restart. Read via `crucible app usage`, `GET /usage` + `/apps/{name}/usage` (`read`-gated), and `app_usage_*` Prometheus/OTLP counters. A slept app accrues no compute; a restart doesn't back-fill downtime; a deleted app's final usage is retained. Accrual is checkpointed on a `--usage-interval` tick (default 60s) + each lifecycle transition. `scripts/smoke_usage.sh` proves compute freezes while asleep and survives a restart.
+- [x] **TLS certificate status:** per-domain state (active / expiring / pending / failed / manual / passthrough) on `crucible app domain ls`, `GET /apps/{name}/domains?detail=1`, and `app_cert_state` / `app_cert_not_after_seconds` metrics — so a mis-pointed domain (failed issuance) is visible, not silent.
+
+### v0.7.0: TLS termination & custom domains
 
 Real HTTPS deploys: the ingress proxy terminates TLS with a certificate it issues and renews automatically over ACME, on generated and custom domains ([tls.md](tls.md)).
 
@@ -210,7 +217,7 @@ A volume has a point-in-time backup you can restore into a new volume, plus a cl
 
 The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, volume backups, off-host backups, upgrade-without-drop, daemon backup, and TLS termination + custom domains exist (v0.4.0–v0.7.0); next is usage metering, incremental backups, and the rest of production-grade deploys.
 
-- • **Usage metering**: per-app request / compute / egress accounting, exported for billing and quotas.
+- • **Egress accounting**: add per-connection egress bytes as a fifth usage dimension (a per-sandbox nftables counter), alongside the compute / memory / storage / requests already metered.
 - • **Wildcard / DNS-01 certificates**: a single cert for `*.<domain>` via a DNS-01 solver, for apps whose per-name HTTP-01 challenge can't resolve to the host.
 - • **Native cloud-registry auth**: ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.

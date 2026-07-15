@@ -101,6 +101,37 @@ configure — it's enforced on every handshake.
   `:80`); whichever the CA offers is answered automatically.
 - **Renewal** runs in the background well before expiry — no cron, no reload.
 
+## Certificate status
+
+Every domain's certificate state is observable, so a domain whose DNS isn't
+pointed at the host (issuance failing) shows up rather than silently not working:
+
+```bash
+crucible app domain ls web
+# DOMAIN                KIND       TLS        CERT      EXPIRES
+# web.apps.example.com  generated  terminate  active    2026-10-13
+# shop.example.com      custom     terminate  active    2026-10-13
+# new.example.com       custom     terminate  pending   -
+# bad.example.com       custom     terminate  failed: … -
+```
+
+The states:
+
+| State | Meaning |
+|---|---|
+| `active` | a valid managed cert is being served (with its expiry) |
+| `expiring` | active, but inside the renewal lead — renewal is due/underway |
+| `pending` | terminate-mode, no cert yet (issuance in flight, or the domain hasn't been requested) |
+| `failed` | the last ACME attempt errored — the error is shown (commonly the domain's DNS isn't pointed at the host) |
+| `manual` | served from a drop-in manual cert (never auto-renewed) |
+| `passthrough` | the app is passthrough-mode; the guest owns its cert |
+
+The same data is on the API (`GET /apps/{name}/domains?detail=1` → a `details`
+array) and as [Prometheus/OTLP metrics](observability.md#tls-certificate-status)
+(`app_cert_state`, `app_cert_not_after_seconds`) for alerting on expiry or a
+failed renewal. The default `GET /apps/{name}/domains` (no `?detail`) still
+returns the plain name list, unchanged.
+
 ## Manual certificates
 
 To serve your own certificate for a domain instead of ACME, drop a matching
