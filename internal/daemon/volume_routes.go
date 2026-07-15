@@ -32,6 +32,7 @@ func toAPIVolume(i volume.Info) api.Volume {
 		CreatedAt:  i.CreatedAt,
 		HostID:     i.HostID,
 		AttachedTo: i.AttachedTo,
+		Encrypted:  i.Encrypted,
 	}
 }
 
@@ -46,7 +47,7 @@ func (s *Server) handleCreateVolume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	rec, err := s.cfg.Volumes.Create(req.Name, req.SizeBytes, volume.CreateOpts{})
+	rec, err := s.cfg.Volumes.Create(req.Name, req.SizeBytes, volume.CreateOpts{Encrypt: req.Encrypt})
 	if err != nil {
 		writeError(w, volumeErrStatus(err), err)
 		return
@@ -104,7 +105,23 @@ func toAPIBackup(b volume.BackupRecord) api.Backup {
 		CreatedAt:    b.CreatedAt,
 		Consistency:  b.Consistency,
 		HostID:       b.HostID,
+		Encrypted:    b.Encrypted,
 	}
+}
+
+// handleShredVolume — POST /volumes/{name}/shred. Crypto-shreds an encrypted
+// volume: destroys its keyslots and deletes the wrapped key, making the data
+// permanently unrecoverable. 409 if attached to a live sandbox; 400 for a
+// plaintext volume (use DELETE). Irreversible — gated by the delete op.
+func (s *Server) handleShredVolume(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	if err := s.cfg.Volumes.Shred(r.PathValue("name")); err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // volumeQuiescent reports whether a volume is safe to raw-copy: detached (no

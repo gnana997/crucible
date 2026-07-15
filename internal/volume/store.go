@@ -44,6 +44,12 @@ type BackupRecord struct {
 	Consistency  string    `json:"consistency"` // "filesystem" (detached/slept/frozen)
 	HostID       string    `json:"host_id"`
 	Path         string    `json:"path"` // host path of the backup backing file (internal)
+	// Encrypted marks a backup of an encrypted volume: Path is the LUKS container
+	// (ciphertext), and WrappedKey carries the source volume's per-volume key so
+	// RestoreTo can re-wrap it under the restored name. Empty unless Encrypted.
+	Encrypted  bool   `json:"encrypted,omitempty"`
+	WrappedKey []byte `json:"wrapped_key,omitempty"`
+	KeyID      string `json:"key_id,omitempty"`
 }
 
 var (

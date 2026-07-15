@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.7.4 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.8.0 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -155,9 +155,23 @@ name as AEAD AAD) injected via **envFrom** (`AppSpec.SecretEnvFrom`) at
 op), `crucible secret set --from-env-file .env` + `app --secrets`/`--secrets-from`;
 opt-in master key (`--secrets-key-file`/`CRUCIBLE_SECRETS_KEY`, no key⇒disabled);
 rides `admin backup` as ciphertext (key excluded). Closes the plaintext-`--env`-in-
-bbolt leak; snapshot-residency is the honest runtime limit (v0.8.0 tier-1 encrypts
-snapshot memory). See the ROADMAP for what's after (incremental backups,
-wildcard/DNS-01, fleet).
+bbolt leak. **v0.8.0** adds **encryption at rest for volumes**: each volume can be
+its own **LUKS2 container** (`aes-xts-plain64`, AES-256-XTS) over its backing file,
+unlocked by a fresh random per-volume key sealed under a master key
+(`--volume-encrypt-key-file`/`CRUCIBLE_VOLUME_KEY`, AES-256-GCM, volume name as AAD)
+and stored in the record — never in the clear. `volume create --encrypt`/
+`--no-encrypt` + `--volume-encrypt` default; transparent to the guest (the daemon
+opens the container to a decrypted device and `mknod`s that node into the VM chroot
+under the jailer — never the ciphertext file — so the kernel device-mapper does the
+crypto and the snapshot/wake pager pays no per-page cost); **closed on sleep +
+re-opened on wake** so a slept DB is ciphertext at rest; `volume shred`
+(`POST /volumes/{name}/shred`, `delete`-gated) **crypto-shreds** by destroying the
+keyslots + wrapped key; backups carry the wrapped key and `restore` re-wraps under
+the new name. Protects a stolen/seized disk (the AWS-EBS model), NOT a compromised
+host root (confidential compute is unsupported by Firecracker + incompatible with
+lazy-paging wake). `internal/cryptdev` wraps cryptsetup; encrypted `volume clone` +
+snapshot-memory encryption (encrypt `--work-base`) are not yet done. See the ROADMAP
+for what's after (incremental backups, wildcard/DNS-01, fleet).
 
 ## Working style
 

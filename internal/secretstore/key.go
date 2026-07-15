@@ -14,24 +14,31 @@ import (
 // the key without it ever touching the same disk as the ciphertext.
 const EnvKeyVar = "CRUCIBLE_SECRETS_KEY"
 
-// LoadMasterKey resolves the AES-256 master key:
+// LoadMasterKey resolves the AES-256 secret-store master key from
+// CRUCIBLE_SECRETS_KEY or keyFile — see LoadMasterKeyFrom.
+func LoadMasterKey(keyFile string) (key []byte, generated bool, err error) {
+	return LoadMasterKeyFrom(EnvKeyVar, keyFile)
+}
+
+// LoadMasterKeyFrom resolves an AES-256 master key, used both for the secret
+// store and (with a different envVar) for per-volume encryption:
 //
-//   - CRUCIBLE_SECRETS_KEY (base64) wins if set.
+//   - $envVar (base64) wins if set.
 //   - else keyFile (base64). If keyFile is set but ABSENT, a fresh key is
 //     generated and written 0600 (first-run convenience) and generated=true —
 //     the caller should log a "back this key up" warning.
-//   - if NEITHER is configured, returns (nil, false, nil): secrets are disabled.
-//     There is no silent plaintext fallback — opting in is explicit.
-func LoadMasterKey(keyFile string) (key []byte, generated bool, err error) {
-	if v := os.Getenv(EnvKeyVar); v != "" {
+//   - if NEITHER is configured, returns (nil, false, nil): the feature is
+//     disabled. There is no silent fallback — opting in is explicit.
+func LoadMasterKeyFrom(envVar, keyFile string) (key []byte, generated bool, err error) {
+	if v := os.Getenv(envVar); v != "" {
 		k, derr := decodeKey(v)
 		if derr != nil {
-			return nil, false, fmt.Errorf("secretstore: %s: %w", EnvKeyVar, derr)
+			return nil, false, fmt.Errorf("secretstore: %s: %w", envVar, derr)
 		}
 		return k, false, nil
 	}
 	if keyFile == "" {
-		return nil, false, nil // secrets disabled
+		return nil, false, nil // disabled
 	}
 	b, rerr := os.ReadFile(keyFile)
 	if errors.Is(rerr, os.ErrNotExist) {

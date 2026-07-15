@@ -445,6 +445,11 @@ func buildReflector() *openapi3.Reflector {
 		"Deletes the volume and its data. 409 when it is attached to a live sandbox.",
 		volNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 
+	jsonOp(http.MethodPost, "/volumes/{name}/shred", "shredVolume", "volumes", "Crypto-shred an encrypted volume",
+		"Destroys the volume's keyslots and deletes its wrapped key, making the data permanently "+
+			"unrecoverable. 400 for a plaintext volume; 409 when attached to a live sandbox.",
+		volNameParam{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+
 	jsonOp(http.MethodPost, "/volumes/{name}/backups", "backupVolume", "volumes", "Back up a volume",
 		"Takes a consistent point-in-time backup of the volume, restorable to a new volume. "+
 			"409 when the volume is attached to a running sandbox (sleep it first).",

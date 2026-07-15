@@ -163,11 +163,20 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.7.4: Secrets *(current)*
+### v0.8.0: Encryption at rest *(current)*
+
+A persistent volume's data — encrypted on disk with a per-volume key you can destroy ([encryption.md](encryption.md)).
+
+- [x] **Per-volume encryption:** with a master key (`--volume-encrypt-key-file` / `CRUCIBLE_VOLUME_KEY`), a volume is a LUKS2 container (`aes-xts-plain64`, AES-256-XTS) over its backing file, unlocked by a fresh random per-volume key sealed under the master key (AES-256-GCM, volume name as AAD) and stored in the record — never in the clear. `crucible volume create --encrypt` / `--no-encrypt`, `--volume-encrypt` daemon default, an `ENCRYPTED` column on `volume ls`, `CreateVolumeRequest.encrypt` + `Volume.encrypted` in the API/SDKs.
+- [x] **Transparent to the guest:** on attach the daemon opens the container to a decrypted device and stages that device node into the VM's chroot under the jailer (the `/dev/kvm` mechanism), never the ciphertext file. Encryption is in the kernel device-mapper layer — transparent, including to the snapshot/wake pager (no per-page cost); a fast keyslot KDF keeps attach and scale-to-zero wake sub-second. Closed on sleep and re-opened on wake, so a slept database is ciphertext at rest.
+- [x] **Crypto-shred:** `crucible volume shred <name>` (`POST /volumes/{name}/shred`, `delete`-gated) destroys the keyslots + wrapped key so the data is permanently unrecoverable — refused while attached and on plaintext volumes. Backups carry the wrapped key; `volume restore` re-wraps it under the new name. `scripts/smoke_volume_encrypt.sh` runs a real Postgres and proves the on-disk container is ciphertext (including while asleep), backup→restore round-trips the data, and shred makes it unrecoverable.
+- Protects a stolen/seized disk (the AWS-EBS model), **not** a compromised host root — confidential computing (encrypted guest RAM) is unsupported by Firecracker and incompatible with lazy-paging wake. `volume clone` of an encrypted volume and per-tenant snapshot-memory encryption are not yet done (encrypt `--work-base` for the latter).
+
+### v0.7.4: Secrets
 
 Sensitive config out of the cleartext app spec and into an encrypted store ([secrets.md](secrets.md)).
 
-- [x] **Encrypted secret bundles:** a secret is a named `key→value` bundle (a `.env` becomes one bundle) sealed AES-256-GCM (bundle name as AEAD AAD) in `internal/secretstore`. Write-only management — `crucible secret set --from-env-file`/`ls`/`rm`, `PUT/GET/DELETE /secrets/{name}` gated by the default-deny `secret` op; no endpoint ever returns a value. Injected with **envFrom** (`app create --secrets <bundle>` / `--secrets-from .env`) at boot, so the app spec/backups carry only the bundle name. Opt-in master key (`--secrets-key-file` / `CRUCIBLE_SECRETS_KEY`; no key ⇒ disabled); the store rides `admin backup` as ciphertext, the key excluded. `scripts/smoke_secrets.sh` proves the secret reaches the guest service env while no host surface (app get / API / backup / on-disk store) leaks the value. Snapshot residency is the honest runtime limit — the next release encrypts the snapshot memory file.
+- [x] **Encrypted secret bundles:** a secret is a named `key→value` bundle (a `.env` becomes one bundle) sealed AES-256-GCM (bundle name as AEAD AAD) in `internal/secretstore`. Write-only management — `crucible secret set --from-env-file`/`ls`/`rm`, `PUT/GET/DELETE /secrets/{name}` gated by the default-deny `secret` op; no endpoint ever returns a value. Injected with **envFrom** (`app create --secrets <bundle>` / `--secrets-from .env`) at boot, so the app spec/backups carry only the bundle name. Opt-in master key (`--secrets-key-file` / `CRUCIBLE_SECRETS_KEY`; no key ⇒ disabled); the store rides `admin backup` as ciphertext, the key excluded. `scripts/smoke_secrets.sh` proves the secret reaches the guest service env while no host surface (app get / API / backup / on-disk store) leaks the value. Snapshot residency is the honest runtime limit — v0.8.0 encrypts volume data at rest, and an encrypted `--work-base` covers the snapshot memory file.
 
 ### v0.7.3: App lifecycle events
 

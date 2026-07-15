@@ -3067,6 +3067,73 @@
         }
       }
     },
+    "/volumes/{name}/shred": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Crypto-shred an encrypted volume",
+        "description": "Destroys the volume's keyslots and deletes its wrapped key, making the data permanently unrecoverable. 400 for a plaintext volume; 409 when attached to a live sandbox.",
+        "operationId": "shredVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/whoami": {
       "get": {
         "tags": [
@@ -3377,6 +3444,9 @@
             "type": "string",
             "format": "date-time"
           },
+          "encrypted": {
+            "type": "boolean"
+          },
           "host_id": {
             "type": "string"
           },
@@ -3627,6 +3697,10 @@
       "CreateVolumeRequest": {
         "type": "object",
         "properties": {
+          "encrypt": {
+            "type": "boolean",
+            "nullable": true
+          },
           "name": {
             "type": "string"
           },
@@ -4376,6 +4450,9 @@
           "created_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "encrypted": {
+            "type": "boolean"
           },
           "host_id": {
             "type": "string"

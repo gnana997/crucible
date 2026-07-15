@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.6.6](https://img.shields.io/badge/status-v0.6.6-orange)
+![Status: v0.8.0](https://img.shields.io/badge/status-v0.8.0-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -110,8 +110,9 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 ## Roadmap
 
-crucible is at **v0.6.6**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.8.0**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
+- **v0.8.0: encryption at rest.** Each persistent volume can be its own **LUKS2 container with its own key** (`crucible volume create pgdata --encrypt`, or `--volume-encrypt` for all): the backing file is ciphertext at rest, encryption is transparent to the guest (a decrypted device node is staged into the VM's chroot, never the ciphertext), and it stays encrypted **even while a scale-to-zero app sleeps**. `crucible volume shred` destroys the key to make data **permanently unrecoverable** (crypto-shred); backups carry the wrapped key so a restore re-keys under the new name. Protects a stolen/seized disk (the AWS-EBS model), not a compromised host root ([docs/encryption.md](docs/encryption.md)).
 - **v0.7.4: secrets.** Encrypted **secret bundles** (a `.env` becomes one bundle, sealed with AES-256-GCM) injected into an app's environment with envFrom — `crucible secret set web-env --from-env-file .env` then `app create --secrets web-env`. The value never touches the app spec, the API, backups, or logs (only the bundle name is stored); the store is encrypted at rest under an opt-in master key that's excluded from `admin backup`. Fixes the plaintext-`--env`-in-the-database leak ([docs/secrets.md](docs/secrets.md)).
 - **v0.7.3: app lifecycle events.** A stream of app transitions — `created`, `phase_changed` (booted / slept / woke / crashed), `health_changed`, `domain_*`, `deleted` — on `GET /events` (cursor-follow), `crucible events -f`, and as OTLP log records. Where `/metrics` is a numeric snapshot, this is the timeline: a control plane renders an activity feed from it and gets the exact sleep/wake timestamps that make awake-interval billing precise ([docs/observability.md](docs/observability.md#app-lifecycle-events--get-events)).
 - **v0.7.2: egress bytes.** Completes the usage ledger with the fifth dimension — **per-app external egress bytes**, counted by a dedicated nftables accounting chain and folded in as a per-instance delta (a redeploy that resets the counter never loses or double-counts). Outbound + external only (downloads and intra-host DNS / app→app traffic are excluded). On `crucible app usage`, `GET /usage`, and `app_usage_egress_bytes_total` ([docs/observability.md](docs/observability.md#persistent-usage-metrics)).

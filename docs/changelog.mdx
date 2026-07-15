@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: What shipped in each crucible release.
-date: "2026-07-14"
+date: "2026-07-16"
 ---
 
 # Changelog
@@ -9,6 +9,63 @@ date: "2026-07-14"
 Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
+
+<Update label="v0.8.0" title="Encryption at rest">
+
+Each persistent volume can be its own encrypted container with its own key, so a
+tenant's data can be crypto-shredded by destroying that key.
+
+- **Per-volume encryption.** With a master key (`--volume-encrypt-key-file` or `CRUCIBLE_VOLUME_KEY`), `crucible volume create pgdata --encrypt` makes the volume a LUKS2 container (`aes-xts-plain64`, AES-256-XTS); `--volume-encrypt` encrypts every new volume by default, `--no-encrypt` opts one out. The per-volume key is sealed under the master key and stored in the record — never in the clear. See [encryption](encryption).
+- **Transparent to the guest, encrypted while asleep.** The daemon opens the container to a decrypted device and stages that device node into the VM's chroot under the jailer (never the ciphertext file), so the kernel does the crypto and the snapshot/wake pager pays no per-page cost. A scale-to-zero app closes its device on sleep and re-opens it on wake — ciphertext at rest even while idle.
+- **Crypto-shred.** `crucible volume shred <name>` destroys the keyslots and wrapped key so the data is permanently unrecoverable. Backups carry the wrapped key; `volume restore` re-wraps it under the new name. Protects a stolen/seized disk (the AWS-EBS model), not a compromised host root.
+
+</Update>
+
+<Update label="v0.7.4" title="Secrets">
+
+Sensitive config out of the cleartext app spec and into an encrypted store.
+
+- **Encrypted secret bundles** — a secret is a named `key→value` bundle (a whole `.env` becomes one bundle), sealed with **AES-256-GCM** (the bundle name as AEAD additional data) in a dedicated store. Manage it **write-only**: `crucible secret set web-env --from-env-file .env` / `secret ls` / `secret rm`, and `PUT/GET/DELETE /secrets/{name}` gated by a default-deny `secret` op — **no endpoint ever returns a value**. See [secrets](secrets).
+- **envFrom injection** — `app create --secrets <bundle>` (or `--secrets-from .env`) injects every key of a bundle as an environment variable at boot, so the app spec, API, backups, and logs carry only the **bundle name**, never the value. Fixes the plaintext-`--env`-in-the-database leak.
+- **Opt-in master key** — `--secrets-key-file` or `CRUCIBLE_SECRETS_KEY` (no key ⇒ secrets disabled, no silent plaintext fallback); the store rides `admin backup` as ciphertext, with the key excluded.
+
+</Update>
+
+<Update label="v0.7.3" title="App lifecycle events">
+
+The app activity timeline — and the exact sleep/wake timing that makes billing precise.
+
+- **Event stream** — `created` / `phase_changed` (booted / slept / woke / crashed, carrying `from`/`to` and `wake_latency_ms`) / `health_changed` / `domain_*` / `deleted`, on `GET /events?since=&app=` (cursor-follow, `read`-gated), `crucible events -f` / `crucible app events`, and as **OTLP log records**. See [observability](observability).
+- **Bounded + non-blocking** — an in-memory ring (`--events-buffer`, default 1024); a slow consumer never back-pressures an app (drop-on-full). Emitted via a de-dup helper so no net phase change is missed and none is emitted twice.
+
+</Update>
+
+<Update label="v0.7.2" title="Egress bytes">
+
+The fifth usage dimension: how much each app sends to the outside world.
+
+- **Per-app egress accounting** — `app_usage_egress_bytes_total` counts each app's **accepted external outbound bytes** via a dedicated nftables accounting chain (a forward hook past the `ct established` short-circuit, so it sees every packet, not just the SYN). Intra-host DNS and app→app traffic are excluded. Folded into the durable per-app usage ledger as a per-instance delta, so a redeploy neither loses nor double-counts.
+
+</Update>
+
+<Update label="v0.7.1" title="Usage metrics & cert status">
+
+Durable, restart-surviving usage accounting, and per-domain certificate health.
+
+- **Persistent usage metrics** — a durable, cumulative per-app ledger across **compute** (vCPU-seconds awake), **memory** (MiB-seconds awake), **storage** (GiB-seconds), and **requests**, accrued on lifecycle hooks + a `--usage-interval` tick and surviving a daemon restart with no back-fill. Read via `crucible app usage`, `GET /usage` + `/apps/{name}/usage` (`read`-gated), and `app_usage_*` Prometheus/OTLP counters; a deleted app's final usage is retained.
+- **Per-domain TLS cert status** — active / expiring / pending / failed / manual / passthrough on `app domain ls`, `GET /apps/{name}/domains?detail=1`, and `app_cert_state` / `app_cert_not_after_seconds` metrics.
+
+</Update>
+
+<Update label="v0.7.0" title="TLS termination & custom domains">
+
+Real HTTPS deploys — the proxy terminates TLS and issues the certificates itself.
+
+- **Automatic HTTPS** — with the proxy's TLS listener open and `--acme-email` (or `--cert-dir`) set, the ingress proxy terminates TLS with a certificate it **issues and renews over ACME** (CertMagic; `--acme-ca production|staging`, HTTP-01 + TLS-ALPN-01), and reverse-proxies plain HTTP to the guest. `:80` serves the challenge and 301-redirects to HTTPS (`--no-https-redirect` opts out). See [tls](tls).
+- **Custom domains** — `crucible app domain add|rm|ls` (globally unique; MCP `app_domain_*`; SDK `AddDomain`/`RemoveDomain`/`ListDomains`) attach your own hostnames alongside the generated `<app>.<proxy-domain>` name. On-demand issuance is gated to registered terminate-mode domains so a stray SNI can't burn a cert.
+- **Per-app mode** — `--tls-mode terminate` (default) or `passthrough`; with no ACME/cert config, `:443` stays SNI-passthrough as before.
+
+</Update>
 
 <Update label="v0.6.3" title="Volume backups">
 

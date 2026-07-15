@@ -31,7 +31,7 @@ func newMgr(t *testing.T, dir string) *Manager {
 func TestAttachProvisionsOnceAndPersists(t *testing.T) {
 	m := newMgr(t, t.TempDir())
 
-	path, err := m.Attach("data", "sbx1")
+	path, _, err := m.Attach("data", "sbx1")
 	if err != nil {
 		t.Fatalf("first Attach: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestAttachProvisionsOnceAndPersists(t *testing.T) {
 	firstMod := fi.ModTime()
 
 	m.Release("data")
-	path2, err := m.Attach("data", "sbx2")
+	path2, _, err := m.Attach("data", "sbx2")
 	if err != nil {
 		t.Fatalf("second Attach: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestAttachProvisionsOnceAndPersists(t *testing.T) {
 func TestSyncFsyncsBackingFile(t *testing.T) {
 	m := newMgr(t, t.TempDir())
 
-	path, err := m.Attach("data", "sbx1") // provisions the backing file
+	path, _, err := m.Attach("data", "sbx1") // provisions the backing file
 	if err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
@@ -88,17 +88,17 @@ func TestSyncFsyncsBackingFile(t *testing.T) {
 
 func TestAttachGuardIsSingleWriter(t *testing.T) {
 	m := newMgr(t, t.TempDir())
-	if _, err := m.Attach("v", "sbx1"); err != nil {
+	if _, _, err := m.Attach("v", "sbx1"); err != nil {
 		t.Fatalf("Attach sbx1: %v", err)
 	}
-	if _, err := m.Attach("v", "sbx2"); !errors.Is(err, ErrInUse) {
+	if _, _, err := m.Attach("v", "sbx2"); !errors.Is(err, ErrInUse) {
 		t.Fatalf("Attach sbx2 err = %v, want ErrInUse", err)
 	}
-	if _, err := m.Attach("v", "sbx1"); err != nil {
+	if _, _, err := m.Attach("v", "sbx1"); err != nil {
 		t.Fatalf("re-Attach sbx1: %v", err)
 	}
 	m.Release("v")
-	if _, err := m.Attach("v", "sbx2"); err != nil {
+	if _, _, err := m.Attach("v", "sbx2"); err != nil {
 		t.Fatalf("Attach sbx2 after release: %v", err)
 	}
 }
@@ -106,7 +106,7 @@ func TestAttachGuardIsSingleWriter(t *testing.T) {
 func TestAttachRejectsBadName(t *testing.T) {
 	m := newMgr(t, t.TempDir())
 	for _, bad := range []string{"", "UPPER", "has space", "../escape", "a/b"} {
-		if _, err := m.Attach(bad, "sbx"); !errors.Is(err, ErrInvalidName) {
+		if _, _, err := m.Attach(bad, "sbx"); !errors.Is(err, ErrInvalidName) {
 			t.Fatalf("Attach(%q) err = %v, want ErrInvalidName", bad, err)
 		}
 	}
@@ -133,7 +133,7 @@ func TestCreateListAndDuplicate(t *testing.T) {
 func TestRemoveRefusesAttachedThenSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Attach("v", "sbx1"); err != nil {
+	if _, _, err := m.Attach("v", "sbx1"); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
 	if err := m.Remove("v"); !errors.Is(err, ErrInUse) {

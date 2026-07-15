@@ -102,9 +102,16 @@ type VolumeAttach struct {
 	// chroot-relative staging path under jailer ("/vol0.ext4").
 	DriveID string
 
-	// HostPath is the absolute path to the backing file on the host
-	// (under the daemon's --volume-dir). Persistent across sandboxes.
+	// HostPath is the absolute path the runner attaches. For a plaintext volume
+	// it is the backing file under --volume-dir; for an encrypted volume it is the
+	// decrypted /dev/mapper node the volume manager opened. Persistent across
+	// sandboxes (the file is; the mapper is re-opened each attach).
 	HostPath string
+
+	// Encrypted marks HostPath as an encrypted volume's decrypted block device.
+	// Under jailer the device node is staged into the chroot via mknod (not a file
+	// hardlink); the direct runner opens the mapper path as-is.
+	Encrypted bool
 }
 
 // NetConfig describes the guest network interface Firecracker

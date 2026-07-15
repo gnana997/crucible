@@ -6,6 +6,56 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.8.0] — 2026-07-16
+
+Encryption at rest. A persistent volume holds a stateful workload's real data — a
+Postgres cluster, a Redis dump — in a backing file on the host disk. Volume
+encryption makes each volume its own LUKS2 container with its own key, so the file
+is ciphertext at rest and a tenant's data can be crypto-shredded by destroying
+that one key. This is the standard encryption-at-rest model (protecting a stolen,
+seized, or decommissioned disk), not confidential computing.
+
+### Added
+
+- **Per-volume encryption.** With a master key configured
+  (`--volume-encrypt-key-file` or `CRUCIBLE_VOLUME_KEY`), a volume can be created
+  encrypted: `crucible volume create pgdata --encrypt` (or `--volume-encrypt` to
+  make every new volume encrypted by default; `--no-encrypt` opts one out). Each
+  encrypted volume is a LUKS2 container (`aes-xts-plain64`, AES-256-XTS) over its
+  backing file, unlocked by a fresh random per-volume key that is sealed under the
+  master key (AES-256-GCM, bound to the volume name) and stored in the volume
+  record — never in the clear. `volume ls` shows an `ENCRYPTED` column
+  ([docs/encryption.md](docs/encryption.md)).
+- **Transparent to the guest.** On attach the daemon opens the LUKS container to a
+  decrypted device and, under the jailer, stages that device node into the VM's
+  chroot (the mechanism the jailer already uses for `/dev/kvm`) — never the
+  ciphertext file. Encryption happens in the kernel device-mapper layer, so it is
+  transparent, including to the snapshot/wake memory pager (no per-page cost); the
+  keyslot uses a fast KDF so attach and scale-to-zero wake stay sub-second.
+- **Encrypted at rest while asleep.** A scale-to-zero app closes its decrypted
+  volume device on sleep (keeping its single-writer claim) and re-opens it on wake,
+  so a slept database's data is ciphertext for the entire sleep.
+- **Crypto-shred.** `crucible volume shred <name>` destroys the LUKS keyslots and
+  deletes the wrapped key, making the data permanently unrecoverable without
+  touching the ciphertext — refused while attached and on plaintext volumes, gated
+  by the default-deny `delete` op.
+- **Backups carry the key.** A backup of an encrypted volume is the ciphertext
+  container; the backup record carries the wrapped key so `volume restore`
+  re-wraps it under the new name and restores an encrypted volume. `POST
+  /volumes/{name}/shred`, `CreateVolumeRequest.encrypt`, and an `encrypted` field
+  on `Volume`/`Backup` are in the API + SDKs.
+
+### Notes
+
+- Volume encryption protects **disk at rest**, not a compromised host root (which
+  holds the live device-mapper) — the AWS-EBS model. Closing that gap needs
+  confidential computing, which Firecracker does not support and which is
+  incompatible with the lazy-paging behind sub-second wake.
+- `volume clone` of an encrypted volume is not yet supported (an independent clone
+  needs a fresh key); restore a backup instead. To encrypt snapshot-memory and
+  rootfs too, put `--work-base` on an encrypted filesystem — device-mapper
+  encryption is transparent, so everything above it works unchanged.
+
 ## [0.7.4] — 2026-07-15
 
 Secrets. `--env` stores config in cleartext in the app database (and every

@@ -20,7 +20,7 @@ func newVolumeCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"vol"},
 	}
 	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o),
-		newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
+		newVolumeShredCmd(o), newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
 	return cmd
 }
 
@@ -234,6 +234,7 @@ func newVolumeBackupRmCmd(o *globalOpts) *cobra.Command {
 
 func newVolumeCreateCmd(o *globalOpts) *cobra.Command {
 	var size string
+	var encrypt, noEncrypt bool
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create a persistent volume (formatted ext4, kept until removed)",
@@ -243,7 +244,18 @@ func newVolumeCreateCmd(o *globalOpts) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			v, err := o.client().CreateVolume(cmd.Context(), api.CreateVolumeRequest{Name: args[0], SizeBytes: sizeBytes})
+			req := api.CreateVolumeRequest{Name: args[0], SizeBytes: sizeBytes}
+			// Send encrypt only when explicitly chosen, so neither flag = the
+			// daemon's --volume-encrypt default.
+			switch {
+			case noEncrypt:
+				no := false
+				req.Encrypt = &no
+			case encrypt:
+				yes := true
+				req.Encrypt = &yes
+			}
+			v, err := o.client().CreateVolume(cmd.Context(), req)
 			if err != nil {
 				return err
 			}
@@ -255,7 +267,28 @@ func newVolumeCreateCmd(o *globalOpts) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&size, "size", "", "volume size, e.g. 5G or 512M (default: the daemon's --volume-default-size)")
+	cmd.Flags().BoolVar(&encrypt, "encrypt", false, "encrypt this volume at rest with a per-volume LUKS key (needs a daemon master key)")
+	cmd.Flags().BoolVar(&noEncrypt, "no-encrypt", false, "force this volume plaintext even when the daemon encrypts new volumes by default")
+	cmd.MarkFlagsMutuallyExclusive("encrypt", "no-encrypt")
 	return cmd
+}
+
+func newVolumeShredCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "shred <name>...",
+		Short: "Crypto-shred encrypted volumes: destroy the key so the data is permanently unrecoverable",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl := o.client()
+			for _, name := range args {
+				if err := cl.ShredVolume(cmd.Context(), name); err != nil {
+					return fmt.Errorf("shred %s: %w", name, err)
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), name)
+			}
+			return nil
+		},
+	}
 }
 
 func newVolumeLsCmd(o *globalOpts) *cobra.Command {
@@ -274,7 +307,7 @@ func newVolumeLsCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), vols)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			_, _ = fmt.Fprintln(tw, "NAME\tSIZE\tATTACHED\tHOST\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tSIZE\tENCRYPTED\tATTACHED\tHOST\tAGE")
 			for _, v := range vols {
 				attached := "-"
 				if v.AttachedTo != "" {
@@ -284,7 +317,11 @@ func newVolumeLsCmd(o *globalOpts) *cobra.Command {
 				if host == "" {
 					host = "-"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", v.Name, humanSize(v.SizeBytes), attached, host, age(v.CreatedAt))
+				enc := "no"
+				if v.Encrypted {
+					enc = "yes"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, humanSize(v.SizeBytes), enc, attached, host, age(v.CreatedAt))
 			}
 			return tw.Flush()
 		},

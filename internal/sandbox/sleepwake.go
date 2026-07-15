@@ -151,6 +151,17 @@ func (m *Manager) SleepInPlace(ctx context.Context, id string) (string, error) {
 		_ = os.RemoveAll(snapDir)
 		return "", fmt.Errorf("sleep: stop vmm %s: %w", id, err)
 	}
+	// Close each encrypted volume's decrypted device now the VMM (its only holder)
+	// is gone, so a slept encrypted volume is ciphertext at rest — not left online
+	// on the host for the whole sleep. The single-writer guard stays HELD (s is not
+	// Deleted); WakeInPlace re-opens the device. Plaintext volumes have no device.
+	if m.cfg.VolumeManager != nil {
+		for i, vn := range s.volumeNames {
+			if i < len(s.volumes) && s.volumes[i].Encrypted {
+				_ = m.cfg.VolumeManager.CloseDevice(vn)
+			}
+		}
+	}
 
 	snap := &Snapshot{
 		ID:            snapID,
@@ -238,6 +249,19 @@ func (m *Manager) WakeInPlace(ctx context.Context, id string) error {
 	// (e.g. under jailer, inside the chroot) are harmless no-ops.
 	_ = os.Remove(filepath.Join(s.Workdir, "api.sock"))
 	_ = os.Remove(filepath.Join(s.Workdir, "vsock.sock"))
+
+	// Re-open each encrypted volume's device, closed at sleep so it was ciphertext
+	// at rest, before the runner re-stages its node into the wake chroot. The
+	// mapper name is stable, so the paths already in st.volumes stay valid.
+	if m.cfg.VolumeManager != nil {
+		for i, vn := range s.volumeNames {
+			if i < len(st.volumes) && st.volumes[i].Encrypted {
+				if _, oerr := m.cfg.VolumeManager.OpenDevice(vn); oerr != nil {
+					return fmt.Errorf("wake: reopen encrypted volume %s for %s: %w", vn, id, oerr)
+				}
+			}
+		}
+	}
 
 	spec := runner.RestoreSpec{
 		Workdir:    s.Workdir,

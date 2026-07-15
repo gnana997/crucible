@@ -51,6 +51,17 @@ func (c *Client) DeleteVolume(ctx context.Context, name string) error {
 	return expectNoContent(resp)
 }
 
+// ShredVolume crypto-shreds an encrypted volume (POST /volumes/{name}/shred):
+// its keyslots are destroyed and its wrapped key deleted, making the data
+// permanently unrecoverable. Errors for a plaintext volume or one still attached.
+func (c *Client) ShredVolume(ctx context.Context, name string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(name)+"/shred", nil)
+	if err != nil {
+		return err
+	}
+	return expectNoContent(resp)
+}
+
 // BackupVolume takes a point-in-time backup of a volume
 // (POST /volumes/{name}/backups). Errors 409 if the volume is attached to a
 // running sandbox (sleep it first).

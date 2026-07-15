@@ -809,7 +809,7 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 			return nil, fmt.Errorf("%w: volumes requested but no volume storage configured (set --volume-dir)", ErrInvalidConfig)
 		}
 		for i, v := range req.Volumes {
-			hostPath, err := m.cfg.VolumeManager.Attach(v.Name, id)
+			hostPath, encrypted, err := m.cfg.VolumeManager.Attach(v.Name, id)
 			if err != nil {
 				return nil, fmt.Errorf("sandbox: attach volume %q: %w", v.Name, err)
 			}
@@ -820,8 +820,9 @@ func (m *Manager) Create(ctx context.Context, req CreateConfig) (*Sandbox, error
 				}
 			}()
 			volSpecs = append(volSpecs, runner.VolumeAttach{
-				DriveID:  fmt.Sprintf("vol%d", i),
-				HostPath: hostPath,
+				DriveID:   fmt.Sprintf("vol%d", i),
+				HostPath:  hostPath,
+				Encrypted: encrypted,
 			})
 			volMounts = append(volMounts, wire.MountSpec{
 				Device:     fmt.Sprintf("/dev/vd%c", 'b'+i), // rootfs is vda; vol0→vdb, vol1→vdc, …
@@ -1723,7 +1724,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 			return nil, fmt.Errorf("%w: wake with volumes but no volume storage configured", ErrInvalidConfig)
 		}
 		for i, v := range volumes {
-			hostPath, aerr := m.cfg.VolumeManager.Attach(v.Name, id)
+			hostPath, encrypted, aerr := m.cfg.VolumeManager.Attach(v.Name, id)
 			if aerr != nil {
 				return nil, fmt.Errorf("wake %s: attach volume %q: %w", id, v.Name, aerr)
 			}
@@ -1733,7 +1734,7 @@ func (m *Manager) forkOne(ctx context.Context, snap *Snapshot, tokenID string, p
 					m.cfg.VolumeManager.Release(name)
 				}
 			}()
-			volSpecs = append(volSpecs, runner.VolumeAttach{DriveID: fmt.Sprintf("vol%d", i), HostPath: hostPath})
+			volSpecs = append(volSpecs, runner.VolumeAttach{DriveID: fmt.Sprintf("vol%d", i), HostPath: hostPath, Encrypted: encrypted})
 			volNames = append(volNames, name)
 		}
 	}

@@ -55,6 +55,9 @@ var (
 	// ErrNotEncrypted means an encryption-only operation (Shred, OpenDevice) was
 	// called on a plaintext volume.
 	ErrNotEncrypted = errors.New("volume: not an encrypted volume")
+	// ErrEncryptedCloneUnsupported means Clone was asked to copy an encrypted
+	// volume, which requires a fresh key (a full re-encrypt) not yet implemented.
+	ErrEncryptedCloneUnsupported = errors.New("volume: cloning an encrypted volume is not yet supported (restore a backup instead)")
 )
 
 // Info is a volume record annotated with its live attachment.
@@ -100,7 +103,36 @@ func (m *Manager) EnableEncryption(kek []byte, keyID string, defaultEncrypt bool
 	m.kek = append([]byte(nil), kek...)
 	m.keyID = keyID
 	m.defaultEncrypt = defaultEncrypt
+	// A crashed daemon can leave decrypted mapper nodes open with no live sandbox
+	// holding them. Nothing is attached yet at startup, so close any of ours now —
+	// a leaked open device would block a fresh attach of the same volume.
+	m.reapOrphanDevices()
 	return nil
+}
+
+// reapOrphanDevices closes any crucible-owned mapper devices found open. Called
+// at startup (m.attached is empty then), so every match is an orphan from a
+// previous daemon. Best-effort: a device genuinely still in use by nothing will
+// close; anything unexpected is left for the next sweep. Enumerating /dev/mapper
+// avoids depending on dmsetup.
+func (m *Manager) reapOrphanDevices() {
+	entries, err := os.ReadDir(cryptdev.MapperDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if !strings.HasPrefix(n, "crucible-vol-") && !strings.HasPrefix(n, "crucible-fmt-") {
+			continue
+		}
+		m.mu.Lock()
+		_, live := m.attached[strings.TrimPrefix(n, "crucible-vol-")]
+		m.mu.Unlock()
+		if live {
+			continue
+		}
+		_ = m.crypt.Close(context.Background(), n)
+	}
 }
 
 // EncryptionEnabled reports whether per-volume encryption is configured.
@@ -310,7 +342,8 @@ func (m *Manager) Shred(name string) error {
 
 // OpenDevice unlocks an encrypted volume's LUKS container and returns its
 // decrypted device-mapper path (/dev/mapper/crucible-vol-<name>). The caller must
-// CloseDevice when done. Host-side only — M2 stages the node into the jail.
+// CloseDevice when done. Host-side only — exposing the resulting node to the
+// guest (staging it into the jail) is the caller's job.
 // ErrNotFound if unknown; ErrNotEncrypted for a plaintext volume.
 func (m *Manager) OpenDevice(name string) (string, error) {
 	if !nameRe.MatchString(name) {
@@ -354,44 +387,102 @@ func (m *Manager) dekFor(rec Record) ([]byte, error) {
 
 // Attach claims the named volume for sandboxID and ensures its backing file
 // exists (created + formatted on first use, at the recorded size — or the
-// default size, auto-creating a record, when the volume is new). Returns the
-// absolute host path. ErrInUse if another live sandbox holds it.
-func (m *Manager) Attach(name, sandboxID string) (string, error) {
+// default size, auto-creating a record honoring the encryption default, when the
+// volume is new). It returns the path the runner should attach and whether that
+// path is an encrypted volume's decrypted device (so the jailer stages a device
+// node, not a file hardlink): for a plaintext volume the backing file path; for
+// an encrypted volume the /dev/mapper node from opening its LUKS container.
+// ErrInUse if another live sandbox holds it; ErrEncryptionDisabled if the volume
+// is encrypted but no master key is configured. The caller pairs every Attach
+// with a Release, which closes the device.
+func (m *Manager) Attach(name, sandboxID string) (path string, encrypted bool, err error) {
 	if !nameRe.MatchString(name) {
-		return "", ErrInvalidName
+		return "", false, ErrInvalidName
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if holder, ok := m.attached[name]; ok && holder != sandboxID {
-		return "", fmt.Errorf("%w (held by sandbox %s)", ErrInUse, holder)
+		return "", false, fmt.Errorf("%w (held by sandbox %s)", ErrInUse, holder)
 	}
 	rec, known, err := m.st.get(name)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	size := m.defaultSize
-	if known {
-		size = rec.SizeBytes
-	}
-	path := filepath.Join(m.dir, name+".img")
-	if err := m.provision(path, size); err != nil {
-		return "", err
-	}
+	path = filepath.Join(m.dir, name+".img")
 	if !known {
-		if err := m.st.put(Record{Name: name, SizeBytes: size, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}); err != nil {
-			return "", err
+		if rec, err = m.autoCreateLocked(name, path); err != nil {
+			return "", false, err
+		}
+	} else if !rec.Encrypted {
+		// An encrypted container already exists; only a plaintext volume needs the
+		// backing file provisioned/formatted here (idempotent for an existing one).
+		if err := m.provision(path, rec.SizeBytes); err != nil {
+			return "", false, err
 		}
 	}
+
+	if rec.Encrypted {
+		if m.crypt == nil {
+			return "", false, ErrEncryptionDisabled
+		}
+		dek, err := m.dekFor(rec)
+		if err != nil {
+			return "", false, err
+		}
+		mapper, err := m.crypt.Open(context.Background(), path, dek, mapperName(name))
+		if err != nil {
+			return "", false, err
+		}
+		m.attached[name] = sandboxID
+		return mapper, true, nil
+	}
 	m.attached[name] = sandboxID
-	return path, nil
+	return path, false, nil
 }
 
-// Release drops the in-memory attach claim for name (idempotent). The backing
-// file + record are left in place — volumes are durable.
+// autoCreateLocked provisions + records a volume that Attach found no record for
+// (the `run --volume name:/path` first-use path), encrypting it when the daemon
+// default is on. Caller holds m.mu.
+func (m *Manager) autoCreateLocked(name, path string) (Record, error) {
+	size := m.defaultSize
+	rec := Record{Name: name, SizeBytes: size, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
+	if m.defaultEncrypt && m.crypt != nil {
+		dek, err := cryptdev.NewDEK()
+		if err != nil {
+			return Record{}, err
+		}
+		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		if err != nil {
+			return Record{}, err
+		}
+		if err := m.provisionEncrypted(context.Background(), path, size, dek, name); err != nil {
+			return Record{}, err
+		}
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+	} else if err := m.provision(path, size); err != nil {
+		return Record{}, err
+	}
+	if err := m.st.put(rec); err != nil {
+		_ = os.Remove(path)
+		return Record{}, err
+	}
+	return rec, nil
+}
+
+// Release drops the in-memory attach claim for name and, for an encrypted volume,
+// closes its decrypted device (idempotent). The backing file + record are left in
+// place — volumes are durable. The caller must have stopped the VM first, so no
+// open handle keeps the device busy.
 func (m *Manager) Release(name string) {
 	m.mu.Lock()
 	delete(m.attached, name)
 	m.mu.Unlock()
+	if m.crypt == nil {
+		return
+	}
+	if rec, ok, err := m.st.get(name); err == nil && ok && rec.Encrypted {
+		_ = m.crypt.Close(context.Background(), mapperName(name))
+	}
 }
 
 // List returns every volume record annotated with its live attachment.
@@ -567,6 +658,7 @@ func (m *Manager) Backup(name string) (BackupRecord, error) {
 	brec := BackupRecord{
 		ID: id, SourceVolume: name, SizeBytes: rec.SizeBytes,
 		CreatedAt: time.Now().UTC(), Consistency: "filesystem", HostID: m.hostID, Path: dst,
+		Encrypted: rec.Encrypted, WrappedKey: rec.WrappedKey, KeyID: rec.KeyID,
 	}
 	if err := m.st.putBackup(brec); err != nil {
 		_ = os.Remove(dst)
@@ -737,7 +829,11 @@ func (m *Manager) RestoreTo(backupID, newName string) (Record, error) {
 	} else if ok {
 		return Record{}, fmt.Errorf("%w: %s", ErrExists, newName)
 	}
-	return m.materialize(newName, brec.Path, brec.SizeBytes)
+	var enc *rewrapSrc
+	if brec.Encrypted {
+		enc = &rewrapSrc{sourceName: brec.SourceVolume, wrappedKey: brec.WrappedKey}
+	}
+	return m.materialize(newName, brec.Path, brec.SizeBytes, enc)
 }
 
 // Clone copies a quiescent source volume into a NEW volume dst, returning dst's
@@ -755,6 +851,13 @@ func (m *Manager) Clone(src, dst string) (Record, error) {
 	if !ok {
 		return Record{}, ErrNotFound
 	}
+	// An encrypted clone must get a FRESH key (no shared ciphertext lineage), which
+	// is a full decrypt-copy-encrypt, not the reflink copy below — refuse rather
+	// than silently produce a same-key clone. (Restore, by contrast, recreates the
+	// SAME volume and correctly re-wraps the same key.)
+	if srcRec.Encrypted {
+		return Record{}, ErrEncryptedCloneUnsupported
+	}
 	// Flush host-buffered writeback so the copy is durable (safe: caller vouched
 	// the source is quiescent). Sync takes m.mu, so call it before locking.
 	if err := m.Sync(src); err != nil {
@@ -767,22 +870,48 @@ func (m *Manager) Clone(src, dst string) (Record, error) {
 	} else if ok {
 		return Record{}, fmt.Errorf("%w: %s", ErrExists, dst)
 	}
-	return m.materialize(dst, filepath.Join(m.dir, src+".img"), srcRec.SizeBytes)
+	return m.materialize(dst, filepath.Join(m.dir, src+".img"), srcRec.SizeBytes, nil)
 }
 
-// materialize clones srcPath into a new volume named name (its backing file +
-// record), chowning the copy so a jailed firecracker can open it. Caller holds
+// rewrapSrc carries an encrypted source's key material so materialize can re-wrap
+// it under the new volume's name (the AAD). nil for a plaintext source.
+type rewrapSrc struct {
+	sourceName string
+	wrappedKey []byte
+}
+
+// materialize copies srcPath into a new volume named name (its backing file +
+// record). For an encrypted source (enc != nil) the copied LUKS container opens
+// with the same per-volume key; materialize re-wraps that key under the new name
+// (only the wrapping AAD changes) and leaves the container root-owned. A plaintext
+// copy is chowned so a jailed firecracker can open the file directly. Caller holds
 // m.mu and has verified name is free.
-func (m *Manager) materialize(name, srcPath string, sizeBytes int64) (Record, error) {
+func (m *Manager) materialize(name, srcPath string, sizeBytes int64, enc *rewrapSrc) (Record, error) {
 	dstPath := filepath.Join(m.dir, name+".img")
 	if err := fsutil.Clone(srcPath, dstPath); err != nil {
 		return Record{}, fmt.Errorf("volume: materialize %s: %w", name, err)
 	}
-	if err := os.Chown(dstPath, m.uid, m.gid); err != nil {
+	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
+	if enc != nil {
+		if m.crypt == nil {
+			_ = os.Remove(dstPath)
+			return Record{}, ErrEncryptionDisabled
+		}
+		dek, err := cryptdev.UnwrapKey(m.kek, enc.wrappedKey, []byte(enc.sourceName))
+		if err != nil {
+			_ = os.Remove(dstPath)
+			return Record{}, fmt.Errorf("volume: unwrap source key: %w", err)
+		}
+		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		if err != nil {
+			_ = os.Remove(dstPath)
+			return Record{}, err
+		}
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+	} else if err := os.Chown(dstPath, m.uid, m.gid); err != nil {
 		_ = os.Remove(dstPath)
 		return Record{}, fmt.Errorf("volume: chown %s: %w", dstPath, err)
 	}
-	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
 	if err := m.st.put(rec); err != nil {
 		_ = os.Remove(dstPath)
 		return Record{}, err
@@ -836,7 +965,7 @@ func (m *Manager) provision(path string, sizeBytes int64) error {
 // renamed only on success (a crash mid-format leaves no half-formatted file the
 // "exists ⇒ provisioned" check would trust) and is idempotent. The container
 // stays root-owned 0600 — only the daemon opens it; the guest gets the mapper
-// node (staged into the jail in M2), never the ciphertext file. Caller holds m.mu.
+// node, never the ciphertext file. Caller holds m.mu.
 func (m *Manager) provisionEncrypted(ctx context.Context, path string, sizeBytes int64, dek []byte, vol string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil

@@ -182,7 +182,7 @@ func (j *JailerRunner) Start(ctx context.Context, spec Spec) (Handle, error) {
 	// would silently make the volume ephemeral, so a cross-filesystem
 	// volume-dir fails loudly instead.
 	for _, v := range spec.Volumes {
-		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true}
+		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true, Device: v.Encrypted}
 	}
 	if err := jailer.Stage(jSpec, stage); err != nil {
 		_ = jailer.Cleanup(jSpec)
@@ -262,7 +262,7 @@ func (j *JailerRunner) Restore(ctx context.Context, spec RestoreSpec) (Handle, e
 	// keeps it a hardlink to the durable backing file, never a copy that would
 	// fork the data.
 	for _, v := range spec.Volumes {
-		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true}
+		stage[chrootVolPath(v.DriveID)] = jailer.StageFile{Src: v.HostPath, NoCopyFallback: true, Device: v.Encrypted}
 	}
 	if err := jailer.Stage(jSpec, stage); err != nil {
 		_ = jailer.Cleanup(jSpec)

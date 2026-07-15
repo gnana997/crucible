@@ -800,6 +800,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/volumes/{name}/shred": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Crypto-shred an encrypted volume
+         * @description Destroys the volume's keyslots and deletes its wrapped key, making the data permanently unrecoverable. 400 for a plaintext volume; 409 when attached to a live sandbox.
+         */
+        post: operations["shredVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/whoami": {
         parameters: {
             query?: never;
@@ -922,6 +942,7 @@ export interface components {
             consistency?: string;
             /** Format: date-time */
             created_at?: string;
+            encrypted?: boolean;
             host_id?: string;
             id?: string;
             /** Format: int64 */
@@ -1004,6 +1025,7 @@ export interface components {
             volumes?: components["schemas"]["VolumeMount"][];
         };
         CreateVolumeRequest: {
+            encrypt?: boolean | null;
             name?: string;
             /** Format: int64 */
             size_bytes?: number;
@@ -1242,6 +1264,7 @@ export interface components {
             attached_to?: string;
             /** Format: date-time */
             created_at?: string;
+            encrypted?: boolean;
             host_id?: string;
             name?: string;
             /** Format: int64 */
@@ -3704,6 +3727,63 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Volume"];
                 };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    shredVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Volume name ([a-z0-9][a-z0-9-]*). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Bad Request */
             400: {

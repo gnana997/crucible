@@ -46,6 +46,7 @@ class AppUsage(BaseModel):
 class Backup(BaseModel):
     consistency: str | None = None
     created_at: AwareDatetime | None = None
+    encrypted: bool | None = None
     host_id: str | None = None
     id: str | None = None
     size_bytes: int | None = None
@@ -68,6 +69,7 @@ class CloneVolReq(BaseModel):
 
 
 class CreateVolumeRequest(BaseModel):
+    encrypt: bool | None = None
     name: str | None = None
     size_bytes: int | None = None
 
@@ -274,6 +276,7 @@ class UsageListResponse(BaseModel):
 class Volume(BaseModel):
     attached_to: str | None = None
     created_at: AwareDatetime | None = None
+    encrypted: bool | None = None
     host_id: str | None = None
     name: str | None = None
     size_bytes: int | None = None

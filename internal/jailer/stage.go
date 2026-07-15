@@ -43,6 +43,14 @@ type StageFile struct {
 	// — the operator must put --volume-dir on the same filesystem as the
 	// chroot base. Ignored when Shared is set.
 	NoCopyFallback bool
+
+	// Device marks Src as a block device (an encrypted volume's decrypted
+	// /dev/mapper node) rather than a regular file. It cannot be hard-linked or
+	// copied into the chroot, so it is staged by mknod'ing a block-special node
+	// with Src's major:minor, owned by the jail uid, 0600. Removing the node (on
+	// chroot teardown) does not touch the underlying device — its lifecycle is the
+	// volume manager's. Mutually exclusive with Shared / NoCopyFallback.
+	Device bool
 }
 
 // Stage places host files into this spec's chroot so firecracker can
@@ -97,6 +105,10 @@ func stageOne(dst string, f StageFile, uid, gid uint32) error {
 		return fmt.Errorf("jailer: remove stale dst %s: %w", dst, err)
 	}
 
+	if f.Device {
+		return stageDevice(dst, f.Src, uid, gid)
+	}
+
 	if f.Shared {
 		// Independent, read-only copy — own inode, so neither the
 		// chmod below nor any VMM write can reach the shared source.
@@ -136,6 +148,32 @@ func stageOne(dst string, f StageFile, uid, gid uint32) error {
 
 	if err := os.Chown(dst, int(uid), int(gid)); err != nil {
 		return fmt.Errorf("jailer: chown %s to %d:%d: %w", dst, uid, gid, err)
+	}
+	return nil
+}
+
+// stageDevice places a block device into the chroot by creating a block-special
+// node at dst with the same major:minor as src, owned by the jail uid/gid and
+// mode 0600. This is how an encrypted volume's decrypted /dev/mapper node reaches
+// the jailed firecracker — it can't be hard-linked (device nodes on devtmpfs) or
+// copied. src MUST be a block device; a non-block src is rejected so a mistaken
+// caller can never mknod something unexpected into the jail. The node grants
+// access only to this one device (its major:minor); the jailed VMM lacks CAP_MKNOD
+// (privileges dropped + seccomp) to create any other. Under cgroup v2 there is no
+// devices controller to update.
+func stageDevice(dst, src string, uid, gid uint32) error {
+	var st unix.Stat_t
+	if err := unix.Stat(src, &st); err != nil {
+		return fmt.Errorf("jailer: stat device %s: %w", src, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFBLK {
+		return fmt.Errorf("jailer: %s is not a block device (mode %#o); refusing to stage", src, st.Mode)
+	}
+	if err := unix.Mknod(dst, unix.S_IFBLK|0o600, int(st.Rdev)); err != nil {
+		return fmt.Errorf("jailer: mknod %s (block %d): %w", dst, st.Rdev, err)
+	}
+	if err := os.Chown(dst, int(uid), int(gid)); err != nil {
+		return fmt.Errorf("jailer: chown device %s to %d:%d: %w", dst, uid, gid, err)
 	}
 	return nil
 }

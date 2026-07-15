@@ -125,12 +125,16 @@ type Volume struct {
 	CreatedAt  time.Time `json:"created_at"`
 	HostID     string    `json:"host_id,omitempty"`     // host this volume is pinned to
 	AttachedTo string    `json:"attached_to,omitempty"` // sandbox id, empty if detached
+	Encrypted  bool      `json:"encrypted,omitempty"`   // per-volume LUKS encryption at rest
 }
 
 // CreateVolumeRequest is the body of POST /volumes.
 type CreateVolumeRequest struct {
 	Name      string `json:"name"`
 	SizeBytes int64  `json:"size_bytes,omitempty"` // 0 = daemon default
+	// Encrypt overrides the daemon's --volume-encrypt default for this volume:
+	// nil = use the default, non-nil = force on/off. Requires a master key.
+	Encrypt *bool `json:"encrypt,omitempty"`
 }
 
 // VolumeListResponse is the body of GET /volumes.
@@ -146,6 +150,7 @@ type Backup struct {
 	CreatedAt    time.Time `json:"created_at"`
 	Consistency  string    `json:"consistency,omitempty"` // "filesystem"
 	HostID       string    `json:"host_id,omitempty"`
+	Encrypted    bool      `json:"encrypted,omitempty"` // backup of an encrypted volume (ciphertext)
 }
 
 // BackupListResponse is the body of GET /backups and GET /volumes/{name}/backups.

@@ -140,5 +140,9 @@ durable than the disk you point it at.
 - **Volume backups** *(shipped v0.6.3)* — a consistent point-in-time copy of a
   volume for backup, clone, and off-host durability, including a no-downtime live
   backup via fsfreeze. See [backups.md](backups.md).
+- **Encryption at rest** *(shipped v0.8.0)* — each volume can be its own LUKS
+  container with its own key, so the backing file is ciphertext and a volume's data
+  can be crypto-shredded by destroying that key (`volume create --encrypt`,
+  `volume shred`). See [encryption.md](encryption.md).
 
 See the [ROADMAP](ROADMAP.md) for sequencing.

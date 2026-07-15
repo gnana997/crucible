@@ -150,7 +150,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		jailGID    = fs.Uint("jail-gid", defaultJailGID(), "unprivileged gid jailer drops to before exec'ing firecracker (defaults to the kvm group so the jailed firecracker can open /dev/kvm)")
 		volumeDir  = fs.String("volume-dir", "", "directory for persistent volume backing files; enables --volume when set (must be on the same filesystem as --chroot-base so volumes hardlink into the jail)")
 		volumeSize = fs.Int64("volume-default-size", 2<<30, "size in bytes a volume's backing file is created at on first use (2 GiB default; per-volume sizing lands in a later release)")
-		backupDir  = fs.String("backup-dir", "", "directory for volume backups (default <volume-dir>/backups); point at another disk/mount for off-host durability. Backups reflink (O(1)) only when this shares the volume-dir filesystem, else a full copy")
+
+		volumeEncrypt = fs.Bool("volume-encrypt", false, "encrypt new volumes at rest with per-volume LUKS keys (needs a master key via --volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY); existing volumes are unaffected")
+		volumeKeyFile = fs.String("volume-encrypt-key-file", "", "file holding the base64 AES-256 master key that wraps per-volume encryption keys; generated 0600 on first use if absent, overridden by CRUCIBLE_VOLUME_KEY. Enables encrypted volumes + `volume shred`.")
+		backupDir     = fs.String("backup-dir", "", "directory for volume backups (default <volume-dir>/backups); point at another disk/mount for off-host durability. Backups reflink (O(1)) only when this shares the volume-dir filesystem, else a full copy")
 		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
 		// pids.max) for each sandbox's VMM from its vCPU/memory request.
 		// Only takes effect under jailer mode; the direct-exec runner has
@@ -516,6 +519,26 @@ Required flags:
 		volMgr.SetBackupDir(*backupDir)
 		defer func() { _ = volMgr.Close() }()
 		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize, "host_id", hostID)
+
+		// Per-volume encryption at rest (opt-in). EnableEncryption also reaps any
+		// mapper devices a crashed daemon left open, so it must run here — at
+		// startup, before the HTTP listener opens and any volume is attached.
+		if key, generated, kerr := secretstore.LoadMasterKeyFrom("CRUCIBLE_VOLUME_KEY", *volumeKeyFile); kerr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: volume encryption key: %v\n", kerr)
+			return 2
+		} else if key != nil {
+			if generated {
+				logger.Warn("generated a new volume encryption master key — BACK IT UP; losing it loses every encrypted volume", "file", *volumeKeyFile)
+			}
+			if eerr := volMgr.EnableEncryption(key, "default", *volumeEncrypt); eerr != nil {
+				_, _ = fmt.Fprintf(stderr, "error: enable volume encryption: %v\n", eerr)
+				return 2
+			}
+			logger.Info("volume encryption enabled", "default_encrypt", *volumeEncrypt)
+		} else if *volumeEncrypt {
+			_, _ = fmt.Fprintf(stderr, "error: --volume-encrypt requires a master key (--volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY)\n")
+			return 2
+		}
 	}
 
 	mgrCfg := sandbox.ManagerConfig{
