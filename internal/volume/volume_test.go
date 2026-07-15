@@ -114,7 +114,7 @@ func TestAttachRejectsBadName(t *testing.T) {
 
 func TestCreateListAndDuplicate(t *testing.T) {
 	m := newMgr(t, t.TempDir())
-	rec, err := m.Create("big", 16<<20)
+	rec, err := m.Create("big", 16<<20, CreateOpts{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestCreateListAndDuplicate(t *testing.T) {
 	if err != nil || len(infos) != 1 || infos[0].Name != "big" {
 		t.Fatalf("List = %+v, err %v; want one volume 'big'", infos, err)
 	}
-	if _, err := m.Create("big", 0); !errors.Is(err, ErrExists) {
+	if _, err := m.Create("big", 0, CreateOpts{}); !errors.Is(err, ErrExists) {
 		t.Fatalf("duplicate Create err = %v, want ErrExists", err)
 	}
 }
@@ -157,7 +157,7 @@ func TestRemoveRefusesAttachedThenSucceeds(t *testing.T) {
 func TestRecordsPersistAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	m1 := newMgr(t, dir)
-	if _, err := m1.Create("keep", 16<<20); err != nil {
+	if _, err := m1.Create("keep", 16<<20, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	_ = m1.Close()
@@ -197,7 +197,7 @@ func TestDiskBytesAccounting(t *testing.T) {
 	if got := m.DiskBytes(); got != 0 {
 		t.Fatalf("DiskBytes with no volumes = %d, want 0", got)
 	}
-	if _, err := m.Create("data", testSize); err != nil {
+	if _, err := m.Create("data", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestDiskBytesAccounting(t *testing.T) {
 func TestOpenBackupStreamsTheFile(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Create("data", testSize); err != nil {
+	if _, err := m.Create("data", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	b, err := m.Backup("data")
@@ -273,7 +273,7 @@ func TestOpenBackupStreamsTheFile(t *testing.T) {
 func TestBackupExportImportRestoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Create("data", testSize); err != nil {
+	if _, err := m.Create("data", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// A recognizable byte in the backing file so we can prove data survived.
@@ -336,7 +336,7 @@ func TestBackupExportImportRestoreRoundTrip(t *testing.T) {
 func TestBackupCreatesListsAndDeletes(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Create("data", testSize); err != nil {
+	if _, err := m.Create("data", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	b, err := m.Backup("data")
@@ -398,7 +398,7 @@ func TestSetBackupDirOverrides(t *testing.T) {
 	dir, alt := t.TempDir(), t.TempDir()
 	m := newMgr(t, dir)
 	m.SetBackupDir(alt)
-	if _, err := m.Create("v", testSize); err != nil {
+	if _, err := m.Create("v", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	b, err := m.Backup("v")
@@ -413,7 +413,7 @@ func TestSetBackupDirOverrides(t *testing.T) {
 func TestRestoreToNewVolume(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Create("src", testSize); err != nil {
+	if _, err := m.Create("src", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	b, err := m.Backup("src")
@@ -448,7 +448,7 @@ func TestRestoreToNewVolume(t *testing.T) {
 func TestCloneVolume(t *testing.T) {
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if _, err := m.Create("orig", testSize); err != nil {
+	if _, err := m.Create("orig", testSize, CreateOpts{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	rec, err := m.Clone("orig", "copy")

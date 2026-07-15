@@ -46,7 +46,7 @@ func (s *Server) handleCreateVolume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	rec, err := s.cfg.Volumes.Create(req.Name, req.SizeBytes)
+	rec, err := s.cfg.Volumes.Create(req.Name, req.SizeBytes, volume.CreateOpts{})
 	if err != nil {
 		writeError(w, volumeErrStatus(err), err)
 		return

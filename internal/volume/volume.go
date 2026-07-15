@@ -11,6 +11,7 @@ package volume
 
 import (
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gnana997/crucible/internal/cryptdev"
 	"github.com/gnana997/crucible/internal/fsutil"
 )
 
@@ -47,6 +49,12 @@ var (
 	ErrNotFound = errors.New("volume: not found")
 	// ErrBackupNotFound means no backup of that id exists.
 	ErrBackupNotFound = errors.New("volume: backup not found")
+	// ErrEncryptionDisabled means an encrypted volume was requested but no master
+	// key is configured (EnableEncryption was never called).
+	ErrEncryptionDisabled = errors.New("volume: encryption not enabled (no master key configured)")
+	// ErrNotEncrypted means an encryption-only operation (Shred, OpenDevice) was
+	// called on a plaintext volume.
+	ErrNotEncrypted = errors.New("volume: not an encrypted volume")
 )
 
 // Info is a volume record annotated with its live attachment.
@@ -65,9 +73,51 @@ type Manager struct {
 	uid, gid      int
 	st            *store
 
+	// Encryption (per-volume LUKS). crypt is nil unless EnableEncryption was
+	// called; kek is the 32-byte master key that wraps per-volume DEKs.
+	crypt          *cryptdev.Engine
+	kek            []byte
+	keyID          string
+	defaultEncrypt bool
+
 	mu       sync.Mutex
 	attached map[string]string // volume name -> sandbox id holding the single-writer claim
 }
+
+// EnableEncryption turns on per-volume LUKS encryption. kek is the 32-byte daemon
+// master key (from secretstore.LoadMasterKey), keyID names it for future rotation,
+// and defaultEncrypt makes new volumes encrypted unless a CreateOpts overrides.
+// Call once at startup, before serving requests. Errors if cryptsetup is missing
+// or the key is the wrong size — encryption fails loud, never silently off.
+func (m *Manager) EnableEncryption(kek []byte, keyID string, defaultEncrypt bool) error {
+	if len(kek) != cryptdev.KEKSize {
+		return fmt.Errorf("volume: master key must be %d bytes, got %d", cryptdev.KEKSize, len(kek))
+	}
+	if err := cryptdev.Available(); err != nil {
+		return err
+	}
+	m.crypt = cryptdev.New()
+	m.kek = append([]byte(nil), kek...)
+	m.keyID = keyID
+	m.defaultEncrypt = defaultEncrypt
+	return nil
+}
+
+// EncryptionEnabled reports whether per-volume encryption is configured.
+func (m *Manager) EncryptionEnabled() bool { return m.crypt != nil }
+
+// CreateOpts carries per-call overrides for Create. A nil Encrypt uses the
+// manager's default (--volume-encrypt); a non-nil Encrypt forces the choice.
+type CreateOpts struct {
+	Encrypt *bool
+}
+
+// mapperName is the device-mapper name for a live volume's decrypted node.
+func mapperName(vol string) string { return "crucible-vol-" + vol }
+
+// fmtMapperName is a distinct mapper name used only while formatting a new
+// volume, so a format can never collide with a live attach of the same name.
+func fmtMapperName(vol string) string { return "crucible-fmt-" + vol }
 
 // NewManager opens (creating if absent) the volume directory + record store,
 // preflights mkfs.ext4, and back-fills records for any pre-existing backing
@@ -146,6 +196,13 @@ func (m *Manager) backfill() error {
 		} else if ok {
 			continue
 		}
+		// A LUKS container with no record is unrecoverable (its only key lived in
+		// the lost record) — never back-fill it as a plaintext volume, which would
+		// mis-mount ciphertext. Detect it by its header magic (engine-independent:
+		// backfill runs before EnableEncryption).
+		if looksLikeLUKS(filepath.Join(m.dir, e.Name())) {
+			continue
+		}
 		fi, err := e.Info()
 		if err != nil {
 			continue
@@ -159,13 +216,22 @@ func (m *Manager) backfill() error {
 }
 
 // Create explicitly provisions a new volume at sizeBytes (<=0 → default),
-// recording it durably. Errors with ErrExists if the name is taken.
-func (m *Manager) Create(name string, sizeBytes int64) (Record, error) {
+// recording it durably. opts.Encrypt (nil = manager default) makes it a
+// per-volume LUKS container. Errors with ErrExists if the name is taken, or
+// ErrEncryptionDisabled if encryption is requested but no master key is set.
+func (m *Manager) Create(name string, sizeBytes int64, opts CreateOpts) (Record, error) {
 	if !nameRe.MatchString(name) {
 		return Record{}, ErrInvalidName
 	}
 	if sizeBytes <= 0 {
 		sizeBytes = m.defaultSize
+	}
+	encrypt := m.defaultEncrypt
+	if opts.Encrypt != nil {
+		encrypt = *opts.Encrypt
+	}
+	if encrypt && m.crypt == nil {
+		return Record{}, ErrEncryptionDisabled
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -175,14 +241,115 @@ func (m *Manager) Create(name string, sizeBytes int64) (Record, error) {
 		return Record{}, fmt.Errorf("%w: %s", ErrExists, name)
 	}
 	path := filepath.Join(m.dir, name+".img")
-	if err := m.provision(path, sizeBytes); err != nil {
+	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
+	if encrypt {
+		dek, err := cryptdev.NewDEK()
+		if err != nil {
+			return Record{}, err
+		}
+		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		if err != nil {
+			return Record{}, err
+		}
+		if err := m.provisionEncrypted(context.Background(), path, sizeBytes, dek, name); err != nil {
+			return Record{}, err
+		}
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+	} else if err := m.provision(path, sizeBytes); err != nil {
 		return Record{}, err
 	}
-	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
 	if err := m.st.put(rec); err != nil {
+		_ = os.Remove(path) // never leave a keyless container the backfill would mistype
 		return Record{}, err
 	}
 	return rec, nil
+}
+
+// Shred crypto-shreds an encrypted volume: it destroys the LUKS keyslots
+// (belt-and-suspenders) and deletes the wrapped key with the record — the only
+// copy of the key — so the data is permanently unrecoverable without touching the
+// ciphertext blocks. ErrInUse if a live sandbox holds it; ErrNotFound if absent;
+// ErrNotEncrypted for a plaintext volume (use Remove).
+func (m *Manager) Shred(name string) error {
+	if !nameRe.MatchString(name) {
+		return ErrInvalidName
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if holder, ok := m.attached[name]; ok {
+		return fmt.Errorf("%w (held by sandbox %s)", ErrInUse, holder)
+	}
+	rec, ok, err := m.st.get(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if !rec.Encrypted {
+		return ErrNotEncrypted
+	}
+	path := filepath.Join(m.dir, name+".img")
+	if m.crypt != nil {
+		_ = m.crypt.Close(context.Background(), mapperName(name)) // ensure closed before erase
+		if _, statErr := os.Stat(path); statErr == nil {
+			if err := m.crypt.Erase(context.Background(), path); err != nil {
+				return err
+			}
+		}
+	}
+	// Deleting the record removes the sole copy of the wrapped DEK.
+	if err := m.st.del(name); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("volume: remove backing file: %w", err)
+	}
+	return nil
+}
+
+// OpenDevice unlocks an encrypted volume's LUKS container and returns its
+// decrypted device-mapper path (/dev/mapper/crucible-vol-<name>). The caller must
+// CloseDevice when done. Host-side only — M2 stages the node into the jail.
+// ErrNotFound if unknown; ErrNotEncrypted for a plaintext volume.
+func (m *Manager) OpenDevice(name string) (string, error) {
+	if !nameRe.MatchString(name) {
+		return "", ErrInvalidName
+	}
+	if m.crypt == nil {
+		return "", ErrEncryptionDisabled
+	}
+	rec, ok, err := m.st.get(name)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", ErrNotFound
+	}
+	if !rec.Encrypted {
+		return "", ErrNotEncrypted
+	}
+	dek, err := m.dekFor(rec)
+	if err != nil {
+		return "", err
+	}
+	return m.crypt.Open(context.Background(), filepath.Join(m.dir, name+".img"), dek, mapperName(name))
+}
+
+// CloseDevice deactivates an encrypted volume's mapper node (idempotent).
+func (m *Manager) CloseDevice(name string) error {
+	if m.crypt == nil {
+		return nil
+	}
+	return m.crypt.Close(context.Background(), mapperName(name))
+}
+
+// dekFor unwraps a record's per-volume key with the master KEK.
+func (m *Manager) dekFor(rec Record) ([]byte, error) {
+	if len(rec.WrappedKey) == 0 {
+		return nil, fmt.Errorf("volume: %s has no wrapped key", rec.Name)
+	}
+	return cryptdev.UnwrapKey(m.kek, rec.WrappedKey, []byte(rec.Name))
 }
 
 // Attach claims the named volume for sandboxID and ensures its backing file
@@ -659,6 +826,87 @@ func (m *Manager) provision(path string, sizeBytes int64) error {
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("volume: finalize %s: %w", path, err)
+	}
+	return nil
+}
+
+// provisionEncrypted creates a LUKS2 container at path and formats ext4 on its
+// decrypted device. The file is sized sizeBytes + the LUKS header so the guest
+// sees the full requested capacity. Like provision, it formats a temp file
+// renamed only on success (a crash mid-format leaves no half-formatted file the
+// "exists ⇒ provisioned" check would trust) and is idempotent. The container
+// stays root-owned 0600 — only the daemon opens it; the guest gets the mapper
+// node (staged into the jail in M2), never the ciphertext file. Caller holds m.mu.
+func (m *Manager) provisionEncrypted(ctx context.Context, path string, sizeBytes int64, dek []byte, vol string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("volume: stat %s: %w", path, err)
+	}
+
+	tmp := path + ".tmp"
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("volume: create %s: %w", tmp, err)
+	}
+	if err := f.Truncate(sizeBytes + cryptdev.LUKSHeaderBytes); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: size %s: %w", tmp, err)
+	}
+	_ = f.Close()
+
+	if err := m.crypt.Format(ctx, tmp, dek); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: %w", err)
+	}
+	mname := fmtMapperName(vol)
+	mapper, err := m.crypt.Open(ctx, tmp, dek, mname)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: %w", err)
+	}
+	mkfsErr := mkfsExt4(mapper)
+	_ = m.crypt.Close(ctx, mname) // always release the mapper + loop device
+	if mkfsErr != nil {
+		_ = os.Remove(tmp)
+		return mkfsErr
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("volume: finalize %s: %w", path, err)
+	}
+	return nil
+}
+
+// luksMagic is the 6-byte signature at the start of every LUKS1/LUKS2 header.
+var luksMagic = []byte{'L', 'U', 'K', 'S', 0xba, 0xbe}
+
+// looksLikeLUKS reports whether path begins with the LUKS header magic, so
+// backfill can recognise an encrypted container without the crypt engine.
+func looksLikeLUKS(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	var buf [6]byte
+	if _, err := io.ReadFull(f, buf[:]); err != nil {
+		return false
+	}
+	for i := range luksMagic {
+		if buf[i] != luksMagic[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// mkfsExt4 formats dev (a plain file or a decrypted mapper device) ext4.
+func mkfsExt4(dev string) error {
+	if out, err := exec.Command("mkfs.ext4", "-F", "-q", "-m", "0", dev).CombinedOutput(); err != nil {
+		return fmt.Errorf("volume: mkfs.ext4 %s: %w: %s", dev, err, string(out))
 	}
 	return nil
 }

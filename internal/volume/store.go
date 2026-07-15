@@ -19,6 +19,17 @@ type Record struct {
 	CreatedAt time.Time `json:"created_at"`
 	Formatted bool      `json:"formatted"` // true once mkfs has succeeded on the backing file
 	HostID    string    `json:"host_id"`   // host-pin for future multi-host placement; recorded at create
+	// Encrypted marks a LUKS2-encrypted volume: its backing file is ciphertext and
+	// it opens through a device-mapper node keyed by WrappedKey. omitempty keeps a
+	// plaintext record (and every pre-v0.8.0 record) byte-identical.
+	Encrypted bool `json:"encrypted,omitempty"`
+	// WrappedKey is the per-volume DEK sealed under the daemon master KEK
+	// (cryptdev.WrapKey, AAD=Name) — never the plaintext key. It is the ONLY copy
+	// of the key material; deleting the record crypto-shreds the volume. Empty
+	// unless Encrypted.
+	WrappedKey []byte `json:"wrapped_key,omitempty"`
+	// KeyID names which master KEK wrapped WrappedKey, for future key rotation.
+	KeyID string `json:"key_id,omitempty"`
 }
 
 // BackupRecord is the persisted metadata of one volume backup, keyed by ID. A

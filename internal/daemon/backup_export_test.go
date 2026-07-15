@@ -29,7 +29,7 @@ func exportTestServer(t *testing.T) (srv *Server, backupID, backupPath, bkTok, r
 		t.Skipf("volume manager unavailable: %v", err)
 	}
 	t.Cleanup(func() { _ = vm.Close() })
-	if _, err := vm.Create("data", 8<<20); err != nil {
+	if _, err := vm.Create("data", 8<<20, volume.CreateOpts{}); err != nil {
 		t.Fatalf("Create volume: %v", err)
 	}
 	b, err := vm.Backup("data")
