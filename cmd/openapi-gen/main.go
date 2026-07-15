@@ -68,6 +68,18 @@ type updateAppReq struct {
 	api.AppSpec
 }
 
+// addDomainReq is POST /apps/{name}/domains: the {name} path param + the body.
+type addDomainReq struct {
+	appNameParam
+	api.AddDomainRequest
+}
+
+// appDomainParam is DELETE /apps/{name}/domains/{domain}: both path params.
+type appDomainParam struct {
+	appNameParam
+	Domain string `path:"domain" description:"The custom domain (FQDN) to detach."`
+}
+
 // appExecReq / appLogsReq mirror execReq / logsReq but key on the app {name};
 // the daemon resolves it to the current instance before delegating.
 type appExecReq struct {
@@ -258,6 +270,18 @@ func buildReflector() *openapi3.Reflector {
 	jsonOp(http.MethodDelete, "/apps/{name}", "deleteApp", "apps", "Delete an app",
 		"Removes the app and tears down its instance on the next reconcile.",
 		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/apps/{name}/domains", "listAppDomains", "apps", "List an app's custom domains",
+		"The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in "+
+			"terminate mode, obtains a certificate for each.",
+		appNameParam{}, api.DomainListResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodPost, "/apps/{name}/domains", "addAppDomain", "apps", "Attach a custom domain to an app",
+		"Attaches a custom domain (FQDN, globally unique — one domain to one app). A request whose Host "+
+			"is the domain then routes to this app, and in terminate mode the proxy obtains a cert for it.",
+		addDomainReq{}, api.AppResponse{}, http.StatusOK,
+		http.StatusBadRequest, http.StatusConflict, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/apps/{name}/domains/{domain}", "removeAppDomain", "apps", "Detach a custom domain",
+		"Detaches a custom domain from the app (idempotent).",
+		appDomainParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
 
 	// --- sandboxes ---
 	// --- registry credentials (v0.4.4) ---

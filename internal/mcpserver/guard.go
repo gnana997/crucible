@@ -143,7 +143,11 @@ func toolOps(name string) []policy.Operation {
 		// Scale-to-zero lifecycle mutation of a running app (snapshot+stop,
 		// restore) — exec-grade, like create_app/update_app.
 		return []policy.Operation{policy.OpExec}
-	case "list_apps", "get_app":
+	case "app_domain_add", "app_domain_rm":
+		// Attaching/detaching a custom domain is app config — exec-grade
+		// (matches the daemon's POST/DELETE /apps/{name}/domains gate).
+		return []policy.Operation{policy.OpExec}
+	case "list_apps", "get_app", "app_domain_ls":
 		return []policy.Operation{policy.OpRead}
 	case "exec", "app_exec":
 		return []policy.Operation{policy.OpExec}

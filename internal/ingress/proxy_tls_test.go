@@ -57,10 +57,12 @@ func selfSigned(t *testing.T, dnsName string) (tls.Certificate, *x509.CertPool) 
 	return cert, pool
 }
 
-// staticCerts is a CertProvider serving one keypair for every SNI.
+// staticCerts is a CertProvider serving one keypair for every SNI, with no ACME
+// (HTTP-01 always declines).
 type staticCerts struct{ cfg *tls.Config }
 
-func (s staticCerts) TLSConfig() *tls.Config { return s.cfg }
+func (s staticCerts) TLSConfig() *tls.Config                                      { return s.cfg }
+func (s staticCerts) HandleHTTPChallenge(http.ResponseWriter, *http.Request) bool { return false }
 
 // tlsClient makes an HTTP client whose TLS dials go to addr with the given SNI
 // and trust pool, regardless of the request URL's host.
@@ -161,6 +163,58 @@ func TestProxyTLSPassthroughWhenOptedOut(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK || string(body) != "guest-served" {
 		t.Fatalf("status=%d body=%q, want 200 'guest-served' (piped to the guest)", resp.StatusCode, body)
+	}
+}
+
+// challengeCerts is a CertProvider that answers an ACME HTTP-01 challenge path
+// (and has no usable tls.Config — the HTTP-01 test never terminates TLS).
+type challengeCerts struct{ token string }
+
+func (challengeCerts) TLSConfig() *tls.Config { return nil }
+func (c challengeCerts) HandleHTTPChallenge(w http.ResponseWriter, r *http.Request) bool {
+	if len(r.URL.Path) >= len(acmeChallengePrefix) && r.URL.Path[:len(acmeChallengePrefix)] == acmeChallengePrefix {
+		_, _ = io.WriteString(w, c.token)
+		return true
+	}
+	return false
+}
+
+const acmeChallengePrefix = "/.well-known/acme-challenge/"
+
+// TestProxyHTTP01ChallengeShortCircuits: the :80 handler serves an ACME HTTP-01
+// challenge via the cert provider before any app routing, and declines
+// non-challenge requests (which then route/404 normally).
+func TestProxyHTTP01ChallengeShortCircuits(t *testing.T) {
+	apps := fakeApps{apps: map[string]api.AppResponse{"web": runningApp("web", 9, "sbx_1")}}
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "127.0.0.1"}}
+	p := New(Config{
+		Resolver: NewResolver(apps, inst, "apps.local", "", 0),
+		Certs:    challengeCerts{token: "tok-abc"},
+		Logger:   quietLog(),
+	})
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	resp, err := http.Get(front.URL + acmeChallengePrefix + "xyz")
+	if err != nil {
+		t.Fatalf("challenge request: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "tok-abc" {
+		t.Errorf("challenge body = %q, want the token (HTTP-01 must short-circuit routing)", body)
+	}
+
+	// A non-challenge request for an unknown host is declined by the hook and 404s.
+	req, _ := http.NewRequest(http.MethodGet, front.URL, nil)
+	req.Host = "nope.apps.local"
+	r2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("normal request: %v", err)
+	}
+	_ = r2.Body.Close()
+	if r2.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown host status = %d, want 404 (challenge hook must decline)", r2.StatusCode)
 	}
 }
 

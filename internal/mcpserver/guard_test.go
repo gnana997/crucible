@@ -27,7 +27,7 @@ func TestToolMirrorByPolicy(t *testing.T) {
 	for _, tl := range res.Tools {
 		got[tl.Name] = true
 	}
-	shown := []string{"exec", "app_exec", "app_sleep", "app_wake", "write_files", "read_file", "stop_sandbox", "logs", "app_logs", "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles", "list_images", "list_volumes", "create_app", "update_app", "list_apps", "get_app"}
+	shown := []string{"exec", "app_exec", "app_sleep", "app_wake", "write_files", "read_file", "stop_sandbox", "logs", "app_logs", "list_sandboxes", "inspect_sandbox", "list_snapshots", "list_profiles", "list_images", "list_volumes", "create_app", "update_app", "list_apps", "get_app", "app_domain_add", "app_domain_rm", "app_domain_ls"}
 	hidden := []string{"run", "create_sandbox", "snapshot", "fork", "delete_sandbox", "delete_snapshot", "delete_app", "delete_image", "capture", "volume_create", "delete_volume", "volume_backup", "volume_restore"}
 	for _, n := range shown {
 		if !got[n] {
@@ -50,8 +50,8 @@ func TestToolMirrorFullPolicyAdvertisesAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Tools) != 32 {
-		t.Errorf("all-ops policy advertised %d tools, want 32", len(res.Tools))
+	if len(res.Tools) != 35 {
+		t.Errorf("all-ops policy advertised %d tools, want 35", len(res.Tools))
 	}
 }
 

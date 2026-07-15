@@ -90,6 +90,11 @@ func (s *Server) routes() *http.ServeMux {
 	// Scale-to-zero (v0.5.0): sleep frees the instance's RAM, wake restores it.
 	mux.HandleFunc("POST /apps/{name}/sleep", s.handleSleepApp)
 	mux.HandleFunc("POST /apps/{name}/wake", s.handleWakeApp)
+	// Custom domains (v0.7.0): attach/detach/list FQDNs the ingress proxy routes
+	// (and, in terminate mode, obtains a cert for). Config ops, gated as exec.
+	mux.HandleFunc("GET /apps/{name}/domains", s.handleListAppDomains)
+	mux.HandleFunc("POST /apps/{name}/domains", s.handleAddAppDomain)
+	mux.HandleFunc("DELETE /apps/{name}/domains/{domain}", s.handleRemoveAppDomain)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	// Private-registry credentials (v0.4.4): manage the creds used for image

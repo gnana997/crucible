@@ -40,6 +40,7 @@ import (
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/telemetry"
+	"github.com/gnana997/crucible/internal/tlscert"
 	"github.com/gnana997/crucible/internal/tokenstore"
 	"github.com/gnana997/crucible/internal/volume"
 )
@@ -201,8 +202,15 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 
 		// Ingress proxy (v0.4.2): route inbound traffic to an app by name.
 		proxyListen    = fs.String("proxy-listen", "", "ingress proxy HTTP listen address (e.g. :80): routes by Host header to an app's current instance. Requires --app-db. Empty disables the HTTP proxy.")
-		proxyTLSListen = fs.String("proxy-tls-listen", "", "ingress proxy TLS listen address (e.g. :443): SNI passthrough to an app's current instance (the guest terminates TLS). Empty disables it.")
-		proxyDomain    = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
+		proxyTLSListen = fs.String("proxy-tls-listen", "", "ingress proxy TLS listen address (e.g. :443): terminates TLS for apps (default) or SNI-passthrough per app. Empty disables it.")
+		// TLS termination for app HTTPS (v0.7.0). Setting --acme-email (ACME/Let's
+		// Encrypt, automatic certs) OR --cert-dir (manual certs / storage) enables
+		// termination on --proxy-tls-listen; with neither, :443 stays passthrough-only.
+		acmeEmail   = fs.String("acme-email", "", "ACME account email — enables automatic HTTPS (Let's Encrypt) for app domains on --proxy-tls-listen. Empty = no ACME.")
+		acmeCA      = fs.String("acme-ca", "production", "ACME CA: production | staging (Let's Encrypt), used when --acme-email is set")
+		acmeCAURL   = fs.String("acme-ca-url", "", "override the ACME directory URL (e.g. a Pebble/private-CA endpoint); takes precedence over --acme-ca")
+		certDir     = fs.String("cert-dir", "", "directory for TLS certs, keys, and ACME state (default /var/lib/crucible/certs when TLS termination is enabled)")
+		proxyDomain = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
 		// App→app service networking (v0.5.1, experimental). Off by default:
 		// reachability is default-deny — an app reaches a peer only if its spec
 		// grants it (`app create --can-call <peer>`); ungranted calls get
@@ -691,6 +699,38 @@ Required flags:
 				logger.Warn("internal-networking requested but network is disabled; app→app networking off (set --network-egress-iface + --jailer-bin)")
 			}
 			resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, *proxyDomain, internalZone, time.Second)
+
+			// TLS termination (v0.7.0): enabled when --acme-email or --cert-dir is
+			// set. On-demand ACME issuance is gated to registered terminate-mode app
+			// domains (resolver.TLSTerminate), so a stray SNI can't burn a cert.
+			var certProvider ingress.CertProvider
+			if *proxyTLSListen != "" && (*acmeEmail != "" || *certDir != "") {
+				cd := *certDir
+				if cd == "" {
+					cd = "/var/lib/crucible/certs"
+				}
+				tp, terr := tlscert.New(tlscert.Config{
+					CertDir: cd,
+					Email:   *acmeEmail,
+					CAURL:   *acmeCAURL,
+					Staging: *acmeCA == "staging",
+					Allow:   resolver.TLSTerminate,
+				})
+				if terr != nil {
+					logger.Error("TLS termination setup failed", "err", terr)
+					return 1
+				}
+				defer tp.Close()
+				certProvider = tp
+				// Pre-warm a cert when a custom domain is attached, so the first
+				// live HTTPS request isn't delayed by issuance (best-effort).
+				appMgr.SetOnDomainAdd(func(domain string) {
+					if err := tp.Prewarm(context.Background(), domain); err != nil {
+						logger.Warn("cert pre-warm failed; on-demand will cover it", "domain", domain, "err", err)
+					}
+				})
+				logger.Info("ingress TLS termination enabled", "cert_dir", cd, "acme", *acmeEmail != "", "ca", *acmeCA)
+			}
 			var internalAuthz ingress.CallerAuthorizer
 			if internalListen != "" {
 				// The same authorizer instance backs both the proxy (per-request 403)
@@ -704,6 +744,7 @@ Required flags:
 				TLSListen:      *proxyTLSListen,
 				InternalListen: internalListen,
 				InternalAuthz:  internalAuthz,
+				Certs:          certProvider,
 				Logger:         logger,
 				Waker:          appMgr,          // wake a slept app on the first request for it
 				Activity:       activityTracker, // feed the idle monitor

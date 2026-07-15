@@ -105,7 +105,7 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 **Fork is ~2.6× faster than a cold create on ext4, ~8× on reflink**: pay the ~1 s boot once, then branch cheaply. A slept app **wakes in ~125 ms** (~8× faster than a cold create, and barely storage-dependent), and we ran **320 concurrent microVMs** on the laptop with RAM to spare.
 
-> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 32 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
+> **By the numbers:** one static binary · no guest RAM copied per fork · 3 interfaces (CLI · TUI · MCP) · 35 MCP tools · 8 prebuilt profiles · 512 MB / 1 vCPU / 60 s safe defaults
 
 ## Roadmap
 

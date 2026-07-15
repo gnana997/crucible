@@ -266,3 +266,52 @@ func (h *handlers) wakeApp(ctx context.Context, _ *mcp.CallToolRequest, in appNa
 	}
 	return nil, toAppOutput(resp), nil
 }
+
+// app_domain_* manage the custom domains the ingress proxy routes (and, in
+// terminate mode, obtains a cert for) for an app.
+
+type appDomainInput struct {
+	AppName string `json:"app_name" jsonschema:"name of the app"`
+	Domain  string `json:"domain" jsonschema:"the custom domain (FQDN) to attach or detach"`
+}
+
+type domainsOutput struct {
+	App     string   `json:"app"`
+	Domains []string `json:"domains"`
+}
+
+func (h *handlers) appDomainAdd(ctx context.Context, _ *mcp.CallToolRequest, in appDomainInput) (*mcp.CallToolResult, domainsOutput, error) {
+	if in.AppName == "" || in.Domain == "" {
+		return nil, domainsOutput{}, errors.New("app_name and domain are required")
+	}
+	resp, err := h.cfg.Client.AddDomain(ctx, in.AppName, in.Domain)
+	if err != nil {
+		return nil, domainsOutput{}, err
+	}
+	return nil, domainsOutput{App: resp.Name, Domains: resp.Domains}, nil
+}
+
+func (h *handlers) appDomainRm(ctx context.Context, _ *mcp.CallToolRequest, in appDomainInput) (*mcp.CallToolResult, domainsOutput, error) {
+	if in.AppName == "" || in.Domain == "" {
+		return nil, domainsOutput{}, errors.New("app_name and domain are required")
+	}
+	if err := h.cfg.Client.RemoveDomain(ctx, in.AppName, in.Domain); err != nil {
+		return nil, domainsOutput{}, err
+	}
+	domains, err := h.cfg.Client.ListDomains(ctx, in.AppName)
+	if err != nil {
+		return nil, domainsOutput{}, err
+	}
+	return nil, domainsOutput{App: in.AppName, Domains: domains}, nil
+}
+
+func (h *handlers) appDomainLs(ctx context.Context, _ *mcp.CallToolRequest, in appNameInput) (*mcp.CallToolResult, domainsOutput, error) {
+	if in.Name == "" {
+		return nil, domainsOutput{}, errors.New("name is required")
+	}
+	domains, err := h.cfg.Client.ListDomains(ctx, in.Name)
+	if err != nil {
+		return nil, domainsOutput{}, err
+	}
+	return nil, domainsOutput{App: in.Name, Domains: domains}, nil
+}

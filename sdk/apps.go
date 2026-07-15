@@ -60,6 +60,37 @@ func (c *Client) DeleteApp(ctx context.Context, name string) error {
 	return expectNoContent(resp)
 }
 
+// ListDomains returns the custom domains attached to an app
+// (GET /apps/{name}/domains).
+func (c *Client) ListDomains(ctx context.Context, name string) ([]string, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/apps/"+url.PathEscape(name)+"/domains", nil)
+	if err != nil {
+		return nil, err
+	}
+	out, err := decodeInto[api.DomainListResponse](resp)
+	return out.Domains, err
+}
+
+// AddDomain attaches a custom domain (FQDN, globally unique) to an app
+// (POST /apps/{name}/domains), returning the updated app.
+func (c *Client) AddDomain(ctx context.Context, name, domain string) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(name)+"/domains", api.AddDomainRequest{Domain: domain})
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
+// RemoveDomain detaches a custom domain from an app
+// (DELETE /apps/{name}/domains/{domain}).
+func (c *Client) RemoveDomain(ctx context.Context, name, domain string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/apps/"+url.PathEscape(name)+"/domains/"+url.PathEscape(domain), nil)
+	if err != nil {
+		return err
+	}
+	return expectNoContent(resp)
+}
+
 // SleepApp snapshots the app's current instance and stops its VMM to free RAM
 // (scale-to-zero, POST /apps/{name}/sleep). The app stays addressable and wakes
 // on the next WakeApp. Errors 409 when the app has no running instance.

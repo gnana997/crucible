@@ -54,6 +54,12 @@ type AppSpec struct {
 	// host-port bypass path.
 	Port int `json:"port,omitempty"`
 
+	// Domains are custom domains (FQDNs) attached to this app: a request whose
+	// Host is one of them routes here, and — in terminate mode — the proxy
+	// obtains a cert for it. Managed by `app domain add/rm`, NOT by `app update`
+	// (which preserves them), and globally unique (one domain → one app).
+	Domains []string `json:"domains,omitempty"`
+
 	// TLSMode selects how the ingress proxy handles this app's HTTPS on :443.
 	// "" / "terminate" (default): the proxy terminates TLS with a managed cert
 	// and forwards plaintext to the guest. "passthrough": the proxy pipes the
@@ -240,4 +246,14 @@ type CreateAppRequest struct {
 // AppListResponse wraps the app list.
 type AppListResponse struct {
 	Apps []AppResponse `json:"apps"`
+}
+
+// AddDomainRequest attaches a custom domain to an app (POST /apps/{name}/domains).
+type AddDomainRequest struct {
+	Domain string `json:"domain"`
+}
+
+// DomainListResponse is an app's attached custom domains (GET .../domains).
+type DomainListResponse struct {
+	Domains []string `json:"domains"`
 }

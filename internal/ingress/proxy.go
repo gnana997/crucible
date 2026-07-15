@@ -90,10 +90,13 @@ type Config struct {
 
 // CertProvider supplies the tls.Config the proxy uses to terminate app HTTPS.
 // Its GetCertificate must serve the right certificate for the handshake's SNI
-// (and, once ACME lands, answer TLS-ALPN-01 challenges). Satisfied by a manual
-// keypair loader or the certmagic-backed provider.
+// (and answer TLS-ALPN-01 challenges). HandleHTTPChallenge serves an ACME
+// HTTP-01 challenge on :80 (returns true when it handled the request), or false
+// for a normal request. Satisfied by a manual keypair loader or the
+// certmagic-backed provider.
 type CertProvider interface {
 	TLSConfig() *tls.Config
+	HandleHTTPChallenge(w http.ResponseWriter, r *http.Request) bool
 }
 
 // Proxy is the daemon-owned ingress front door: :80 host-header routing (L7,
@@ -181,6 +184,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the external proxy domain; the two share the ReverseProxy, wake path, and
 // activity tracking. Unknown host → 404; app with no ready instance → 502.
 func (p *Proxy) handle(w http.ResponseWriter, r *http.Request, internal bool) {
+	// ACME HTTP-01: serve a challenge token before any routing. External only —
+	// app→app internal traffic never carries ACME challenges. Runs on :80 and on
+	// terminated :443 (where it's simply never a challenge path).
+	if !internal && p.certs != nil && p.certs.HandleHTTPChallenge(w, r) {
+		return
+	}
 	resolveSet, appName := p.resolver.ResolveSet, p.resolver.AppName
 	if internal {
 		resolveSet, appName = p.resolver.ResolveSetInternal, p.resolver.AppNameInternal

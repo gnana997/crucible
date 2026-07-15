@@ -137,6 +137,55 @@ func (s *Server) handleGetApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleListAppDomains — GET /apps/{name}/domains.
+func (s *Server) handleListAppDomains(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	domains, err := s.cfg.AppManager.ListDomains(r.PathValue("name"))
+	if err != nil {
+		writeError(w, appErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.DomainListResponse{Domains: domains})
+}
+
+// handleAddAppDomain — POST /apps/{name}/domains, body {"domain": "..."}.
+func (s *Server) handleAddAppDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.AddDomainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rec, err := s.cfg.AppManager.AddDomain(r.PathValue("name"), req.Domain)
+	if err != nil {
+		writeError(w, appErrStatus(err), err)
+		return
+	}
+	resp, err := s.cfg.AppManager.Get(rec.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleRemoveAppDomain — DELETE /apps/{name}/domains/{domain}.
+func (s *Server) handleRemoveAppDomain(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	if _, err := s.cfg.AppManager.RemoveDomain(r.PathValue("name"), r.PathValue("domain")); err != nil {
+		writeError(w, appErrStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleDeleteApp — DELETE /apps/{name}. Removes the app and tears down its
 // instance on the next reconcile.
 func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {

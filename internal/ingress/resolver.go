@@ -32,10 +32,13 @@ var (
 	ErrAsleep = errors.New("ingress: app is asleep")
 )
 
-// AppLookup resolves an app by its user-facing name. Satisfied directly by
-// *app.Manager (GetByName).
+// AppLookup resolves an app by its user-facing name or an attached custom
+// domain. Satisfied directly by *app.Manager.
 type AppLookup interface {
 	GetByName(name string) (api.AppResponse, error)
+	// GetByDomain returns the app a custom domain is attached to, and whether
+	// one is. Consulted only for external hosts that aren't <app>.<proxy-domain>.
+	GetByDomain(domain string) (api.AppResponse, bool)
 }
 
 // InstanceLookup returns a sandbox instance's guest IP, or ("", false) when the
@@ -114,6 +117,19 @@ func (r *Resolver) AppName(host string) string {
 	return strings.TrimSuffix(h, suffix)
 }
 
+// appNameForHost maps an external request host to an app name: the proxy-domain
+// subdomain (web.apps.local → web), or, failing that, a custom domain attached
+// to an app (shop.acme.com → the app it's bound to). "" when neither matches.
+func (r *Resolver) appNameForHost(host string) string {
+	if name := r.AppName(host); name != "" {
+		return name
+	}
+	if resp, ok := r.apps.GetByDomain(normHost(host)); ok {
+		return resp.Name
+	}
+	return ""
+}
+
 // AppNameInternal extracts the app name from an app→app host in the internal
 // zone (e.g. "backend.internal" → "backend"). Returns "" when app→app is
 // disabled (internalZone == "") or the host is not under the internal zone.
@@ -133,7 +149,7 @@ func (r *Resolver) AppNameInternal(host string) string {
 // port, live (cached for ttl). ErrNoRoute for an unknown host/app or missing
 // target port; ErrNoInstance when the app has no ready instance.
 func (r *Resolver) Resolve(host string) (Target, error) {
-	return r.resolve(r.AppName(host))
+	return r.resolve(r.appNameForHost(host))
 }
 
 // ResolveInternal is Resolve for an app→app host in the internal zone
@@ -149,12 +165,13 @@ func (r *Resolver) ResolveInternal(host string) (Target, error) {
 const TLSModePassthrough = "passthrough"
 
 // TLSTerminate reports whether the proxy should TERMINATE TLS for this SNI (vs
-// pass it through to the guest). True when the SNI maps to a known app that has
-// not opted into passthrough. An unknown SNI returns false — there's nothing to
-// terminate for, and the passthrough path resolves-and-fails cleanly. (B3 will
-// extend AppName here to also match attached custom domains.)
+// pass it through to the guest) — and doubles as the ACME on-demand gate: a cert
+// is only ever obtained for an SNI this returns true for. True when the SNI maps
+// to a known app (by proxy-domain name or attached custom domain) that has not
+// opted into passthrough. An unknown SNI returns false — nothing to terminate or
+// issue for; the passthrough path resolves-and-fails cleanly.
 func (r *Resolver) TLSTerminate(sni string) bool {
-	name := r.AppName(normHost(sni))
+	name := r.appNameForHost(sni)
 	if name == "" {
 		return false
 	}
@@ -180,7 +197,7 @@ func (r *Resolver) ResolveName(name string) (Target, error) {
 // slept/waking app, ErrNoInstance when nothing is ready). Not cached: it reads
 // the app's own instances, so there's no cross-tenant /30-reuse window.
 func (r *Resolver) ResolveSet(host string) ([]Target, error) {
-	return r.resolveSet(r.AppName(host))
+	return r.resolveSet(r.appNameForHost(host))
 }
 
 // ResolveSetInternal is ResolveSet for an app→app host in the internal zone.

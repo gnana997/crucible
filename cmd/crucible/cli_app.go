@@ -35,6 +35,63 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppExecCmd(o),
 		newAppShellCmd(o),
 		newAppCaptureCmd(o),
+		newAppDomainCmd(o),
+	)
+	return cmd
+}
+
+// newAppDomainCmd is `crucible app domain add|rm|ls` — manage the custom domains
+// the ingress proxy routes (and, in terminate mode, certifies) for an app.
+func newAppDomainCmd(o *globalOpts) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "domain",
+		Short: "Manage an app's custom domains (attach/detach/list)",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "add <app> <domain>",
+			Short: "Attach a custom domain to an app (globally unique)",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				resp, err := o.client().AddDomain(cmd.Context(), args[0], args[1])
+				if err != nil {
+					return err
+				}
+				if o.isJSON() {
+					return printJSON(cmd.OutOrStdout(), resp)
+				}
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), args[1])
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:     "rm <app> <domain>",
+			Short:   "Detach a custom domain from an app",
+			Aliases: []string{"remove"},
+			Args:    cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return o.client().RemoveDomain(cmd.Context(), args[0], args[1])
+			},
+		},
+		&cobra.Command{
+			Use:     "ls <app>",
+			Short:   "List an app's custom domains",
+			Aliases: []string{"list"},
+			Args:    cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				domains, err := o.client().ListDomains(cmd.Context(), args[0])
+				if err != nil {
+					return err
+				}
+				if o.isJSON() {
+					return printJSON(cmd.OutOrStdout(), domains)
+				}
+				for _, d := range domains {
+					_, _ = fmt.Fprintln(cmd.OutOrStdout(), d)
+				}
+				return nil
+			},
+		},
 	)
 	return cmd
 }
@@ -149,7 +206,7 @@ func newAppWakeCmd(o *globalOpts) *cobra.Command {
 // builds an AppSpec from them, so the two commands can never drift.
 type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
-	idleTimeout, connIdleTimeout                  string
+	idleTimeout, connIdleTimeout, tlsMode         string
 	vcpus, memory, port, minScale                 int
 	maxScale, targetConcurrency                   int
 	netAllow, publish, env, netAllowCIDR, canCall []string
@@ -182,6 +239,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringVar(&a.connIdleTimeout, "connection-idle-timeout", "", "for a scale-to-zero published (TCP) app: close a connection idle this long so pooled clients let it sleep (e.g. 30s; default = --idle-timeout)")
 	f.BoolVar(&a.keepConnections, "keep-connections", false, "for a scale-to-zero published (TCP) app: never reap idle connections — sleep only when the last client disconnects (pub/sub, LISTEN, streaming)")
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
+	f.StringVar(&a.tlsMode, "tls-mode", "", "how the ingress proxy handles this app's HTTPS on :443: terminate (default, the proxy manages the cert) or passthrough (the guest owns its cert)")
 }
 
 func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
@@ -212,6 +270,7 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		PublishAll: a.publishAll,
 		Restart:    wire.RestartPolicy{Policy: a.restart},
 		CanCall:    a.canCall,
+		TLSMode:    a.tlsMode,
 	}
 	for _, p := range a.publish {
 		pm, perr := parsePublish(p)

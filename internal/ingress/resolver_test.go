@@ -20,6 +20,17 @@ func (f fakeApps) GetByName(name string) (api.AppResponse, error) {
 	return a, nil
 }
 
+func (f fakeApps) GetByDomain(domain string) (api.AppResponse, bool) {
+	for _, a := range f.apps {
+		for _, d := range a.Domains {
+			if d == domain {
+				return a, true
+			}
+		}
+	}
+	return api.AppResponse{}, false
+}
+
 type fakeInstances struct{ ips map[string]string }
 
 func (f fakeInstances) GuestIP(id string) (string, bool) {
@@ -120,6 +131,31 @@ func TestResolveHappyPath(t *testing.T) {
 	}
 	if tg.GuestIP != "10.20.0.2" || tg.Port != 80 {
 		t.Errorf("target = %+v, want 10.20.0.2:80", tg)
+	}
+}
+
+func TestResolveCustomDomain(t *testing.T) {
+	web := runningApp("web", 80, "sbx_1")
+	web.Domains = []string{"shop.acme.com"}
+	apps := fakeApps{apps: map[string]api.AppResponse{"web": web}}
+	inst := fakeInstances{ips: map[string]string{"sbx_1": "10.20.0.2"}}
+	r := NewResolver(apps, inst, "apps.local", "", 0)
+
+	// A custom domain (not under the proxy zone) routes to its app.
+	tg, err := r.Resolve("shop.acme.com")
+	if err != nil {
+		t.Fatalf("Resolve(custom domain): %v", err)
+	}
+	if tg.GuestIP != "10.20.0.2" || tg.Port != 80 {
+		t.Errorf("custom-domain target = %+v, want 10.20.0.2:80", tg)
+	}
+	// TLS termination is on for a terminate-mode custom domain, off for an
+	// unattached one.
+	if !r.TLSTerminate("shop.acme.com") {
+		t.Error("TLSTerminate(attached custom domain) = false, want true (issues a cert)")
+	}
+	if r.TLSTerminate("random.example.org") {
+		t.Error("TLSTerminate(unregistered domain) = true, want false (never issue a stray cert)")
 	}
 }
 

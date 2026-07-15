@@ -268,6 +268,12 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appExec) })
 	add("app_logs", "Read a durable app's current-instance logs (entrypoint output and/or exec activity), addressed by name.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appLogs) })
+	add("app_domain_add", "Attach a custom domain (FQDN, globally unique) to a durable app. The ingress proxy then routes that host to the app and, in terminate mode, obtains a TLS certificate for it.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appDomainAdd) })
+	add("app_domain_rm", "Detach a custom domain from a durable app.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appDomainRm) })
+	add("app_domain_ls", "List the custom domains attached to a durable app.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appDomainLs) })
 	add("list_sandboxes", "List the live sandboxes.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.listSandboxes) })
 	add("inspect_sandbox", "Return full detail for one sandbox.",

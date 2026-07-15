@@ -37,6 +37,10 @@ func (a *wakingApps) GetByName(name string) (api.AppResponse, error) {
 	}
 	return r, nil
 }
+
+func (a *wakingApps) GetByDomain(string) (api.AppResponse, bool) {
+	return api.AppResponse{}, false // no custom domains in the wake tests
+}
 func (a *wakingApps) wakeToRunning() {
 	a.mu.Lock()
 	defer a.mu.Unlock()

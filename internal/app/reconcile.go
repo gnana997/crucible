@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -252,6 +254,10 @@ type Manager struct {
 	// desired-running specs. Nil disables app-scoped publishing.
 	ports PortReconciler
 
+	// onDomainAdd, when set, is called (best-effort) with a newly attached custom
+	// domain so the TLS layer can pre-warm its certificate. Nil disables pre-warm.
+	onDomainAdd func(domain string)
+
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
 	obs         map[string]*observed
@@ -431,6 +437,9 @@ func (m *Manager) Update(name string, spec api.AppSpec) (Record, error) {
 	if !found {
 		return Record{}, ErrNotFound
 	}
+	// Domains are managed by AddDomain/RemoveDomain, not this full re-spec, so an
+	// `app update` that doesn't know about them can't wipe them.
+	spec.Domains = rec.Spec.Domains
 	rec.Spec = spec
 	rec.Generation++
 	rec.UpdatedAt = m.now().UTC()
@@ -463,6 +472,112 @@ func (m *Manager) GetByName(name string) (api.AppResponse, error) {
 		return api.AppResponse{}, ErrNotFound
 	}
 	return m.toResponse(rec), nil
+}
+
+// SetOnDomainAdd registers a best-effort hook called with each newly attached
+// custom domain (the TLS layer pre-warms its cert). Call once at wiring time.
+func (m *Manager) SetOnDomainAdd(fn func(domain string)) { m.onDomainAdd = fn }
+
+// GetByDomain returns the app a custom domain is attached to, and whether one
+// is. Linear over the app records (fine at single-host scale; the resolver only
+// consults it for hosts that aren't <app>.<proxy-domain>).
+func (m *Manager) GetByDomain(domain string) (api.AppResponse, bool) {
+	recs, err := m.store.List()
+	if err != nil {
+		return api.AppResponse{}, false
+	}
+	for _, rec := range recs {
+		for _, d := range rec.Spec.Domains {
+			if strings.EqualFold(d, domain) {
+				return m.toResponse(rec), true
+			}
+		}
+	}
+	return api.AppResponse{}, false
+}
+
+// AddDomain attaches a custom domain to an app (idempotent), enforcing global
+// uniqueness — a domain may belong to at most one app. Fires the pre-warm hook.
+func (m *Manager) AddDomain(appName, domain string) (Record, error) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if err := validateDomain(domain); err != nil {
+		return Record{}, err
+	}
+	if resp, ok := m.GetByDomain(domain); ok && resp.Name != appName {
+		return Record{}, fmt.Errorf("app: domain %q is already attached to app %q", domain, resp.Name)
+	}
+	rec, found, err := m.store.GetByName(appName)
+	if err != nil {
+		return Record{}, err
+	}
+	if !found {
+		return Record{}, ErrNotFound
+	}
+	for _, d := range rec.Spec.Domains {
+		if d == domain {
+			return rec, nil // already attached
+		}
+	}
+	rec.Spec.Domains = append(rec.Spec.Domains, domain)
+	rec.UpdatedAt = m.now().UTC()
+	if err := m.store.Put(rec); err != nil {
+		return Record{}, err
+	}
+	if m.onDomainAdd != nil {
+		m.onDomainAdd(domain)
+	}
+	return rec, nil
+}
+
+// RemoveDomain detaches a custom domain from an app (idempotent).
+func (m *Manager) RemoveDomain(appName, domain string) (Record, error) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	rec, found, err := m.store.GetByName(appName)
+	if err != nil {
+		return Record{}, err
+	}
+	if !found {
+		return Record{}, ErrNotFound
+	}
+	out := rec.Spec.Domains[:0]
+	for _, d := range rec.Spec.Domains {
+		if !strings.EqualFold(d, domain) {
+			out = append(out, d)
+		}
+	}
+	rec.Spec.Domains = out
+	rec.UpdatedAt = m.now().UTC()
+	if err := m.store.Put(rec); err != nil {
+		return Record{}, err
+	}
+	return rec, nil
+}
+
+// ListDomains returns the custom domains attached to an app.
+func (m *Manager) ListDomains(appName string) ([]string, error) {
+	rec, found, err := m.store.GetByName(appName)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrNotFound
+	}
+	return rec.Spec.Domains, nil
+}
+
+// domainRe is a permissive FQDN check: dot-separated labels of letters, digits,
+// and hyphens (not leading/trailing), at least two labels. Rejects wildcards
+// (not supported — see the TLS plan) and the empty string.
+var domainRe = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
+
+func validateDomain(domain string) error {
+	if domain == "" {
+		return fmt.Errorf("app: domain is required")
+	}
+	if !domainRe.MatchString(domain) {
+		return fmt.Errorf("app: %q is not a valid domain (FQDN, no wildcards)", domain)
+	}
+	return nil
 }
 
 // CanCall reports whether caller is authorized to reach target over the internal

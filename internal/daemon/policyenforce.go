@@ -84,6 +84,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasPrefix(path, "/registry/credentials") {
 			return policy.OpRegistry, true
 		}
+		// Detaching a custom domain is app config (like `app update`), not a
+		// resource delete — gate as exec.
+		if strings.HasPrefix(path, "/apps/") && strings.Contains(path, "/domains/") {
+			return policy.OpExec, true
+		}
 		return policy.OpDelete, true
 	case http.MethodPut:
 		// PUT /sandboxes/{id}/service configures what runs in the guest —
@@ -106,6 +111,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 			return policy.OpVolumeBackup, true
 		// Creating an app configures an entrypoint the daemon runs — exec-grade.
 		case path == "/apps":
+			return policy.OpExec, true
+		// Attaching a custom domain is app config — exec-grade, like `app update`.
+		case strings.HasPrefix(path, "/apps/") && strings.HasSuffix(path, "/domains"):
 			return policy.OpExec, true
 		// Storing a registry credential is credential management.
 		case path == "/registry/credentials":
