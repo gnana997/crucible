@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gnana997/crucible/internal/appevents"
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
 )
@@ -276,6 +277,15 @@ type Manager struct {
 	namesMu sync.RWMutex
 	names   map[string]string
 
+	// events is the app lifecycle event stream (activity feed + exact awake
+	// boundaries for billing). Always non-nil. lastPhase de-dups phase_changed
+	// events: the hot lifecycle methods emit exact transitions and the reconcile
+	// pass emits whatever the state machine converged to, both via emitPhase, so
+	// no net phase change is missed and none is emitted twice.
+	events    *appevents.Store
+	phaseMu   sync.Mutex
+	lastPhase map[string]string // app id → last-emitted phase
+
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
 	obs         map[string]*observed
@@ -337,6 +347,8 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 		scalers:       make(map[string]*scaleState),
 		transitions:   make(map[string]*sync.Mutex),
 		names:         make(map[string]string),
+		lastPhase:     make(map[string]string),
+		events:        appevents.New(appevents.DefaultBuffer),
 		trigger:       make(chan struct{}, 1),
 	}
 	// Late-bind the ledger's clock to m.now so a test that replaces m.now still
@@ -385,6 +397,72 @@ func (m *Manager) RecordRequest(name, code string) {
 		return
 	}
 	m.usage.AddRequest(id, name, code)
+}
+
+// Events returns the app lifecycle event stream (for GET /events, OTLP export).
+func (m *Manager) Events() *appevents.Store { return m.events }
+
+// emit records a non-phase lifecycle event (created/updated/deleted/domain).
+func (m *Manager) emit(typ, appID, name, reason string, attrs map[string]any) {
+	m.events.Emit(appevents.AppEvent{
+		Type: typ, AppID: appID, App: name, Reason: reason, Attrs: attrs,
+	})
+}
+
+// emitPhase emits a phase_changed event iff the app's phase actually changed
+// since the last emission (de-dup across the hot-path and reconcile callers).
+// attrs are merged into {from,to}; instance/name are looked up by the caller.
+func (m *Manager) emitPhase(appID, name, instance, to, reason string, attrs map[string]any) {
+	m.phaseMu.Lock()
+	from := m.lastPhase[appID]
+	if from == to {
+		m.phaseMu.Unlock()
+		return
+	}
+	m.lastPhase[appID] = to
+	m.phaseMu.Unlock()
+
+	a := map[string]any{"from": from, "to": to}
+	for k, v := range attrs {
+		a[k] = v
+	}
+	m.events.Emit(appevents.AppEvent{
+		Type: appevents.TypePhaseChanged, AppID: appID, App: name,
+		Instance: instance, Reason: reason, Attrs: a,
+	})
+}
+
+// forgetPhase drops an app's phase-dedup state on delete (bounds the map).
+func (m *Manager) forgetPhase(appID string) {
+	m.phaseMu.Lock()
+	delete(m.lastPhase, appID)
+	m.phaseMu.Unlock()
+}
+
+// emitPhaseChanges is step 4 of a reconcile pass: emit phase_changed for every
+// app whose converged phase differs from what was last emitted. This catches the
+// reconciler-driven transitions (booted→running, crash, health) centrally, so no
+// net phase change is missed without threading emits through every phase write.
+func (m *Manager) emitPhaseChanges(recs []Record) {
+	type snap struct{ id, name, inst, phase string }
+	snaps := make([]snap, 0, len(recs))
+	m.obsMu.Lock()
+	for _, r := range recs {
+		ob := m.obs[r.ID]
+		snaps = append(snaps, snap{r.ID, r.Spec.Name, obInstance(ob), phaseOf(ob)})
+	}
+	m.obsMu.Unlock()
+	for _, s := range snaps {
+		m.emitPhase(s.id, s.name, s.inst, s.phase, "reconcile", nil)
+	}
+}
+
+// obInstance returns an observed's current instance id, or "".
+func obInstance(ob *observed) string {
+	if ob == nil {
+		return ""
+	}
+	return ob.instanceID
 }
 
 // registerName / unregisterName maintain the name→id index for RecordRequest.
@@ -532,6 +610,7 @@ func (m *Manager) Create(spec api.AppSpec, desiredRunning bool) (Record, error) 
 		return Record{}, err
 	}
 	m.registerName(spec.Name, id)
+	m.emit(appevents.TypeCreated, id, spec.Name, "", map[string]any{"generation": rec.Generation})
 	m.Trigger()
 	return rec, nil
 }
@@ -553,6 +632,8 @@ func (m *Manager) Delete(id string) error {
 	m.observeUsage(rec, false)
 	m.usage.Finalize(id, rec.Spec.Name)
 	m.unregisterName(rec.Spec.Name)
+	m.emit(appevents.TypeDeleted, id, rec.Spec.Name, "", nil)
+	m.forgetPhase(id)
 	m.Trigger()
 	return nil
 }
@@ -606,6 +687,7 @@ func (m *Manager) Update(name string, spec api.AppSpec) (Record, error) {
 	if err := m.store.Put(rec); err != nil {
 		return Record{}, err
 	}
+	m.emit(appevents.TypeUpdated, rec.ID, rec.Spec.Name, "", map[string]any{"generation": rec.Generation})
 	m.Trigger()
 	return rec, nil
 }
@@ -686,6 +768,7 @@ func (m *Manager) AddDomain(appName, domain string) (Record, error) {
 	if m.onDomainAdd != nil {
 		m.onDomainAdd(domain)
 	}
+	m.emit(appevents.TypeDomainAdded, rec.ID, rec.Spec.Name, "", map[string]any{"domain": domain})
 	return rec, nil
 }
 
@@ -710,6 +793,7 @@ func (m *Manager) RemoveDomain(appName, domain string) (Record, error) {
 	if err := m.store.Put(rec); err != nil {
 		return Record{}, err
 	}
+	m.emit(appevents.TypeDomainRemoved, rec.ID, rec.Spec.Name, "", map[string]any{"domain": domain})
 	return rec, nil
 }
 
@@ -884,6 +968,7 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 	// Freeze compute/memory accrual at the exact sleep boundary (storage keeps
 	// accruing — a slept app still occupies its disk).
 	m.observeUsage(rec, false)
+	m.emitPhase(rec.ID, name, instanceID, "asleep", "sleep", nil)
 	m.log.Info("app slept", "app", rec.ID, "name", name, "instance", instanceID, "snapshot", snapID)
 	return nil
 }
@@ -998,6 +1083,8 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 	// Resume compute/memory accrual from the wake boundary (the slept gap accrued
 	// no compute — the prior observe left it not-awake).
 	m.observeUsage(rec, true)
+	m.emitPhase(rec.ID, name, instanceID, "running", "wake",
+		map[string]any{"wake_latency_ms": m.now().Sub(start).Milliseconds()})
 	m.log.Info("app woke", "app", rec.ID, "name", name, "instance", instanceID)
 	return nil
 }
@@ -1290,6 +1377,11 @@ func (m *Manager) reconcile(ctx context.Context) {
 		}
 		m.ports.ReconcilePorts(specs)
 	}
+
+	// 4. Emit a lifecycle event for any app whose phase converged to something new
+	// this pass (boot→running, crash, health flips). Sleep/wake emit their exact
+	// transitions directly; this is the catch-all for reconciler-driven ones.
+	m.emitPhaseChanges(recs)
 }
 
 func desiredRec(recs []Record, id string) (Record, bool) {
