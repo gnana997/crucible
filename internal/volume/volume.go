@@ -304,6 +304,13 @@ func (m *Manager) DiskBytes() int64 {
 	return total
 }
 
+// VolumeDiskBytes returns the allocated on-disk bytes of one volume's backing
+// file (sparse-aware), or 0 if the volume is unknown. Same never-fail contract
+// as DiskBytes — it feeds the per-app usage accrual sampled on a tick.
+func (m *Manager) VolumeDiskBytes(name string) int64 {
+	return fsutil.AllocatedBytes(filepath.Join(m.dir, name+".img"))
+}
+
 // BackupDiskBytes returns the allocated on-disk bytes of all volume backups.
 // Reflink-shared blocks (a same-filesystem backup) are counted per file, so
 // this reports logical allocation, not unique physical blocks. Gauge source,

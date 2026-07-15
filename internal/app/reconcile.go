@@ -208,7 +208,8 @@ const (
 // at the capped backoff — the k8s CrashLoopBackOff shape).
 const (
 	defaultReconcileInterval = 3 * time.Second
-	defaultIdleInterval      = 5 * time.Second // idle-monitor scan cadence
+	defaultIdleInterval      = 5 * time.Second  // idle-monitor scan cadence
+	defaultUsageInterval     = 60 * time.Second // persistent-usage-metrics accrual/flush cadence
 	baseBackoff              = 1 * time.Second
 	maxBackoff               = 60 * time.Second
 	crashLoopWindow          = 60 * time.Second
@@ -258,6 +259,19 @@ type Manager struct {
 	// domain so the TLS layer can pre-warm its certificate. Nil disables pre-warm.
 	onDomainAdd func(domain string)
 
+	// usage is the persistent usage-metrics ledger (durable per-app counters that
+	// survive a daemon restart). Always non-nil; driven by lifecycle hooks + a
+	// periodic tick (usageInterval).
+	usage         *usageLedger
+	usageInterval time.Duration
+	// volSize, when set, returns a volume's allocated backing bytes by name — the
+	// per-app storage sampled into the usage ledger. Nil ⇒ storage stays 0.
+	volSize func(name string) int64
+	// names indexes app name → app id for the request hot path (usage attribution
+	// keys by id). Maintained on Create/Delete/adopt.
+	namesMu sync.RWMutex
+	names   map[string]string
+
 	reconcileMu sync.Mutex
 	obsMu       sync.Mutex
 	obs         map[string]*observed
@@ -304,21 +318,27 @@ func NewManager(store *Store, inst Instantiator, log *slog.Logger) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Manager{
-		store:        store,
-		inst:         inst,
-		log:          log,
-		interval:     defaultReconcileInterval,
-		idleInterval: defaultIdleInterval,
-		now:          time.Now,
-		obs:          make(map[string]*observed),
-		extras:       make(map[string][]*replica),
-		golden:       make(map[string]*goldenSnap),
-		scaleTarget:  make(map[string]int),
-		scalers:      make(map[string]*scaleState),
-		transitions:  make(map[string]*sync.Mutex),
-		trigger:      make(chan struct{}, 1),
+	m := &Manager{
+		store:         store,
+		inst:          inst,
+		log:           log,
+		interval:      defaultReconcileInterval,
+		idleInterval:  defaultIdleInterval,
+		usageInterval: defaultUsageInterval,
+		now:           time.Now,
+		obs:           make(map[string]*observed),
+		extras:        make(map[string][]*replica),
+		golden:        make(map[string]*goldenSnap),
+		scaleTarget:   make(map[string]int),
+		scalers:       make(map[string]*scaleState),
+		transitions:   make(map[string]*sync.Mutex),
+		names:         make(map[string]string),
+		trigger:       make(chan struct{}, 1),
 	}
+	// Late-bind the ledger's clock to m.now so a test that replaces m.now still
+	// drives usage accrual.
+	m.usage = newUsageLedger(store, func() time.Time { return m.now() }, log)
+	return m
 }
 
 // SetActivitySource wires the request-activity source (the ingress proxy's
@@ -329,6 +349,71 @@ func (m *Manager) SetActivitySource(a ActivitySource) { m.activity = a }
 // SetPortReconciler wires the app-scoped host-port publisher (the L4 waking
 // forwarders). Call before Start; nil leaves app-scoped publishing disabled.
 func (m *Manager) SetPortReconciler(p PortReconciler) { m.ports = p }
+
+// SetVolumeSizer wires the per-volume backing-size source so the usage ledger
+// can sample an app's storage. Call before Start; nil leaves storage at 0.
+func (m *Manager) SetVolumeSizer(f func(name string) int64) { m.volSize = f }
+
+// SetUsageInterval overrides the persistent-usage-metrics accrual/flush cadence
+// (default 60s). Call before Start; a non-positive value keeps the default.
+func (m *Manager) SetUsageInterval(d time.Duration) {
+	if d > 0 {
+		m.usageInterval = d
+	}
+}
+
+// RecordRequest attributes one ingress-proxy request (by HTTP status class) to
+// an app's durable usage counters. Cheap (in-memory bump); a name that maps to
+// no live app is dropped. Wired into the proxy's OnRequest callback.
+func (m *Manager) RecordRequest(name, code string) {
+	if name == "" {
+		return
+	}
+	m.namesMu.RLock()
+	id := m.names[name]
+	m.namesMu.RUnlock()
+	if id == "" {
+		return
+	}
+	m.usage.AddRequest(id, name, code)
+}
+
+// registerName / unregisterName maintain the name→id index for RecordRequest.
+func (m *Manager) registerName(name, id string) {
+	m.namesMu.Lock()
+	m.names[name] = id
+	m.namesMu.Unlock()
+}
+
+func (m *Manager) unregisterName(name string) {
+	m.namesMu.Lock()
+	delete(m.names, name)
+	m.namesMu.Unlock()
+}
+
+// usageDims returns the usage inputs for a record: vCPUs and memory drive the
+// awake compute/memory integral; volBytes (sparse-allocated backing size of the
+// app's volumes) drives the storage integral. volBytes is 0 without a sizer.
+func (m *Manager) usageDims(rec Record) (vcpus, memMiB int, volBytes int64) {
+	vcpus, memMiB = rec.Spec.VCPUs, rec.Spec.MemoryMiB
+	if m.volSize != nil {
+		for _, v := range rec.Spec.Volumes {
+			volBytes += m.volSize(v.Name)
+		}
+	}
+	return vcpus, memMiB, volBytes
+}
+
+// phaseAwake reports whether a phase burns compute — a live VMM (serving or
+// unhealthy). Asleep/stopped/pending/crashlooping do not accrue compute.
+func phaseAwake(phase string) bool { return phase == "running" || phase == "unhealthy" }
+
+// observeUsage records an app's current usage state (awake compute/memory +
+// storage) at a lifecycle boundary. name may be empty (looked up from the spec).
+func (m *Manager) observeUsage(rec Record, awake bool) {
+	vcpus, memMiB, volBytes := m.usageDims(rec)
+	m.usage.observe(rec.ID, rec.Spec.Name, awake, vcpus, memMiB, volBytes)
+}
 
 // transitionLock returns the per-app mutex that serializes sleep/wake
 // transitions for appID, creating it on first use.
@@ -378,6 +463,7 @@ func (m *Manager) Create(spec api.AppSpec, desiredRunning bool) (Record, error) 
 	if err := m.store.Put(rec); err != nil {
 		return Record{}, err
 	}
+	m.registerName(spec.Name, id)
 	m.Trigger()
 	return rec, nil
 }
@@ -385,7 +471,8 @@ func (m *Manager) Create(spec api.AppSpec, desiredRunning bool) (Record, error) 
 // Delete removes an app and triggers a reconcile that tears down its
 // instance. Absent id is ErrNotFound.
 func (m *Manager) Delete(id string) error {
-	if _, found, err := m.store.Get(id); err != nil {
+	rec, found, err := m.store.Get(id)
+	if err != nil {
 		return err
 	} else if !found {
 		return ErrNotFound
@@ -393,6 +480,11 @@ func (m *Manager) Delete(id string) error {
 	if err := m.store.Delete(id); err != nil {
 		return err
 	}
+	// Final usage accrual, then retain the (finalized) usage record so a control
+	// plane can read the deleted app's total usage.
+	m.observeUsage(rec, false)
+	m.usage.Finalize(id, rec.Spec.Name)
+	m.unregisterName(rec.Spec.Name)
 	m.Trigger()
 	return nil
 }
@@ -721,6 +813,9 @@ func (m *Manager) Sleep(ctx context.Context, name string) error {
 		o.sleepCount++
 	}
 	m.obsMu.Unlock()
+	// Freeze compute/memory accrual at the exact sleep boundary (storage keeps
+	// accruing — a slept app still occupies its disk).
+	m.observeUsage(rec, false)
 	m.log.Info("app slept", "app", rec.ID, "name", name, "instance", instanceID, "snapshot", snapID)
 	return nil
 }
@@ -832,6 +927,9 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 			m.log.Warn("clear asleep state failed", "app", rec.ID, "err", perr)
 		}
 	}
+	// Resume compute/memory accrual from the wake boundary (the slept gap accrued
+	// no compute — the prior observe left it not-awake).
+	m.observeUsage(rec, true)
 	m.log.Info("app woke", "app", rec.ID, "name", name, "instance", instanceID)
 	return nil
 }
@@ -865,6 +963,7 @@ func (m *Manager) List() ([]api.AppResponse, error) {
 func (m *Manager) Start(ctx context.Context) error {
 	loopCtx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	m.loadNames() // seed name→id so requests attribute for adopted apps from t0
 	m.reconcile(ctx)
 	m.wg.Add(1)
 	go m.loop(loopCtx)
@@ -872,7 +971,60 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.wg.Add(1)
 		go m.idleLoop(loopCtx)
 	}
+	m.wg.Add(1)
+	go m.usageLoop(loopCtx)
 	return nil
+}
+
+// loadNames seeds the name→id index from the store (adoption after a restart).
+func (m *Manager) loadNames() {
+	recs, err := m.store.List()
+	if err != nil {
+		return
+	}
+	for _, r := range recs {
+		m.registerName(r.Spec.Name, r.ID)
+	}
+}
+
+// usageLoop periodically accrues persistent usage metrics for every app and
+// flushes them to the store (the tick that keeps long-running apps' counters
+// fresh and bounds crash loss to one interval).
+func (m *Manager) usageLoop(ctx context.Context) {
+	defer m.wg.Done()
+	t := time.NewTicker(m.usageInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			m.accrueAllUsage() // final flush on shutdown
+			return
+		case <-t.C:
+			m.accrueAllUsage()
+		}
+	}
+}
+
+// accrueAllUsage re-asserts every app's current usage state (awake compute/
+// memory + storage), which accrues the elapsed interval and flushes. Awake state
+// is snapshotted under obsMu, then the store writes happen without the lock.
+func (m *Manager) accrueAllUsage() {
+	recs, err := m.store.List()
+	if err != nil {
+		m.log.Warn("usage tick: list apps failed", "err", err)
+		return
+	}
+	awake := make([]bool, len(recs))
+	m.obsMu.Lock()
+	for i, r := range recs {
+		if ob := m.obs[r.ID]; ob != nil {
+			awake[i] = phaseAwake(ob.phase)
+		}
+	}
+	m.obsMu.Unlock()
+	for i, r := range recs {
+		m.observeUsage(r, awake[i])
+	}
 }
 
 // Stop halts the reconcile loop (does not tear down instances; desired

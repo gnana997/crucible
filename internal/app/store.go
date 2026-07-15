@@ -46,6 +46,11 @@ type Record struct {
 // bucket holds every app record, keyed by app id.
 var appsBucket = []byte("apps")
 
+// usageBucket holds the durable per-app usage counters, keyed by app id. Kept
+// in the same bbolt file as the app records so it rides the existing consistent
+// backup (BackupTo / `admin backup`). See usage.go for the accrual model.
+var usageBucket = []byte("usage")
+
 // Store is a durable, transactional app record store backed by a single
 // bbolt file. bbolt is chosen over SQLite deliberately: pure Go (no cgo,
 // keeping the static-build discipline), single file, no server, and a
@@ -61,7 +66,10 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("app: open store %s: %w", path, err)
 	}
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, e := tx.CreateBucketIfNotExists(appsBucket)
+		if _, e := tx.CreateBucketIfNotExists(appsBucket); e != nil {
+			return e
+		}
+		_, e := tx.CreateBucketIfNotExists(usageBucket)
 		return e
 	}); err != nil {
 		_ = db.Close()
@@ -158,9 +166,65 @@ func (s *Store) List() ([]Record, error) {
 	return out, err
 }
 
-// Delete removes the record for id. Absent id is not an error.
+// Delete removes the record for id. Absent id is not an error. The usage
+// record is intentionally NOT removed here: a deleted app's final usage is
+// retained (finalized) so a control plane can still read it. See PruneUsage.
 func (s *Store) Delete(id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(appsBucket).Delete([]byte(id))
+	})
+}
+
+// PutUsage upserts an app's usage counters by app id.
+func (s *Store) PutUsage(id string, u Usage) error {
+	if id == "" {
+		return errors.New("app: PutUsage: empty id")
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b, err := json.Marshal(u)
+		if err != nil {
+			return fmt.Errorf("app: marshal usage: %w", err)
+		}
+		return tx.Bucket(usageBucket).Put([]byte(id), b)
+	})
+}
+
+// GetUsage returns the usage counters for app id. The bool is false when no
+// usage record exists yet (not an error).
+func (s *Store) GetUsage(id string) (Usage, bool, error) {
+	var u Usage
+	var found bool
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(usageBucket).Get([]byte(id))
+		if v == nil {
+			return nil
+		}
+		found = true
+		return json.Unmarshal(v, &u)
+	})
+	return u, found, err
+}
+
+// ListUsage returns every app's usage counters keyed by app id, unordered.
+func (s *Store) ListUsage() (map[string]Usage, error) {
+	out := make(map[string]Usage)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(usageBucket).ForEach(func(k, v []byte) error {
+			var u Usage
+			if err := json.Unmarshal(v, &u); err != nil {
+				return err
+			}
+			out[string(k)] = u
+			return nil
+		})
+	})
+	return out, err
+}
+
+// DeleteUsage removes an app's usage record (used to reclaim a finalized
+// record, e.g. when a name is reused by a fresh app). Absent id is not an error.
+func (s *Store) DeleteUsage(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(usageBucket).Delete([]byte(id))
 	})
 }

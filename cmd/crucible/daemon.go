@@ -212,6 +212,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		acmeCARoot  = fs.String("acme-ca-root", "", "PEM file of root CA(s) to trust for the ACME server (a private/test CA whose endpoint isn't publicly trusted, e.g. Pebble); empty = system roots")
 		certDir     = fs.String("cert-dir", "", "directory for TLS certs, keys, and ACME state (default /var/lib/crucible/certs when TLS termination is enabled)")
 		proxyDomain = fs.String("proxy-domain", "", "base domain for name routing: <app>.<domain> routes to the app. Empty means the request Host IS the app name.")
+		// Persistent usage metrics: durable per-app usage counters (compute,
+		// memory, requests, storage) that survive a daemon restart. This is the
+		// accrual/flush cadence; it also bounds loss on an unclean crash.
+		usageInterval = fs.Duration("usage-interval", 60*time.Second, "cadence for accruing/persisting per-app usage metrics so they survive a daemon restart")
 		// App→app service networking (v0.5.1, experimental). Off by default:
 		// reachability is default-deny — an app reaches a peer only if its spec
 		// grants it (`app create --can-call <peer>`); ungranted calls get
@@ -651,6 +655,12 @@ Required flags:
 			l4Resolver := ingress.NewResolver(appMgr, sandboxGuestIP{mgr}, "", "", time.Second)
 			wakeForwarders = ingress.NewWakeForwarderSet(l4Resolver, appMgr, activityTracker, logger)
 			appMgr.SetPortReconciler(wakeForwarders)
+			// Persistent usage metrics: sample per-app volume storage from the
+			// volume manager (nil ⇒ storage stays 0), and set the flush cadence.
+			if volMgr != nil {
+				appMgr.SetVolumeSizer(volMgr.VolumeDiskBytes)
+			}
+			appMgr.SetUsageInterval(*usageInterval)
 			if serr := appMgr.Start(context.Background()); serr != nil {
 				logger.Warn("app reconciler start failed", "err", serr)
 			} else {
@@ -781,6 +791,7 @@ Required flags:
 				OnInternal:     mx.IncInternalRequest,
 				OnRequest: func(app, code string, latency time.Duration, _ bool) {
 					mx.ObserveAppRequest(app, code, latency)
+					appMgr.RecordRequest(app, code) // durable per-app request count
 				},
 			})
 			if perr := proxy.Start(); perr != nil {
