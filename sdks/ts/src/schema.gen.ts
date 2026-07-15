@@ -574,6 +574,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/secrets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List secret bundles
+         * @description The names of stored secret bundles — never their contents.
+         */
+        get: operations["listSecrets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/secrets/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a bundle's key names
+         * @description One bundle's key NAMES — never the values.
+         */
+        get: operations["getSecretKeys"];
+        /**
+         * Store a secret bundle
+         * @description Stores or replaces an encrypted secret bundle (a set of key→value pairs). merge=true updates the given keys of an existing bundle; false replaces it. Values are sealed at rest and NEVER returned by any endpoint. Gated by the default-deny `secret` op. 501 when no master key is configured.
+         */
+        put: operations["putSecret"];
+        post?: never;
+        /**
+         * Delete a secret bundle
+         * @description Removes a secret bundle (idempotent).
+         */
+        delete: operations["deleteSecret"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/snapshots": {
         parameters: {
             query?: never;
@@ -827,6 +875,7 @@ export interface components {
             publish_all?: boolean;
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
+            secret_env_from?: string[];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             status?: components["schemas"]["AppStatus"];
@@ -927,6 +976,7 @@ export interface components {
             publish_all?: boolean;
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
+            secret_env_from?: string[];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             tls_mode?: string;
@@ -1084,6 +1134,12 @@ export interface components {
             ref?: string;
             registry_auth?: components["schemas"]["RegistryAuth"];
         };
+        PutSecretReq: {
+            data?: {
+                [key: string]: string;
+            } | null;
+            merge?: boolean;
+        };
         RegistryAuth: {
             secret?: string;
             username?: string;
@@ -1117,6 +1173,13 @@ export interface components {
             source_snapshot_id?: string;
             vcpus?: number;
             workdir?: string;
+        };
+        SecretKeysResponse: {
+            keys?: string[] | null;
+            name?: string;
+        };
+        SecretListResponse: {
+            secrets?: string[] | null;
         };
         ServiceStopReq: {
             grace_s?: number;
@@ -1163,6 +1226,7 @@ export interface components {
             publish_all?: boolean;
             pull?: string;
             restart?: components["schemas"]["WireRestartPolicy"];
+            secret_env_from?: string[];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
             tls_mode?: string;
@@ -2964,6 +3028,149 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listSecrets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretListResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getSecretKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Secret bundle name (a DNS label). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SecretKeysResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Secret bundle name (a DNS label). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PutSecretReq"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteSecret: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Secret bundle name (a DNS label). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not Implemented */
+            501: {
                 headers: {
                     [name: string]: unknown;
                 };

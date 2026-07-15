@@ -117,6 +117,7 @@ func newRootCmd(stdout, stderr io.Writer) *cobra.Command {
 		newImageCmd(opts),
 		newAppCmd(opts),
 		newEventsCmd(opts),
+		newSecretCmd(opts),
 		newVolumeCmd(opts),
 		newRegistryCmd(opts),
 		newBuildCmd(opts),

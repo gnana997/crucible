@@ -39,6 +39,7 @@ import (
 	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/runner"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/internal/secretstore"
 	"github.com/gnana997/crucible/internal/telemetry"
 	"github.com/gnana997/crucible/internal/tlscert"
 	"github.com/gnana997/crucible/internal/tokenstore"
@@ -198,7 +199,9 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		appDB = fs.String("app-db", "/var/lib/crucible/apps.db", "bbolt file for durable apps; enables /apps + the reconcile loop when set (must be outside --work-base)")
 
 		// Private-registry credentials (v0.4.4): pull authenticated images.
-		registryStore = fs.String("registry-store", "/var/lib/crucible/registry.json", "credential store for private-registry pulls (`crucible registry login`); enables /registry/credentials. Empty disables it (pulls stay anonymous).")
+		registryStore  = fs.String("registry-store", "/var/lib/crucible/registry.json", "credential store for private-registry pulls (`crucible registry login`); enables /registry/credentials. Empty disables it (pulls stay anonymous).")
+		secretsKeyFile = fs.String("secrets-key-file", "", "file holding the base64 AES-256 master key that encrypts secret bundles; enables /secrets. Generated 0600 on first use if absent. Overridden by CRUCIBLE_SECRETS_KEY. Empty (and no env key) disables secrets.")
+		secretsDB      = fs.String("secrets-db", "/var/lib/crucible/secrets.db", "bbolt file for encrypted secret bundles (used only when a master key is configured)")
 
 		// Ingress proxy (v0.4.2): route inbound traffic to an app by name.
 		proxyListen    = fs.String("proxy-listen", "", "ingress proxy HTTP listen address (e.g. :80): routes by Host header to an app's current instance. Requires --app-db. Empty disables the HTTP proxy.")
@@ -581,6 +584,27 @@ Required flags:
 		regStore = registryauth.Open(*registryStore)
 	}
 
+	// Encrypted secret store (v0.7.4). Opt-in: only when a master key is
+	// configured (a key file or CRUCIBLE_SECRETS_KEY). No key ⇒ secrets stay off
+	// (and /secrets answers 501) — no silent plaintext fallback.
+	var secStore *secretstore.Store
+	if key, generated, kerr := secretstore.LoadMasterKey(*secretsKeyFile); kerr != nil {
+		_, _ = fmt.Fprintf(stderr, "error: secrets key: %v\n", kerr)
+		return 2
+	} else if key != nil {
+		if generated {
+			logger.Warn("generated a new secrets master key — BACK IT UP; losing it loses every secret", "file", *secretsKeyFile)
+		}
+		st, serr := secretstore.Open(*secretsDB, key)
+		if serr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: --secrets-db: %v\n", serr)
+			return 2
+		}
+		secStore = st
+		defer func() { _ = secStore.Close() }()
+		logger.Info("secrets enabled", "db", *secretsDB)
+	}
+
 	// agent comes from --agent-bin or the embedded copy.
 	var imageStore daemon.ImageStore
 	if *imageDir != "" {
@@ -621,6 +645,7 @@ Required flags:
 		Images:        imageStore,
 		LogStore:      logStore,
 		RegistryStore: regStore,
+		SecretStore:   secStore,
 		Volumes:       volMgr,
 	})
 	if err != nil {

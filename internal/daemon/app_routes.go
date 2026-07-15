@@ -44,6 +44,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, err)
 		return
 	}
+	if err := s.checkSecretRefs(req.SecretEnvFrom); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 
 	desiredRunning := req.DesiredState != "stopped"
 	rec, err := s.cfg.AppManager.Create(req.AppSpec, desiredRunning)
@@ -79,6 +83,24 @@ func (s *Server) checkAppEgressPolicy(r *http.Request, n *api.NetworkRequest) er
 	return errors.Join(pol.CheckNetAllow(reqNet), pol.CheckFullEgress(wantFull, wantCIDR))
 }
 
+// checkSecretRefs rejects a create/update that binds secret bundles which don't
+// exist (or when secrets are disabled) — fail fast with a clear error rather than
+// booting an app silently missing its config. Shared by create and update.
+func (s *Server) checkSecretRefs(bundles []string) error {
+	if len(bundles) == 0 {
+		return nil
+	}
+	if s.cfg.SecretStore == nil {
+		return errors.New("secret_env_from is set but secrets are not enabled on this daemon")
+	}
+	for _, b := range bundles {
+		if !s.cfg.SecretStore.Exists(b) {
+			return fmt.Errorf("secret bundle %q does not exist", b)
+		}
+	}
+	return nil
+}
+
 // handleUpdateApp — PUT /apps/{name}. Body is a full AppSpec (name immutable).
 // Bumps the app's generation → the reconciler redeploys the instance from the
 // new spec (destroy-then-boot). Desired running/stopped is retained (use the
@@ -99,6 +121,10 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.checkAppEgressPolicy(r, spec.Network); err != nil {
 		writeError(w, http.StatusForbidden, err)
+		return
+	}
+	if err := s.checkSecretRefs(spec.SecretEnvFrom); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	rec, err := s.cfg.AppManager.Update(name, spec)

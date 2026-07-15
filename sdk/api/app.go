@@ -103,6 +103,12 @@ type AppSpec struct {
 	// (v0.5.1). Default-deny: empty means this app may call no other app. Requires
 	// the daemon's --internal-networking. Each entry is an app name (DNS label).
 	CanCall []string `json:"can_call,omitempty"`
+
+	// SecretEnvFrom names encrypted secret bundles whose every key is injected as
+	// an environment variable at boot (envFrom). The bundles' values live only in
+	// the daemon's encrypted secret store — never here — so this carries only the
+	// bundle names, safe in `app get` and backups.
+	SecretEnvFrom []string `json:"secret_env_from,omitempty"`
 }
 
 // SleepPolicy configures an app's scale-to-zero behavior.
@@ -360,4 +366,26 @@ type AppEvent struct {
 type EventsResponse struct {
 	Events []AppEvent `json:"events"`
 	Cursor uint64     `json:"cursor"`
+}
+
+// SecretRequest stores or replaces a secret bundle (PUT /secrets/{name}): a set
+// of key→value pairs, sealed encrypted at rest. When Merge is true the keys are
+// merged into an existing bundle (values are updated, others kept); otherwise the
+// bundle is replaced with exactly Data.
+type SecretRequest struct {
+	Data  map[string]string `json:"data"`
+	Merge bool              `json:"merge,omitempty"`
+}
+
+// SecretListResponse is the names of the stored secret bundles (GET /secrets) —
+// never their contents.
+type SecretListResponse struct {
+	Secrets []string `json:"secrets"`
+}
+
+// SecretKeysResponse is one bundle's key NAMES (GET /secrets/{name}) — never the
+// values.
+type SecretKeysResponse struct {
+	Name string   `json:"name"`
+	Keys []string `json:"keys"`
 }

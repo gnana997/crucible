@@ -44,12 +44,16 @@ const (
 	// capture/admin_backup it exfiltrates data, so it must be granted
 	// explicitly. Creating a backup on-box stays snapshot-grade (not this op).
 	OpVolumeBackup Operation = "volume_backup"
+	// OpSecret gates the /secrets routes (manage encrypted secret bundles).
+	// Managing secrets is its own capability, default-deny — even listing bundle
+	// names is secret-management, not a plain read.
+	OpSecret Operation = "secret"
 )
 
 // KnownOperations returns the valid operation verbs, in a stable order (useful
 // for error messages and docs).
 func KnownOperations() []Operation {
-	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup, OpVolumeBackup}
+	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup, OpVolumeBackup, OpSecret}
 }
 
 func isKnownOp(op Operation) bool {

@@ -72,6 +72,11 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 		}
 		cfg.Network = &sandbox.NetworkConfig{Allowlist: denyAll}
 	}
+	// Secret bundles (envFrom) inject FIRST — every key of each bound bundle,
+	// decrypted here just-in-time — so the precedence is image ENV → secret
+	// bundles → plaintext --env (last wins). The plaintext exists only in this
+	// service spec (→ vsock → guest), never in the app record.
+	a.injectSecretEnv(cfg.Service, appID, spec.SecretEnvFrom)
 	// App env applies to the entrypoint the guest supervisor runs, so it
 	// merges onto the effective service (app values win). An app with env
 	// but no entrypoint has nowhere to put it — silently ignored.
@@ -85,6 +90,34 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 		a.s.startServiceDrain(sb.ID)
 	}
 	return sb.ID, nil
+}
+
+// injectSecretEnv merges every key of the app's bound secret bundles into the
+// service env (envFrom), decrypting each bundle just-in-time. A missing or
+// unreadable bundle is skipped with a warning (the app boots without it). No-op
+// without a service, no bundles, or no secret store. IMPORTANT: it logs only
+// bundle names and errors — never a key or value.
+func (a appInstantiator) injectSecretEnv(svc *wire.ServiceSpec, appID string, bundles []string) {
+	if svc == nil || len(bundles) == 0 || a.s.cfg.SecretStore == nil {
+		return
+	}
+	for _, name := range bundles {
+		data, found, err := a.s.cfg.SecretStore.Get(name)
+		if err != nil {
+			a.s.cfg.Logger.Warn("app secret bundle failed to open; skipping", "app", appID, "bundle", name, "err", err)
+			continue
+		}
+		if !found {
+			a.s.cfg.Logger.Warn("app references a missing secret bundle; skipping", "app", appID, "bundle", name)
+			continue
+		}
+		if svc.Env == nil {
+			svc.Env = make(map[string]string, len(data))
+		}
+		for k, v := range data {
+			svc.Env[k] = v
+		}
+	}
 }
 
 // mergeAppEnv overlays an app's env onto the effective service env, app values

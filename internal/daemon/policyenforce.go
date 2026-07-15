@@ -77,6 +77,11 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasSuffix(path, "/export") {
 			return policy.OpVolumeBackup, true
 		}
+		// /secrets is secret management — even listing bundle names is not a
+		// plain read.
+		if strings.HasPrefix(path, "/secrets") {
+			return policy.OpSecret, true
+		}
 		return policy.OpRead, true
 	case http.MethodDelete:
 		// Removing a registry credential is credential management, not a
@@ -89,12 +94,20 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		if strings.HasPrefix(path, "/apps/") && strings.Contains(path, "/domains/") {
 			return policy.OpExec, true
 		}
+		// DELETE /secrets/{name} is secret management.
+		if strings.HasPrefix(path, "/secrets") {
+			return policy.OpSecret, true
+		}
 		return policy.OpDelete, true
 	case http.MethodPut:
 		// PUT /sandboxes/{id}/service configures what runs in the guest —
 		// exec-grade power.
 		if strings.HasSuffix(path, "/service") {
 			return policy.OpExec, true
+		}
+		// PUT /secrets/{name} stores an encrypted secret bundle.
+		if strings.HasPrefix(path, "/secrets") {
+			return policy.OpSecret, true
 		}
 		// PUT /apps/{name} replaces the app's entrypoint spec — exec-grade,
 		// same as creating one.

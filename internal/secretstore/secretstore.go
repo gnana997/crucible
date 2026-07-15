@@ -203,6 +203,16 @@ func (s *Store) Get(name string) (map[string]string, bool, error) {
 	return data, true, err
 }
 
+// Exists reports whether a bundle is present (no decryption).
+func (s *Store) Exists(name string) bool {
+	var ok bool
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		ok = tx.Bucket(bundlesBucket).Get([]byte(name)) != nil
+		return nil
+	})
+	return ok
+}
+
 // List returns every bundle name, sorted.
 func (s *Store) List() ([]string, error) {
 	var names []string

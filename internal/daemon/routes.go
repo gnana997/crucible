@@ -104,6 +104,12 @@ func (s *Server) routes() *http.ServeMux {
 	// health/domain/delete transitions. Reads, gated as `read`. 501 when
 	// AppManager is nil.
 	mux.HandleFunc("GET /events", s.handleListEvents)
+	// Encrypted secret bundles (v0.7.4): write-only management, gated by the
+	// default-deny `secret` op. 501 when no master key is configured.
+	mux.HandleFunc("PUT /secrets/{name}", s.handlePutSecret)
+	mux.HandleFunc("GET /secrets", s.handleListSecrets)
+	mux.HandleFunc("GET /secrets/{name}", s.handleGetSecretKeys)
+	mux.HandleFunc("DELETE /secrets/{name}", s.handleDeleteSecret)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	// Private-registry credentials (v0.4.4): manage the creds used for image

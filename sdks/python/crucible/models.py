@@ -190,6 +190,11 @@ class ProfilesResponse(BaseModel):
     profiles: list[str] | None = None
 
 
+class PutSecretReq(BaseModel):
+    data: dict[str, str] | None = None
+    merge: bool | None = None
+
+
 class RegistryAuth(BaseModel):
     secret: str | None = None
     username: str | None = None
@@ -225,6 +230,15 @@ class SandboxResponse(BaseModel):
     source_snapshot_id: str | None = None
     vcpus: int | None = None
     workdir: str | None = None
+
+
+class SecretKeysResponse(BaseModel):
+    keys: list[str] | None = None
+    name: str | None = None
+
+
+class SecretListResponse(BaseModel):
+    secrets: list[str] | None = None
 
 
 class ServiceStopReq(BaseModel):
@@ -354,6 +368,7 @@ class CreateAppRequest(BaseModel):
     publish_all: bool | None = None
     pull: str | None = None
     restart: WireRestartPolicy | None = None
+    secret_env_from: list[str] | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     tls_mode: str | None = None
@@ -421,6 +436,7 @@ class UpdateAppReq(BaseModel):
     publish_all: bool | None = None
     pull: str | None = None
     restart: WireRestartPolicy | None = None
+    secret_env_from: list[str] | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     tls_mode: str | None = None
@@ -475,6 +491,7 @@ class AppResponse(BaseModel):
     publish_all: bool | None = None
     pull: str | None = None
     restart: WireRestartPolicy | None = None
+    secret_env_from: list[str] | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
     status: AppStatus | None = None

@@ -52,6 +52,13 @@ type listEventsParam struct {
 	Since uint64 `query:"since" description:"Resume after this cursor (seq); 0 returns the events still in the ring."`
 	App   string `query:"app" description:"Filter to a single app by name; empty returns all apps."`
 }
+type secretNameParam struct {
+	Name string `path:"name" description:"Secret bundle name (a DNS label)."`
+}
+type putSecretReq struct {
+	secretNameParam
+	api.SecretRequest
+}
 type volNameParam struct {
 	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
 }
@@ -300,6 +307,22 @@ func buildReflector() *openapi3.Reflector {
 		"One live app's persistent usage metrics, accrued to now. A deleted app's retained usage is only "+
 			"available via GET /usage.",
 		appNameParam{}, api.AppUsage{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	// --- secrets (v0.7.4) ---
+	jsonOp(http.MethodPut, "/secrets/{name}", "putSecret", "secrets", "Store a secret bundle",
+		"Stores or replaces an encrypted secret bundle (a set of key→value pairs). merge=true updates the "+
+			"given keys of an existing bundle; false replaces it. Values are sealed at rest and NEVER returned by "+
+			"any endpoint. Gated by the default-deny `secret` op. 501 when no master key is configured.",
+		putSecretReq{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/secrets", "listSecrets", "secrets", "List secret bundles",
+		"The names of stored secret bundles — never their contents.",
+		nil, api.SecretListResponse{}, http.StatusOK, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/secrets/{name}", "getSecretKeys", "secrets", "List a bundle's key names",
+		"One bundle's key NAMES — never the values.",
+		secretNameParam{}, api.SecretKeysResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodDelete, "/secrets/{name}", "deleteSecret", "secrets", "Delete a secret bundle",
+		"Removes a secret bundle (idempotent).",
+		secretNameParam{}, nil, http.StatusNoContent, http.StatusNotImplemented)
+
 	jsonOp(http.MethodGet, "/events", "listEvents", "apps", "List app lifecycle events",
 		"A batch of app lifecycle events (created / phase_changed / health_changed / domain / deleted) after "+
 			"the given cursor, plus the current max cursor. Poll with the returned cursor to follow. The stream "+

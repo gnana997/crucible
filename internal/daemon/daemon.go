@@ -33,6 +33,7 @@ import (
 	"github.com/gnana997/crucible/internal/metrics"
 	"github.com/gnana997/crucible/internal/registryauth"
 	"github.com/gnana997/crucible/internal/sandbox"
+	"github.com/gnana997/crucible/internal/secretstore"
 	"github.com/gnana997/crucible/internal/tokenstore"
 	"github.com/gnana997/crucible/internal/volume"
 	"github.com/gnana997/crucible/sdk/api"
@@ -117,6 +118,12 @@ type Config struct {
 	// to image pulls. Nil makes those routes answer 501 and pulls stay
 	// anonymous.
 	RegistryStore *registryauth.Store
+
+	// SecretStore, when non-nil, enables the /secrets routes (manage encrypted
+	// secret bundles) and injects bound bundles into an app's env at boot. Nil
+	// (no master key configured) makes those routes answer 501 and SecretEnvFrom
+	// is rejected.
+	SecretStore *secretstore.Store
 
 	// Volumes, when non-nil, enables the /volumes routes (create/list/delete
 	// persistent volumes) and reflects them in create requests. Nil makes

@@ -295,7 +295,8 @@ type appSpecOpts struct {
 	vcpus, memory, port, minScale                 int
 	maxScale, targetConcurrency                   int
 	netAllow, publish, env, netAllowCIDR, canCall []string
-	volumes                                       []string
+	volumes, secrets                              []string
+	secretsFrom                                   string
 	netFullEgress, publishAll, keepConnections    bool
 	noHTTPSRedirect                               bool
 }
@@ -327,6 +328,8 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
 	f.StringVar(&a.tlsMode, "tls-mode", "", "how the ingress proxy handles this app's HTTPS on :443: terminate (default, the proxy manages the cert) or passthrough (the guest owns its cert)")
 	f.BoolVar(&a.noHTTPSRedirect, "no-https-redirect", false, "serve plain HTTP on :80 for this app instead of 301-redirecting to HTTPS (only meaningful with TLS termination)")
+	f.StringArrayVar(&a.secrets, "secrets", nil, "inject every key of a secret bundle as an env var (envFrom; repeatable)")
+	f.StringVar(&a.secretsFrom, "secrets-from", "", "create a secret bundle named <app>-env from a .env file and inject it (envFrom)")
 }
 
 func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api.AppSpec, error) {
@@ -346,22 +349,39 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		return api.AppSpec{}, err
 	}
 	spec := api.AppSpec{
-		Name:       name,
-		Image:      &api.ImageRef{OCI: ref},
-		Pull:       effPull,
-		VCPUs:      a.vcpus,
-		MemoryMiB:  a.memory,
-		DiskBytes:  diskBytes,
-		Env:        envMap,
-		Port:       a.port,
-		PublishAll: a.publishAll,
-		Restart:    wire.RestartPolicy{Policy: a.restart},
-		CanCall:    a.canCall,
-		TLSMode:    a.tlsMode,
+		Name:          name,
+		Image:         &api.ImageRef{OCI: ref},
+		Pull:          effPull,
+		VCPUs:         a.vcpus,
+		MemoryMiB:     a.memory,
+		DiskBytes:     diskBytes,
+		Env:           envMap,
+		Port:          a.port,
+		PublishAll:    a.publishAll,
+		Restart:       wire.RestartPolicy{Policy: a.restart},
+		CanCall:       a.canCall,
+		TLSMode:       a.tlsMode,
+		SecretEnvFrom: a.secrets,
 	}
 	if a.noHTTPSRedirect {
 		off := false
 		spec.HTTPRedirect = &off
+	}
+	// --secrets-from: create/replace the bundle "<app>-env" from a .env, then bind
+	// it. A side-effecting client call, but it keeps create and update consistent.
+	if a.secretsFrom != "" {
+		data, derr := parseDotenv(a.secretsFrom)
+		if derr != nil {
+			return api.AppSpec{}, derr
+		}
+		if len(data) == 0 {
+			return api.AppSpec{}, fmt.Errorf("%s has no KEY=VALUE lines", a.secretsFrom)
+		}
+		bundle := name + "-env"
+		if serr := o.client().SetSecret(cmd.Context(), bundle, data, false); serr != nil {
+			return api.AppSpec{}, fmt.Errorf("store secret bundle %q: %w", bundle, serr)
+		}
+		spec.SecretEnvFrom = append(spec.SecretEnvFrom, bundle)
 	}
 	for _, p := range a.publish {
 		pm, perr := parsePublish(p)

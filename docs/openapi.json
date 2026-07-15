@@ -2191,6 +2191,181 @@
         }
       }
     },
+    "/secrets": {
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "List secret bundles",
+        "description": "The names of stored secret bundles — never their contents.",
+        "operationId": "listSecrets",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretListResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/secrets/{name}": {
+      "delete": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Delete a secret bundle",
+        "description": "Removes a secret bundle (idempotent).",
+        "operationId": "deleteSecret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret bundle name (a DNS label).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Secret bundle name (a DNS label)."
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "List a bundle's key names",
+        "description": "One bundle's key NAMES — never the values.",
+        "operationId": "getSecretKeys",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret bundle name (a DNS label).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Secret bundle name (a DNS label)."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecretKeysResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "secrets"
+        ],
+        "summary": "Store a secret bundle",
+        "description": "Stores or replaces an encrypted secret bundle (a set of key→value pairs). merge=true updates the given keys of an existing bundle; false replaces it. Values are sealed at rest and NEVER returned by any endpoint. Gated by the default-deny `secret` op. 501 when no master key is configured.",
+        "operationId": "putSecret",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Secret bundle name (a DNS label).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Secret bundle name (a DNS label)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutSecretReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/snapshots": {
       "get": {
         "tags": [
@@ -3069,6 +3244,12 @@
           "restart": {
             "$ref": "#/components/schemas/WireRestartPolicy"
           },
+          "secret_env_from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
           },
@@ -3356,6 +3537,12 @@
           },
           "restart": {
             "$ref": "#/components/schemas/WireRestartPolicy"
+          },
+          "secret_env_from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
@@ -3861,6 +4048,21 @@
           }
         }
       },
+      "PutSecretReq": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "merge": {
+            "type": "boolean"
+          }
+        }
+      },
       "RegistryAuth": {
         "type": "object",
         "properties": {
@@ -3955,6 +4157,33 @@
           },
           "workdir": {
             "type": "string"
+          }
+        }
+      },
+      "SecretKeysResponse": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SecretListResponse": {
+        "type": "object",
+        "properties": {
+          "secrets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
           }
         }
       },
@@ -4095,6 +4324,12 @@
           },
           "restart": {
             "$ref": "#/components/schemas/WireRestartPolicy"
+          },
+          "secret_env_from": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "service": {
             "$ref": "#/components/schemas/WireServiceSpec"
