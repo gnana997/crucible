@@ -849,6 +849,69 @@
         }
       }
     },
+    "/events": {
+      "get": {
+        "tags": [
+          "apps"
+        ],
+        "summary": "List app lifecycle events",
+        "description": "A batch of app lifecycle events (created / phase_changed / health_changed / domain / deleted) after the given cursor, plus the current max cursor. Poll with the returned cursor to follow. The stream is an in-memory ring; a reader offline longer than the ring loses old events (usage totals stay correct via GET /usage). 501 with no app manager.",
+        "operationId": "listEvents",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Resume after this cursor (seq); 0 returns the events still in the ring.",
+            "schema": {
+              "minimum": 0,
+              "type": "integer",
+              "description": "Resume after this cursor (seq); 0 returns the events still in the ring."
+            }
+          },
+          {
+            "name": "app",
+            "in": "query",
+            "description": "Filter to a single app by name; empty returns all apps.",
+            "schema": {
+              "type": "string",
+              "description": "Filter to a single app by name; empty returns all apps."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -2862,6 +2925,38 @@
           }
         }
       },
+      "AppEvent": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "attrs": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "instance": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "time": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
       "AppExecReq": {
         "type": "object",
         "properties": {
@@ -3397,6 +3492,22 @@
           },
           "error": {
             "type": "string"
+          }
+        }
+      },
+      "EventsResponse": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppEvent"
+            },
+            "nullable": true
           }
         }
       },

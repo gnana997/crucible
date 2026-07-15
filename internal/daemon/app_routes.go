@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,6 +150,26 @@ func (s *Server) handleListUsage(w http.ResponseWriter, r *http.Request) {
 		Usage:            s.cfg.AppManager.AllUsage(),
 		SnapshotUnixNano: time.Now().UnixNano(),
 	})
+}
+
+// handleListEvents — GET /events?since=<seq>&app=<name>. A batch of app
+// lifecycle events after the cursor, plus the current max cursor. Poll with the
+// returned cursor to follow (client-side, like logs).
+func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.appsEnabled(w) {
+		return
+	}
+	var since uint64
+	if v := r.URL.Query().Get("since"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, errors.New("invalid since (want a non-negative cursor)"))
+			return
+		}
+		since = n
+	}
+	events, cursor := s.cfg.AppManager.RecentEvents(since, r.URL.Query().Get("app"))
+	writeJSON(w, http.StatusOK, api.EventsResponse{Events: events, Cursor: cursor})
 }
 
 // handleAppUsage — GET /apps/{name}/usage. One live app's usage, accrued to now.

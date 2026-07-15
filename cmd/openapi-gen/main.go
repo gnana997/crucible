@@ -48,6 +48,10 @@ type listDomainsParam struct {
 	Name   string `path:"name" description:"App name (a DNS label, e.g. web)."`
 	Detail bool   `query:"detail" description:"When true, also return per-domain TLS/certificate status in 'details' (including the app's generated <app>.<proxy-domain> name)."`
 }
+type listEventsParam struct {
+	Since uint64 `query:"since" description:"Resume after this cursor (seq); 0 returns the events still in the ring."`
+	App   string `query:"app" description:"Filter to a single app by name; empty returns all apps."`
+}
 type volNameParam struct {
 	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
 }
@@ -296,6 +300,12 @@ func buildReflector() *openapi3.Reflector {
 		"One live app's persistent usage metrics, accrued to now. A deleted app's retained usage is only "+
 			"available via GET /usage.",
 		appNameParam{}, api.AppUsage{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+	jsonOp(http.MethodGet, "/events", "listEvents", "apps", "List app lifecycle events",
+		"A batch of app lifecycle events (created / phase_changed / health_changed / domain / deleted) after "+
+			"the given cursor, plus the current max cursor. Poll with the returned cursor to follow. The stream "+
+			"is an in-memory ring; a reader offline longer than the ring loses old events (usage totals stay "+
+			"correct via GET /usage). 501 with no app manager.",
+		listEventsParam{}, api.EventsResponse{}, http.StatusOK, http.StatusBadRequest, http.StatusNotImplemented)
 
 	// --- sandboxes ---
 	// --- registry credentials (v0.4.4) ---

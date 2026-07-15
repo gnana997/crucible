@@ -37,7 +37,27 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppCaptureCmd(o),
 		newAppDomainCmd(o),
 		newAppUsageCmd(o),
+		newAppEventsCmd(o),
 	)
+	return cmd
+}
+
+// newAppEventsCmd is `crucible app events <name>` — lifecycle events for one app.
+func newAppEventsCmd(o *globalOpts) *cobra.Command {
+	var (
+		since  uint64
+		follow bool
+	)
+	cmd := &cobra.Command{
+		Use:   "events <name>",
+		Short: "Stream one app's lifecycle events",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runEvents(cmd, o, args[0], since, follow)
+		},
+	}
+	cmd.Flags().Uint64Var(&since, "since", 0, "resume after this cursor (0 = the events still in the ring)")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "stream new events as they arrive")
 	return cmd
 }
 

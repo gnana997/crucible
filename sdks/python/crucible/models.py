@@ -3,11 +3,24 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import AwareDatetime, BaseModel, Field, conint
 
 
 class AddDomainReq(BaseModel):
     domain: str | None = None
+
+
+class AppEvent(BaseModel):
+    app: str | None = None
+    app_id: str | None = None
+    attrs: dict[str, Any] | None = None
+    instance: str | None = None
+    reason: str | None = None
+    seq: conint(ge=0) | None = None
+    time: AwareDatetime | None = None
+    type: str | None = None
 
 
 class AppExecReq(BaseModel):
@@ -74,6 +87,11 @@ class DomainListResponse(BaseModel):
 class ErrorResponse(BaseModel):
     code: str | None = None
     error: str | None = None
+
+
+class EventsResponse(BaseModel):
+    cursor: conint(ge=0) | None = None
+    events: list[AppEvent] | None = None
 
 
 class ExecReq(BaseModel):

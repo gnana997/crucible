@@ -195,6 +195,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List app lifecycle events
+         * @description A batch of app lifecycle events (created / phase_changed / health_changed / domain / deleted) after the given cursor, plus the current max cursor. Poll with the returned cursor to follow. The stream is an in-memory ring; a reader offline longer than the ring loses old events (usage totals stay correct via GET /usage). 501 with no app manager.
+         */
+        get: operations["listEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -759,6 +779,19 @@ export interface components {
         AddDomainReq: {
             domain?: string;
         };
+        AppEvent: {
+            app?: string;
+            app_id?: string;
+            attrs?: {
+                [key: string]: unknown;
+            };
+            instance?: string;
+            reason?: string;
+            seq?: number;
+            /** Format: date-time */
+            time?: string;
+            type?: string;
+        };
         AppExecReq: {
             cmd?: string[] | null;
             cwd?: string;
@@ -938,6 +971,10 @@ export interface components {
         ErrorResponse: {
             code?: string;
             error?: string;
+        };
+        EventsResponse: {
+            cursor?: number;
+            events?: components["schemas"]["AppEvent"][] | null;
         };
         ExecReq: {
             cmd?: string[] | null;
@@ -1875,6 +1912,49 @@ export interface operations {
             };
             /** @description Not Found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listEvents: {
+        parameters: {
+            query?: {
+                /** @description Resume after this cursor (seq); 0 returns the events still in the ring. */
+                since?: number;
+                /** @description Filter to a single app by name; empty returns all apps. */
+                app?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventsResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };

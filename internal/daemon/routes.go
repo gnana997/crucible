@@ -100,6 +100,10 @@ func (s *Server) routes() *http.ServeMux {
 	// these to bill. 501 when AppManager is nil.
 	mux.HandleFunc("GET /usage", s.handleListUsage)
 	mux.HandleFunc("GET /apps/{name}/usage", s.handleAppUsage)
+	// App lifecycle events (v0.7.3): a cursor-follow stream of created/phase/
+	// health/domain/delete transitions. Reads, gated as `read`. 501 when
+	// AppManager is nil.
+	mux.HandleFunc("GET /events", s.handleListEvents)
 	// OCI image cache (experimental). When Config.Images is nil these
 	// answer 501. Mutations gate as `create`, reads as `read`.
 	// Private-registry credentials (v0.4.4): manage the creds used for image

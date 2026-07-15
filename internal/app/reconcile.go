@@ -399,8 +399,25 @@ func (m *Manager) RecordRequest(name, code string) {
 	m.usage.AddRequest(id, name, code)
 }
 
-// Events returns the app lifecycle event stream (for GET /events, OTLP export).
+// Events returns the app lifecycle event store (for OTLP export / subscribers).
 func (m *Manager) Events() *appevents.Store { return m.events }
+
+// RecentEvents returns the lifecycle events after cursor `since` (optionally
+// filtered to one app), plus the current max cursor for the next resume.
+func (m *Manager) RecentEvents(since uint64, app string) ([]api.AppEvent, uint64) {
+	evs, cursor := m.events.Since(since)
+	out := make([]api.AppEvent, 0, len(evs))
+	for _, e := range evs {
+		if app != "" && e.App != app {
+			continue
+		}
+		out = append(out, api.AppEvent{
+			Seq: e.Seq, Time: e.Time, App: e.App, AppID: e.AppID,
+			Instance: e.Instance, Type: e.Type, Reason: e.Reason, Attrs: e.Attrs,
+		})
+	}
+	return out, cursor
+}
 
 // emit records a non-phase lifecycle event (created/updated/deleted/domain).
 func (m *Manager) emit(typ, appID, name, reason string, attrs map[string]any) {

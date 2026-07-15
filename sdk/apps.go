@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 
 	"github.com/gnana997/crucible/sdk/api"
 	"github.com/gnana997/crucible/sdk/wire"
@@ -144,6 +145,28 @@ func (c *Client) AppUsage(ctx context.Context, name string) (api.AppUsage, error
 		return api.AppUsage{}, err
 	}
 	return decodeInto[api.AppUsage](resp)
+}
+
+// Events returns app lifecycle events after cursor `since` (0 = whatever is in
+// the ring), optionally filtered to one app (empty = all), plus the current max
+// cursor (GET /events). Poll with the returned cursor to follow.
+func (c *Client) Events(ctx context.Context, since uint64, app string) (api.EventsResponse, error) {
+	q := url.Values{}
+	if since > 0 {
+		q.Set("since", strconv.FormatUint(since, 10))
+	}
+	if app != "" {
+		q.Set("app", app)
+	}
+	path := "/events"
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return api.EventsResponse{}, err
+	}
+	return decodeInto[api.EventsResponse](resp)
 }
 
 // App returns a handle for one app by name. Purely local until a call.

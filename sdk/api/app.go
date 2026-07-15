@@ -336,3 +336,28 @@ type UsageListResponse struct {
 	Usage            []AppUsage `json:"usage"`
 	SnapshotUnixNano int64      `json:"snapshot_unix_nano"`
 }
+
+// AppEvent is one app lifecycle transition (GET /events). Seq is a monotonic
+// per-daemon cursor a reader resumes from.
+type AppEvent struct {
+	Seq      uint64    `json:"seq"`
+	Time     time.Time `json:"time"`
+	App      string    `json:"app"`
+	AppID    string    `json:"app_id"`
+	Instance string    `json:"instance,omitempty"`
+	// Type is one of: created, updated, deleted, domain_added, domain_removed,
+	// phase_changed (Attrs carry from/to and, on wake, wake_latency_ms),
+	// health_changed, rollout.
+	Type   string         `json:"type"`
+	Reason string         `json:"reason,omitempty"`
+	Attrs  map[string]any `json:"attrs,omitempty"`
+}
+
+// EventsResponse is a batch of lifecycle events (GET /events?since=<seq>) plus
+// the current max cursor, so a reader resumes even when the batch is empty. The
+// event stream is an in-memory ring: a reader offline longer than the ring loses
+// old events, but usage totals stay correct (reconcile against GET /usage).
+type EventsResponse struct {
+	Events []AppEvent `json:"events"`
+	Cursor uint64     `json:"cursor"`
+}

@@ -664,6 +664,9 @@ Required flags:
 			// counters once per usage tick (real sandbox-id keyed).
 			appMgr.SetEgressSource(mgr.EgressByteMap)
 			appMgr.SetUsageInterval(*usageInterval)
+			// Push app lifecycle events over OTLP too (no-op unless OTLP is on);
+			// GET /events serves them regardless.
+			tele.StartEventExport(context.Background(), appMgr.Events())
 			if serr := appMgr.Start(context.Background()); serr != nil {
 				logger.Warn("app reconciler start failed", "err", serr)
 			} else {
