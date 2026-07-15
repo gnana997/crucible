@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.7.4] — 2026-07-15
+
+Secrets. `--env` stores config in cleartext in the app database (and every
+`admin backup`) — fine for a log level, wrong for a database password. Secret
+bundles fix that: sensitive values live in a dedicated store, encrypted at rest,
+and reach the guest as environment variables without the value ever touching the
+app spec, the API, backups, or logs.
+
+### Added
+
+- **Encrypted secret bundles.** A secret is a named set of key→value pairs (a
+  `.env` becomes one bundle), sealed with AES-256-GCM. Manage them write-only:
+  `crucible secret set <name> --from-env-file .env` (or a single key from stdin),
+  `secret ls` (names, or a bundle's key names — never values), `secret rm`. API:
+  `PUT`/`GET`/`DELETE /secrets/{name}`, gated by the default-deny `secret` scoped
+  op. No endpoint ever returns a value.
+- **envFrom injection.** `app create --secrets <bundle>` injects every key of a
+  bundle as an environment variable; `--secrets-from <.env>` imports and binds in
+  one step. The app spec stores only the bundle name (`secret_env_from`) — no
+  secret material in `app get` or backups. Precedence: image `ENV` → bundles →
+  `--env` (last wins).
+- **`crucible app create <name> -- <command…>`** overrides an app's entrypoint
+  (like `docker run <image> <cmd>`), exposing the spec's existing command override.
+- **Opt-in master key.** `--secrets-key-file` (generated 0600 on first use) or
+  `CRUCIBLE_SECRETS_KEY` (env, wins). No key ⇒ secrets disabled (no silent
+  plaintext fallback). The encrypted store rides `admin backup` as ciphertext;
+  the key is deliberately excluded from the backup.
+
+### Notes
+
+- **Snapshot residency (the honest limit):** once injected, a secret is in guest
+  RAM, so it's in the guest's snapshot memory file on disk — recoverable by
+  host-root or disk theft, like any VM platform. This release closes the *at-rest
+  config* leak (store/API/backup); put `--work-base` on an encrypted filesystem
+  for the runtime residual, with snapshot-memory encryption planned next.
+- Rotation requires a redeploy (a running instance holds the old value in RAM).
+
 ## [0.7.3] — 2026-07-15
 
 App lifecycle events. A stream of what happened to your apps — created, booted,

@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.7.3 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.7.4 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -148,8 +148,16 @@ a Manager `emitPhase` dedup helper: exact sleep/wake boundaries emit directly (w
 `wake_latency_ms`) and a reconcile-pass sweep (`emitPhaseChanges`, step 4 of
 reconcile) catches reconciler-driven transitions centrally — no missed net phase
 change, no 12-site refactor. Resolves the CP billing poll-vs-push question (exact
-awake-intervals). NEXT: **v0.7.4 secrets** (encrypted store, reference-based). See
-the ROADMAP for what's after (secrets, incremental backups, wildcard/DNS-01, fleet).
+awake-intervals). **v0.7.4** adds **secrets**: encrypted secret BUNDLES (k8s-Secret
+model — named `map[string]string` sealed AES-256-GCM in `internal/secretstore`,
+name as AEAD AAD) injected via **envFrom** (`AppSpec.SecretEnvFrom`) at
+`appinstance.go mergeAppEnv`; write-only `/secrets` API (default-deny `secret`
+op), `crucible secret set --from-env-file .env` + `app --secrets`/`--secrets-from`;
+opt-in master key (`--secrets-key-file`/`CRUCIBLE_SECRETS_KEY`, no key⇒disabled);
+rides `admin backup` as ciphertext (key excluded). Closes the plaintext-`--env`-in-
+bbolt leak; snapshot-residency is the honest runtime limit (v0.8.0 tier-1 encrypts
+snapshot memory). See the ROADMAP for what's after (incremental backups,
+wildcard/DNS-01, fleet).
 
 ## Working style
 

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"time"
@@ -88,6 +89,22 @@ func Open(path string, key []byte) (*Store, error) {
 
 // Close releases the store's file lock.
 func (s *Store) Close() error { return s.db.Close() }
+
+// BackupTo streams a consistent copy of the store's bbolt file (a read
+// transaction pins the snapshot while the daemon keeps serving) — for
+// `admin backup`. frame receives the exact byte count and returns the
+// destination. The bytes are the SEALED bundles: inert without the master key,
+// which is never in the backup.
+func (s *Store) BackupTo(frame func(size int64) (io.Writer, error)) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		w, err := frame(tx.Size())
+		if err != nil {
+			return err
+		}
+		_, err = tx.WriteTo(w)
+		return err
+	})
+}
 
 // seal encrypts a bundle map under name (AAD).
 func (s *Store) seal(name string, data map[string]string) (sealed, error) {

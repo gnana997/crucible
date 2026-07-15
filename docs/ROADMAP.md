@@ -163,7 +163,13 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.7.3: App lifecycle events *(current)*
+### v0.7.4: Secrets *(current)*
+
+Sensitive config out of the cleartext app spec and into an encrypted store ([secrets.md](secrets.md)).
+
+- [x] **Encrypted secret bundles:** a secret is a named `key→value` bundle (a `.env` becomes one bundle) sealed AES-256-GCM (bundle name as AEAD AAD) in `internal/secretstore`. Write-only management — `crucible secret set --from-env-file`/`ls`/`rm`, `PUT/GET/DELETE /secrets/{name}` gated by the default-deny `secret` op; no endpoint ever returns a value. Injected with **envFrom** (`app create --secrets <bundle>` / `--secrets-from .env`) at boot, so the app spec/backups carry only the bundle name. Opt-in master key (`--secrets-key-file` / `CRUCIBLE_SECRETS_KEY`; no key ⇒ disabled); the store rides `admin backup` as ciphertext, the key excluded. `scripts/smoke_secrets.sh` proves the secret reaches the guest service env while no host surface (app get / API / backup / on-disk store) leaks the value. Snapshot residency is the honest runtime limit — the next release encrypts the snapshot memory file.
+
+### v0.7.3: App lifecycle events
 
 A stream of app transitions — the activity timeline, and the exact sleep/wake timing that makes awake-interval billing precise ([observability.md](observability.md#app-lifecycle-events--get-events)).
 

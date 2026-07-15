@@ -75,6 +75,7 @@
       "apps",
       "proxy",
       "tls",
+      "secrets",
       "registry",
       "volumes",
       "serverless"

@@ -111,6 +111,14 @@ func (s *Server) handleAdminBackup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if s.cfg.SecretStore != nil {
+		// Sealed bundles — inert without the master key, which is deliberately
+		// NOT in the backup (the operator keeps it separately).
+		if err := s.cfg.SecretStore.BackupTo(frame("secrets.db")); err != nil {
+			abort("secrets.db", err)
+			return
+		}
+	}
 
 	host, _ := os.Hostname()
 	mb, err := json.MarshalIndent(backupManifest{

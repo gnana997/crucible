@@ -455,13 +455,21 @@ func newAppCreateCmd(o *globalOpts) *cobra.Command {
 	var opts appSpecOpts
 	var stopped bool
 	cmd := &cobra.Command{
-		Use:   "create <name>",
+		Use:   "create <name> [-- command args...]",
 		Short: "Create a durable app",
-		Args:  cobra.ExactArgs(1),
+		Long: "Create a durable app from an image. Anything after `--` overrides the image's\n" +
+			"entrypoint (like `docker run <image> <cmd>`).",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := opts.build(cmd, o, args[0])
 			if err != nil {
 				return err
+			}
+			if len(args) > 1 { // trailing args after `--` override the entrypoint
+				if spec.Service == nil {
+					spec.Service = &wire.ServiceSpec{}
+				}
+				spec.Service.Cmd = args[1:]
 			}
 			resp, err := o.client().CreateApp(cmd.Context(), api.CreateAppRequest{
 				AppSpec:      spec,
