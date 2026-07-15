@@ -17,6 +17,9 @@ func (stubAllowlist) Patterns() []string  { return nil }
 // stubProvisioner records Setup/Teardown calls without doing
 // anything real. Used to exercise the sandbox-layer branches
 // independent of the internal/network host machinery.
+func (*stubProvisioner) EgressByteMap() map[string]uint64      { return nil }
+func (*recordingProvisioner) EgressByteMap() map[string]uint64 { return nil }
+
 type stubProvisioner struct {
 	setups    int
 	teardowns int

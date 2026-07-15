@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# smoke_usage.sh — persistent usage metrics (v0.7.1), realistic workload.
+# smoke_usage.sh — persistent usage metrics (v0.7.1; +egress v0.7.2), realistic workload.
 #
 # Durable per-app usage counters that survive a daemon restart. This drives a
 # real, multi-app workload and checks the ledger for ACCURACY and correct
@@ -18,6 +18,9 @@
 #       ASLEEP (a slept app still holds its disk) even as its compute is frozen
 #   08  a DELETED app's final usage is RETAINED (readable via GET /usage)
 #   09  usage SURVIVES a daemon restart, and downtime is NOT back-filled
+#   10  EGRESS bytes: a full-egress guest's external outbound traffic is counted
+#       and attributed to it, while an idle app stays ~0 (best-effort; skips with
+#       no outbound connectivity)
 #
 # Reads usage via `crucible app usage [<name>] -o json` (GET /usage,
 # /apps/{name}/usage).
@@ -52,7 +55,7 @@ ok()  { echo "  ✓ $*"; pass=$((pass+1)); }
 bad() { echo "  ✗ $*"; fail=$((fail+1)); }
 
 echo "==============================================================="
-echo " crucible persistent usage metrics smoke (v0.7.1)"
+echo " crucible persistent usage metrics smoke (v0.7.1 + v0.7.2 egress)"
 echo "==============================================================="
 
 # ---- preflight --------------------------------------------------------------
@@ -216,6 +219,31 @@ rw_after="$(usage_field web requests)"; cw_after="$(usage_field web compute_vcpu
 band "$(python3 -c "print(abs(float('$cw_after')-float('$c_slept')))")" 0 0.5 \
   && ok "compute durable + downtime not back-filled ($c_slept → $cw_after)" \
   || bad "compute changed across restart ($c_slept → $cw_after)"
+
+echo "== 10 EGRESS: external outbound bytes are counted + attributed"
+# A full-egress guest does real external I/O; egress counts its OUTBOUND bytes
+# (DNS + TCP/TLS handshakes + HTTP request + the ACK stream for a download), NOT
+# the downloaded payload (that's ingress) — so we assert a floor + attribution,
+# not the file size. Best-effort: with no outbound connectivity this SKIPS rather
+# than fails (a purely intra-host CI can't exercise external egress).
+cli app create netapp --image "$IMAGE" --pull missing --port 80 --restart always \
+  --health "http:80:/" --vcpus 1 --memory 128 --net-full-egress >/dev/null 2>&1
+if wait_phase netapp running; then
+  cli app exec netapp -- sh -c 'for i in 1 2 3; do wget -q -O /dev/null http://speedtest.tele2.net/10MB.zip 2>/dev/null || true; done' >/dev/null 2>&1 || true
+  sleep 4
+  eg_net="$(usage_field netapp egress_bytes)"; eg_web="$(usage_field web egress_bytes)"
+  if python3 -c "import sys; sys.exit(0 if float('$eg_net') > 20000 else 1)" 2>/dev/null; then
+    ok "external egress counted for netapp ($eg_net bytes)"
+    python3 -c "import sys; sys.exit(0 if float('$eg_web') < float('$eg_net')/10 else 1)" 2>/dev/null \
+      && ok "idle app 'web' accrued near-zero egress ($eg_web bytes) — per-app attribution holds" \
+      || bad "idle app egress = $eg_web, expected far below netapp's $eg_net"
+  else
+    echo "  ⚠ no external egress observed ($eg_net bytes) — likely no outbound connectivity; skipping egress asserts"
+  fi
+  cli app rm netapp >/dev/null 2>&1 || true
+else
+  echo "  ⚠ netapp never ran; skipping egress step"
+fi
 
 cli app rm web >/dev/null 2>&1 || true; cli app rm db >/dev/null 2>&1 || true
 

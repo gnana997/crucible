@@ -267,6 +267,10 @@ type Manager struct {
 	// volSize, when set, returns a volume's allocated backing bytes by name — the
 	// per-app storage sampled into the usage ledger. Nil ⇒ storage stays 0.
 	volSize func(name string) int64
+	// egress, when set, returns per-instance cumulative external egress bytes
+	// keyed by sandbox (instance) id, read once per usage tick. Nil ⇒ egress
+	// stays 0.
+	egress func() map[string]uint64
 	// names indexes app name → app id for the request hot path (usage attribution
 	// keys by id). Maintained on Create/Delete/adopt.
 	namesMu sync.RWMutex
@@ -361,6 +365,11 @@ func (m *Manager) SetUsageInterval(d time.Duration) {
 		m.usageInterval = d
 	}
 }
+
+// SetEgressSource wires the per-instance egress-byte source (sandbox id →
+// cumulative external egress bytes), read once per usage tick. Call before
+// Start; nil leaves egress at 0.
+func (m *Manager) SetEgressSource(f func() map[string]uint64) { m.egress = f }
 
 // RecordRequest attributes one ingress-proxy request (by HTTP status class) to
 // an app's durable usage counters. Cheap (in-memory bump); a name that maps to
@@ -468,6 +477,7 @@ func usageToAPI(u Usage) api.AppUsage {
 		StorageGiBSeconds:  float64(u.StorageMiBMillis) / 1000 / 1024,
 		Requests:           u.Requests,
 		RequestsByCode:     u.RequestsByCode,
+		EgressBytes:        u.EgressBytes,
 		UpdatedAt:          u.UpdatedAt,
 		FinalizedAt:        u.FinalizedAt,
 	}
@@ -1073,15 +1083,28 @@ func (m *Manager) accrueAllUsage() {
 		return
 	}
 	awake := make([]bool, len(recs))
+	instID := make([]string, len(recs))
 	m.obsMu.Lock()
 	for i, r := range recs {
 		if ob := m.obs[r.ID]; ob != nil {
 			awake[i] = phaseAwake(ob.phase)
+			instID[i] = ob.instanceID
 		}
 	}
 	m.obsMu.Unlock()
+	// Egress: one snapshot per tick (sandbox id → cumulative bytes), folded in as
+	// a per-instance delta. A missing counter is a no-op (preserves the delta).
+	var egress map[string]uint64
+	if m.egress != nil {
+		egress = m.egress()
+	}
 	for i, r := range recs {
 		m.observeUsage(r, awake[i])
+		if instID[i] != "" {
+			if b, ok := egress[instID[i]]; ok {
+				m.usage.AddEgress(r.ID, r.Spec.Name, instID[i], b)
+			}
+		}
 	}
 }
 

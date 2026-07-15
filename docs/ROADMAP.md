@@ -163,7 +163,13 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.7.1: Usage metrics & cert status *(current)*
+### v0.7.2: Egress bytes *(current)*
+
+The fifth usage dimension, completing the ledger ([observability.md](observability.md#persistent-usage-metrics)).
+
+- [x] **Per-app egress bytes:** cumulative external outbound bytes joins the durable usage ledger (`crucible app usage`, `GET /usage`, `app_usage_egress_bytes_total`). A dedicated nftables accounting chain (forward hook, priority 10 — past the filter chain's `ct established` short-circuit and after its accept, so it counts every packet of actual accepted egress) holds a named per-sandbox counter; the ledger folds it in as a per-instance delta so a redeploy (which resets the counter) neither loses nor double-counts. Outbound + external only — downloads and intra-host DNS / app→app traffic are excluded by construction. `scripts/smoke_usage.sh` gains an egress step (external I/O counted + attributed, idle app stays ~0).
+
+### v0.7.1: Usage metrics & cert status
 
 See what an app has used, and whether its domains are certified ([observability.md](observability.md#persistent-usage-metrics)).
 
@@ -217,7 +223,6 @@ A volume has a point-in-time backup you can restore into a new volume, plus a cl
 
 The app model, its front door, zero-downtime updates, operate-by-name, private-registry pull, scale-to-zero (HTTP and TCP), app→app networking, horizontal scale-out, observability, persistent volumes, wake-on-TCP serverless databases, instant (~170 ms) snapshot-wake for stateful apps, volume backups, off-host backups, upgrade-without-drop, daemon backup, and TLS termination + custom domains exist (v0.4.0–v0.7.0); next is usage metering, incremental backups, and the rest of production-grade deploys.
 
-- • **Egress accounting**: add per-connection egress bytes as a fifth usage dimension (a per-sandbox nftables counter), alongside the compute / memory / storage / requests already metered.
 - • **Wildcard / DNS-01 certificates**: a single cert for `*.<domain>` via a DNS-01 solver, for apps whose per-name HTTP-01 challenge can't resolve to the host.
 - • **Native cloud-registry auth**: ECR `GetAuthorizationToken` / GCP / Azure token exchange (and instance-identity creds), so cloud registries "just work" without re-feeding a short-lived token.
 - • **PTY / full terminal.** The interactive shell is line-buffered today; a real PTY adds full-screen programs, colors, and Ctrl-C job control.

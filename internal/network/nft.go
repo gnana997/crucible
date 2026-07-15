@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"regexp"
@@ -25,7 +26,24 @@ const (
 	nftPostroutingChain = "postrouting"
 	nftSandboxMap       = "sandbox_chains" // iifname verdict map
 	nftGuestSourcesSet  = "guest_sources"  // ifname . guest-IP pairs
+	// Egress accounting (persistent usage metrics): a second forward base chain
+	// at a LATER priority than the filter chain, so it only sees packets the
+	// filter accepted (actual external egress, not blocked attempts), and past
+	// the filter chain's `ct state established accept` short-circuit so it sees
+	// every packet of a flow (not just the SYN). Dispatches iifname → per-sandbox
+	// counting chain via the same verdict-map idiom as sandbox_chains.
+	nftEgressMap   = "egress_chains" // iifname verdict map → per-sandbox egress chain
+	nftEgressChain = "egress_acct"   // base chain that only counts
 )
+
+// egressChainName / egressCounterName are the per-sandbox egress objects. The
+// counter is named (not anonymous) so EgressByteMap can read it back by name.
+func egressChainName(sandboxID string) string   { return "egress_" + sandboxID }
+func egressCounterName(sandboxID string) string { return "egbytes_" + sandboxID }
+
+// egressCounterPrefix is stripped from a counter name to recover the (sanitized)
+// sandbox id in EgressByteMap.
+const egressCounterPrefix = "egbytes_"
 
 // validNftSandboxID bounds the sandbox id interpolated into per-sandbox nft
 // object names and the rule scripts fed to `nft -f -`. IDs arrive here as
@@ -125,6 +143,19 @@ func BuildBaseScript(egressIface string, dnsAnycast netip.Addr, internalProxyPor
 	fmt.Fprintf(&b, "\t\ttype nat hook postrouting priority 100;\n")
 	fmt.Fprintf(&b, "\t\toifname %q masquerade\n", egressIface)
 	fmt.Fprintf(&b, "\t}\n")
+	// Egress accounting: an iifname verdict map + a forward base chain at
+	// priority 10 (AFTER the filter chain at 0). Because a dropped packet never
+	// reaches priority 10, and a guest's return traffic ingresses on the egress
+	// iface (not a guest veth, so the map misses), this counts exactly the guest's
+	// accepted outbound external bytes. Per-sandbox counters are added by
+	// BuildSandboxScript.
+	fmt.Fprintf(&b, "\tmap %s {\n", nftEgressMap)
+	fmt.Fprintf(&b, "\t\ttype ifname : verdict\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\tchain %s {\n", nftEgressChain)
+	fmt.Fprintf(&b, "\t\ttype filter hook forward priority 10; policy accept;\n")
+	fmt.Fprintf(&b, "\t\tiifname vmap @%s\n", nftEgressMap)
+	fmt.Fprintf(&b, "\t}\n")
 	fmt.Fprintf(&b, "}\n")
 	return b.String()
 }
@@ -189,6 +220,17 @@ func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast net
 	// Anti-spoof pair for the input chain's DNS accept.
 	fmt.Fprintf(&b, "add element inet %s %s { %q . %s }\n",
 		NftTableName, nftGuestSourcesSet, hostIface, guestIP)
+
+	// Egress accounting: a named counter + a one-rule chain that increments it,
+	// dispatched from the egress base chain by this sandbox's host veth. The
+	// counter is added before the rule that references it.
+	egChain := egressChainName(sandboxID)
+	egCounter := egressCounterName(sandboxID)
+	fmt.Fprintf(&b, "add counter inet %s %s\n", NftTableName, egCounter)
+	fmt.Fprintf(&b, "add chain inet %s %s\n", NftTableName, egChain)
+	fmt.Fprintf(&b, "add rule inet %s %s counter name %s\n", NftTableName, egChain, egCounter)
+	fmt.Fprintf(&b, "add element inet %s %s { %q : jump %s }\n",
+		NftTableName, nftEgressMap, hostIface, egChain)
 	return b.String()
 }
 
@@ -209,7 +251,53 @@ func BuildSandboxTeardownScript(sandboxID string, hostIface string, guestIP neti
 		NftTableName, nftSandboxMap, hostIface)
 	fmt.Fprintf(&b, "delete chain inet %s %s\n", NftTableName, chain)
 	fmt.Fprintf(&b, "delete set inet %s %s\n", NftTableName, set)
+	// Egress accounting: remove the dispatch entry and the counting chain, then
+	// the counter (now unreferenced). Order matters — the chain's rule references
+	// the counter, so the counter can only be deleted after the chain.
+	fmt.Fprintf(&b, "delete element inet %s %s { %q }\n",
+		NftTableName, nftEgressMap, hostIface)
+	fmt.Fprintf(&b, "delete chain inet %s %s\n", NftTableName, egressChainName(sandboxID))
+	fmt.Fprintf(&b, "delete counter inet %s %s\n", NftTableName, egressCounterName(sandboxID))
 	return b.String()
+}
+
+// EgressByteMap returns, per sandbox, the cumulative external-egress bytes its
+// nft counter has recorded — keyed by the SANITIZED sandbox id (the form used in
+// nft object names). Best-effort: any read/parse error yields nil, so a usage
+// read never breaks (a missing counter is treated as no delta upstream).
+func (m *Manager) EgressByteMap() map[string]uint64 {
+	out, err := captureOutput(context.Background(),
+		"nft", "-j", "list", "counters", "table", "inet", NftTableName)
+	if err != nil {
+		return nil
+	}
+	return parseEgressCounters(out)
+}
+
+// parseEgressCounters extracts egbytes_<id> named counters from `nft -j list
+// counters` output into sanitized-id → bytes.
+func parseEgressCounters(jsonStr string) map[string]uint64 {
+	var doc struct {
+		Nftables []struct {
+			Counter *struct {
+				Name  string `json:"name"`
+				Bytes uint64 `json:"bytes"`
+			} `json:"counter"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal([]byte(jsonStr), &doc); err != nil {
+		return nil
+	}
+	out := make(map[string]uint64)
+	for _, item := range doc.Nftables {
+		if item.Counter == nil {
+			continue
+		}
+		if id, ok := strings.CutPrefix(item.Counter.Name, egressCounterPrefix); ok {
+			out[id] = item.Counter.Bytes
+		}
+	}
+	return out
 }
 
 // EnsureBaseTable installs the base ruleset. Safe to call on a

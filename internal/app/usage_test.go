@@ -110,6 +110,36 @@ func TestUsageDimChangeAppliesForward(t *testing.T) {
 	}
 }
 
+// Egress is a per-sandbox counter delta: growth within one instance adds the
+// growth; a new instance (counter reset to ~0) adds its whole value; a counter
+// that appears to go backwards adds its value, never a negative delta.
+func TestUsageEgressDeltaAcrossInstances(t *testing.T) {
+	led, _, _ := newTestLedger(t)
+
+	// Instance sbx-1 grows 0 → 1000 → 2500.
+	led.AddEgress("app_a", "a", "sbx-1", 1000)
+	led.AddEgress("app_a", "a", "sbx-1", 2500)
+	if got := led.Snapshot("app_a", "a").EgressBytes; got != 2500 {
+		t.Fatalf("same-instance growth: EgressBytes=%d, want 2500", got)
+	}
+
+	// Redeploy → sbx-2, fresh counter from 0, reads 800: cumulative = 2500 + 800.
+	led.AddEgress("app_a", "a", "sbx-2", 800)
+	if got := led.Snapshot("app_a", "a").EgressBytes; got != 3300 {
+		t.Fatalf("after instance change: EgressBytes=%d, want 3300 (2500+800)", got)
+	}
+	led.AddEgress("app_a", "a", "sbx-2", 1200) // grows to 1200
+	if got := led.Snapshot("app_a", "a").EgressBytes; got != 3700 {
+		t.Fatalf("sbx-2 growth: EgressBytes=%d, want 3700 (3300+400)", got)
+	}
+
+	// A backwards reading within the same instance must not subtract.
+	led.AddEgress("app_a", "a", "sbx-2", 50)
+	if got := led.Snapshot("app_a", "a").EgressBytes; got != 3750 {
+		t.Fatalf("counter regression: EgressBytes=%d, want 3750 (3700+50), never negative", got)
+	}
+}
+
 func TestUsageRequests(t *testing.T) {
 	led, _, _ := newTestLedger(t)
 	for i := 0; i < 3; i++ {

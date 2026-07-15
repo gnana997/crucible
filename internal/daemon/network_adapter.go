@@ -79,6 +79,12 @@ func (a *networkAdapter) Teardown(ctx context.Context, h *sandbox.NetworkHandle)
 	return a.m.Teardown(ctx, inner)
 }
 
+// EgressByteMap delegates to the network manager: sanitized-sandbox-id →
+// cumulative external egress bytes (persistent usage metrics).
+func (a *networkAdapter) EgressByteMap() map[string]uint64 {
+	return a.m.EgressByteMap()
+}
+
 // formatMAC turns [6]byte into the colon-separated hex string
 // Firecracker's PutNetworkInterface expects. Done here so the
 // sandbox package stays agnostic of Firecracker's wire format.

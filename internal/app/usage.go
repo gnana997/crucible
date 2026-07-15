@@ -32,6 +32,10 @@ type Usage struct {
 	Requests       uint64            `json:"requests"`
 	RequestsByCode map[string]uint64 `json:"requests_by_code,omitempty"`
 
+	// EgressBytes is cumulative external egress (bytes the app's instances sent
+	// out to the network), summed across instances. See AddEgress.
+	EgressBytes uint64 `json:"egress_bytes"`
+
 	// UpdatedAt is the last time the record was flushed to the store.
 	UpdatedAt time.Time `json:"updated_at"`
 	// FinalizedAt, when set, means the app was deleted: this is its final usage,
@@ -51,6 +55,13 @@ type usageAccum struct {
 	volBytes int64
 	lastTs   time.Time // zero until the first observe — first observe never back-fills
 	dirty    bool
+
+	// Egress is a counter-delta dimension, not a time integral: each nft counter
+	// is per-sandbox and resets to 0 when the instance is re-created, so the
+	// app-level cumulative is Σ of per-instance deltas. These track the last
+	// instance + reading to compute the next delta (see AddEgress).
+	egressSandbox string
+	egressLast    uint64
 }
 
 // usageLedger is the persistent-usage-metrics accrual engine. It is driven by
@@ -129,6 +140,34 @@ func (l *usageLedger) observe(id, name string, awake bool, vcpus, memMiB int, vo
 	l.accrue(a, l.now())
 	a.awake, a.vcpus, a.memMiB, a.volBytes = awake, vcpus, memMiB, volBytes
 	l.flush(a)
+}
+
+// AddEgress folds a per-sandbox nft counter reading into the app's cumulative
+// egress. instanceID is the app's current instance (sandbox); cur is that
+// sandbox's counter value now. Because each sandbox has its own counter that
+// starts at 0, a new instance contributes its whole current value, and a
+// continuing instance contributes only the growth since the last reading. A
+// counter that appears to go backwards (shouldn't within one instance) is
+// treated as a fresh reading, never a negative delta.
+func (l *usageLedger) AddEgress(id, name, instanceID string, cur uint64) {
+	if instanceID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	a := l.get(id, name)
+	switch {
+	case instanceID != a.egressSandbox:
+		// New (or first) instance: fresh counter from ~0, so its value is the delta.
+		a.u.EgressBytes += cur
+		a.egressSandbox = instanceID
+	case cur >= a.egressLast:
+		a.u.EgressBytes += cur - a.egressLast
+	default:
+		a.u.EgressBytes += cur // unexpected reset within an instance
+	}
+	a.egressLast = cur
+	a.dirty = true
 }
 
 // AddRequest bumps the durable request counters in memory (hot path — no store

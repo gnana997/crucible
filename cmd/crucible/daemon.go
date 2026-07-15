@@ -660,6 +660,9 @@ Required flags:
 			if volMgr != nil {
 				appMgr.SetVolumeSizer(volMgr.VolumeDiskBytes)
 			}
+			// Per-app external egress bytes, read from the per-sandbox nft
+			// counters once per usage tick (real sandbox-id keyed).
+			appMgr.SetEgressSource(mgr.EgressByteMap)
 			appMgr.SetUsageInterval(*usageInterval)
 			if serr := appMgr.Start(context.Background()); serr != nil {
 				logger.Warn("app reconciler start failed", "err", serr)
@@ -707,6 +710,7 @@ Required flags:
 					StorageGiBSeconds:  u.StorageGiBSeconds,
 					Requests:           u.Requests,
 					RequestsByCode:     u.RequestsByCode,
+					EgressBytes:        u.EgressBytes,
 				})
 			}
 			return out

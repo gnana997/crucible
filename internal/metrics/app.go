@@ -84,6 +84,7 @@ type AppUsageStat struct {
 	StorageGiBSeconds  float64
 	Requests           uint64
 	RequestsByCode     map[string]uint64
+	EgressBytes        uint64
 }
 
 var (
@@ -91,6 +92,7 @@ var (
 	descUsageMemory   = prometheus.NewDesc("app_usage_memory_mib_seconds_total", "Cumulative MiB-seconds of memory an app has been awake for.", []string{"app"}, nil)
 	descUsageStorage  = prometheus.NewDesc("app_usage_storage_gib_seconds_total", "Cumulative GiB-seconds of volume storage an app has occupied.", []string{"app"}, nil)
 	descUsageRequests = prometheus.NewDesc("app_usage_requests_total", "Cumulative ingress-proxy requests routed to an app, by status class.", []string{"app", "code"}, nil)
+	descUsageEgress   = prometheus.NewDesc("app_usage_egress_bytes_total", "Cumulative external egress bytes an app has sent.", []string{"app"}, nil)
 )
 
 // usageCollector emits the per-app persistent-usage-metrics counters by reading
@@ -104,6 +106,7 @@ func (c usageCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- descUsageMemory
 	ch <- descUsageStorage
 	ch <- descUsageRequests
+	ch <- descUsageEgress
 }
 
 func (c usageCollector) Collect(ch chan<- prometheus.Metric) {
@@ -114,6 +117,7 @@ func (c usageCollector) Collect(ch chan<- prometheus.Metric) {
 		counter(descUsageCompute, a.ComputeVCPUSeconds, a.Name)
 		counter(descUsageMemory, a.MemoryMiBSeconds, a.Name)
 		counter(descUsageStorage, a.StorageGiBSeconds, a.Name)
+		counter(descUsageEgress, float64(a.EgressBytes), a.Name)
 		for code, n := range a.RequestsByCode {
 			counter(descUsageRequests, float64(n), a.Name, code)
 		}

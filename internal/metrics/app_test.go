@@ -46,6 +46,7 @@ func TestAppUsageMetrics(t *testing.T) {
 			StorageGiBSeconds:  60,
 			Requests:           4,
 			RequestsByCode:     map[string]uint64{"2xx": 3, "4xx": 1},
+			EgressBytes:        1048576,
 		}}
 	})
 	_, body := scrape(t, m)
@@ -53,6 +54,7 @@ func TestAppUsageMetrics(t *testing.T) {
 		`app_usage_compute_vcpu_seconds_total{app="web"} 7200`,
 		`app_usage_memory_mib_seconds_total{app="web"} 3600`,
 		`app_usage_storage_gib_seconds_total{app="web"} 60`,
+		`app_usage_egress_bytes_total{app="web"} 1.048576e+06`,
 		`app_usage_requests_total{app="web",code="2xx"} 3`,
 		`app_usage_requests_total{app="web",code="4xx"} 1`,
 	} {

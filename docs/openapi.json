@@ -3057,6 +3057,10 @@
             "type": "number",
             "format": "double"
           },
+          "egress_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
           "finalized_at": {
             "type": "string",
             "format": "date-time",

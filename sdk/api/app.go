@@ -319,6 +319,10 @@ type AppUsage struct {
 	Requests       uint64            `json:"requests"`
 	RequestsByCode map[string]uint64 `json:"requests_by_code,omitempty"`
 
+	// EgressBytes is cumulative external egress (bytes the app sent out to the
+	// network), summed across its instances.
+	EgressBytes uint64 `json:"egress_bytes"`
+
 	// UpdatedAt is when the counters were last persisted. FinalizedAt, when set,
 	// means the app was deleted and this is its retained final usage.
 	UpdatedAt   time.Time  `json:"updated_at"`

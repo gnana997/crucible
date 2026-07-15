@@ -120,6 +120,68 @@ func TestBuildSandboxScript(t *testing.T) {
 	}
 }
 
+func TestEgressAccountingObjects(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+	guestIP := netip.MustParseAddr("10.20.0.2")
+
+	// Base: the egress dispatch map + a forward base chain at priority 10 (AFTER
+	// the filter chain at 0, so only accepted egress is counted).
+	base := BuildBaseScript("eth0", anycast, 0)
+	mustContainAll(t, base, []string{
+		"map egress_chains {",
+		"chain egress_acct {",
+		"type filter hook forward priority 10; policy accept;",
+		"iifname vmap @egress_chains",
+	})
+
+	// Per sandbox: a named counter, a one-rule counting chain, and a dispatch
+	// element keyed by the host veth.
+	sbx := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast, false, nil)
+	mustContainAll(t, sbx, []string{
+		"add counter inet crucible egbytes_sbx-abc",
+		"add chain inet crucible egress_sbx-abc",
+		"add rule inet crucible egress_sbx-abc counter name egbytes_sbx-abc",
+		"add element inet crucible egress_chains { \"vh-sbx-abc\" : jump egress_sbx-abc }",
+	})
+
+	// Teardown removes all three, and (order matters) the counter after the chain
+	// that references it.
+	td := BuildSandboxTeardownScript("sbx-abc", "vh-sbx-abc", guestIP)
+	mustContainAll(t, td, []string{
+		"delete element inet crucible egress_chains { \"vh-sbx-abc\" }",
+		"delete chain inet crucible egress_sbx-abc",
+		"delete counter inet crucible egbytes_sbx-abc",
+	})
+	if strings.Index(td, "delete counter") < strings.Index(td, "delete chain inet crucible egress_sbx-abc") {
+		t.Error("teardown must delete the egress chain before its counter (counter is referenced by the chain's rule)")
+	}
+}
+
+func TestParseEgressCounters(t *testing.T) {
+	// A representative `nft -j list counters` payload: two of ours + one foreign
+	// named counter that must be ignored.
+	js := `{"nftables":[
+		{"metainfo":{"version":"1.1.6"}},
+		{"counter":{"family":"inet","table":"crucible","name":"egbytes_sbx-abc","packets":10,"bytes":4096}},
+		{"counter":{"family":"inet","table":"crucible","name":"egbytes_sbx-def","packets":2,"bytes":128}},
+		{"counter":{"family":"inet","table":"crucible","name":"some_other","bytes":999}}
+	]}`
+	got := parseEgressCounters(js)
+	if got["sbx-abc"] != 4096 || got["sbx-def"] != 128 {
+		t.Fatalf("parseEgressCounters = %v, want sbx-abc:4096 sbx-def:128", got)
+	}
+	if _, ok := got["some_other"]; ok {
+		t.Error("non-egress counter leaked into the map")
+	}
+	if len(got) != 2 {
+		t.Errorf("want 2 egress counters, got %d: %v", len(got), got)
+	}
+	// Garbage in → nil out (best-effort; a bad read never breaks usage).
+	if parseEgressCounters("not json") != nil {
+		t.Error("invalid JSON should yield nil")
+	}
+}
+
 func TestBuildSandboxScriptFullEgress(t *testing.T) {
 	anycast := netip.MustParseAddr("10.20.255.254")
 	guestIP := netip.MustParseAddr("10.20.0.2")

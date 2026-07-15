@@ -21,6 +21,7 @@ class AppUsage(BaseModel):
     app_id: str | None = None
     app_name: str | None = None
     compute_vcpu_seconds: float | None = None
+    egress_bytes: conint(ge=0) | None = None
     finalized_at: AwareDatetime | None = None
     memory_mib_seconds: float | None = None
     requests: conint(ge=0) | None = None

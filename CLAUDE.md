@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.7.1 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart**, scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.7.2 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests **+ egress bytes**), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -133,9 +133,15 @@ usage`, `GET /usage` + `/apps/{name}/usage` (`read`-gated), and `app_usage_*`
 Prometheus/OTLP counters; a deleted app's final usage is retained. Plus
 **per-domain TLS cert status** (active/expiring/pending/failed/manual/passthrough)
 on `app domain ls`, `GET /apps/{name}/domains?detail=1`, and `app_cert_state` /
-`app_cert_not_after_seconds` metrics. (Egress accounting is deferred to a later
-release.) See the ROADMAP for what's next (egress, incremental backups,
-wildcard/DNS-01).
+`app_cert_not_after_seconds` metrics. **v0.7.2** completes the ledger with the 5th dimension —
+**per-app egress bytes** (`app_usage_egress_bytes_total`, `EgressBytes`): a
+dedicated nftables accounting chain (forward hook, priority 10, past the filter
+chain's `ct established` short-circuit) counts each sandbox's accepted external
+outbound bytes via a named `egbytes_<id>` counter; `network.Manager.EgressByteMap`
+→ `sandbox.Manager` (re-keys sanitized→real id) → the ledger folds it as a
+per-instance delta (redeploy resets the counter → summed, not lost/double). Only
+outbound + external (downloads + intra-host DNS/app→app excluded). See the ROADMAP
+for what's next (incremental backups, wildcard/DNS-01, multi-host fleet).
 
 ## Working style
 

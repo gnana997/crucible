@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.7.2] — 2026-07-15
+
+Egress bytes — the fifth usage dimension. v0.7.1 metered compute, memory,
+storage, and requests but deferred egress because it's the only dimension that
+touches the network path; this release adds it.
+
+### Added
+
+- **Per-app egress bytes.** `egress_bytes` joins the persistent usage ledger:
+  cumulative external outbound bytes an app's instances have sent, durable across
+  restart like the other dimensions. On `crucible app usage` (an EGRESS column),
+  `GET /usage` / `GET /apps/{name}/usage` (`egress_bytes`), and Prometheus/OTLP
+  `app_usage_egress_bytes_total{app}`. Counted by a dedicated nftables accounting
+  chain per sandbox and folded into the ledger as a per-instance delta, so a
+  redeploy (which resets the underlying counter) doesn't lose or double-count.
+
+### Notes
+
+- Egress is **outbound only** and **external only**: downloads (inbound) aren't
+  counted, and intra-host traffic — DNS resolution and app→app (`<app>.internal`)
+  calls — is excluded by construction (it never traverses the forward path). Only
+  bytes the guest actually sends out to the network are metered.
+
 ## [0.7.1] — 2026-07-15
 
 Persistent usage metrics and TLS certificate status — see what an app has used,

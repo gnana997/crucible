@@ -512,6 +512,10 @@ func (m *Manager) quotasFor(vcpus, memMiB int) runner.Quotas {
 type NetworkProvisioner interface {
 	Setup(ctx context.Context, req NetworkSetupRequest) (*NetworkHandle, error)
 	Teardown(ctx context.Context, h *NetworkHandle) error
+	// EgressByteMap returns per-sandbox cumulative external egress bytes, keyed by
+	// the SANITIZED sandbox id (the form used in nft object names). Persistent
+	// usage metrics; best-effort (nil on any read error).
+	EgressByteMap() map[string]uint64
 }
 
 // PortMapping is one host→guest port forward — the sandbox-layer view,
@@ -1150,6 +1154,30 @@ func (m *Manager) Get(id string) (*Sandbox, error) {
 		return nil, ErrNotFound
 	}
 	return s, nil
+}
+
+// EgressByteMap returns cumulative external egress bytes per live sandbox, keyed
+// by the REAL sandbox id — bridging the sanitized ids the network layer names its
+// nft counters with back to the ids the app manager tracks. Persistent usage
+// metrics; best-effort (nil when networking is off or the read fails). The nft
+// read happens outside the lock; the re-key is a cheap map walk under RLock.
+func (m *Manager) EgressByteMap() map[string]uint64 {
+	if m.cfg.Network == nil {
+		return nil
+	}
+	san := m.cfg.Network.EgressByteMap() // sanitized-id → bytes (one nft read)
+	if san == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]uint64, len(m.sandboxes))
+	for id := range m.sandboxes {
+		if b, ok := san[sanitizeNetworkID(id)]; ok {
+			out[id] = b
+		}
+	}
+	return out
 }
 
 // Asleep reports whether the sandbox is currently snapshot-asleep (VMM stopped,

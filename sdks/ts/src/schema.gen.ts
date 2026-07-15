@@ -822,6 +822,7 @@ export interface components {
             app_name?: string;
             /** Format: double */
             compute_vcpu_seconds?: number;
+            egress_bytes?: number;
             /** Format: date-time */
             finalized_at?: string | null;
             /** Format: double */

@@ -83,6 +83,7 @@ Four dimensions accrue per app:
 | memory | the app is **awake** | MiB-seconds |
 | storage | its volume **exists** (awake *or* asleep — a slept app still holds its disk) | GiB-seconds |
 | requests | always (per ingress-proxy request, split by status class) | count |
+| egress | the app **sends** data to the external network (outbound only; downloads and intra-host DNS / app→app traffic are excluded) | bytes |
 
 Read them three ways, all from one durable source:
 
@@ -99,6 +100,7 @@ Read them three ways, all from one durable source:
   | `app_usage_compute_vcpu_seconds_total` | counter | `app` |
   | `app_usage_memory_mib_seconds_total` | counter | `app` |
   | `app_usage_storage_gib_seconds_total` | counter | `app` |
+  | `app_usage_egress_bytes_total` | counter | `app` |
   | `app_usage_requests_total` | counter | `app`, `code` |
 
 Accrual is checkpointed on a tick (`--usage-interval`, default 60s) and at each

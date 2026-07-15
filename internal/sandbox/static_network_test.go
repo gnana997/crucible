@@ -92,6 +92,8 @@ func (r *agentRunner) Restore(context.Context, runner.RestoreSpec) (runner.Handl
 // network push needs.
 type staticNetProvisioner struct{}
 
+func (staticNetProvisioner) EgressByteMap() map[string]uint64 { return nil }
+
 func (staticNetProvisioner) Setup(context.Context, NetworkSetupRequest) (*NetworkHandle, error) {
 	return &NetworkHandle{
 		NetnsPath:  "/var/run/netns/crucible-stub",

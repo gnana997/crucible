@@ -75,16 +75,16 @@ func newAppUsageCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), rows)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			_, _ = fmt.Fprintln(tw, "APP\tSTATE\tCOMPUTE(vCPU·h)\tMEM(MiB·h)\tSTORAGE(GiB·h)\tREQUESTS")
+			_, _ = fmt.Fprintln(tw, "APP\tSTATE\tCOMPUTE(vCPU·h)\tMEM(MiB·h)\tSTORAGE(GiB·h)\tREQUESTS\tEGRESS(MiB)")
 			for _, u := range rows {
 				state := "live"
 				if u.FinalizedAt != nil {
 					state = "deleted"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%.4f\t%.4f\t%.4f\t%d\n",
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%.4f\t%.4f\t%.4f\t%d\t%.3f\n",
 					u.AppName, state,
 					u.ComputeVCPUSeconds/3600, u.MemoryMiBSeconds/3600, u.StorageGiBSeconds/3600,
-					u.Requests)
+					u.Requests, float64(u.EgressBytes)/(1024*1024))
 			}
 			return tw.Flush()
 		},
