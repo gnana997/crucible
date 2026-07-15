@@ -260,8 +260,42 @@ type AddDomainRequest struct {
 }
 
 // DomainListResponse is an app's attached custom domains (GET .../domains).
+// Domains is always the plain name list (unchanged, back-compatible); Details is
+// populated only when the request asks for it (?detail=1) and carries per-domain
+// TLS/certificate status.
 type DomainListResponse struct {
-	Domains []string `json:"domains"`
+	Domains []string       `json:"domains"`
+	Details []DomainDetail `json:"details,omitempty"`
+}
+
+// DomainDetail is one domain's routing + certificate status for an app.
+type DomainDetail struct {
+	// Domain is the FQDN. Generated is true for the app's built-in
+	// <app>.<proxy-domain> name (vs a custom domain the user attached).
+	Domain    string `json:"domain"`
+	Generated bool   `json:"generated,omitempty"`
+	// TLSMode is how the ingress proxy handles :443 for this app: "terminate"
+	// (the proxy manages the cert) or "passthrough" (the guest owns it).
+	TLSMode string `json:"tls_mode"`
+	// Cert is the certificate status (see CertStatus). For a passthrough app it
+	// is always {state: passthrough} — the daemon manages no cert.
+	Cert CertStatus `json:"cert"`
+}
+
+// CertStatus is the state of the TLS certificate the daemon manages for a
+// domain. States:
+//   - passthrough: the app is passthrough-mode; the guest owns its cert.
+//   - pending:     terminate-mode, no cert obtained yet (issuance in flight).
+//   - active:      a valid managed (or ACME) cert is served.
+//   - expiring:    active, but within the renewal lead — renewal is due/underway.
+//   - failed:      the last ACME attempt errored (LastError/LastAttempt set) —
+//     commonly the domain's DNS isn't pointed at the host.
+//   - manual:      served from an operator-supplied drop-in cert (never renewed).
+type CertStatus struct {
+	State       string     `json:"state"`
+	NotAfter    *time.Time `json:"not_after,omitempty"`
+	LastError   string     `json:"last_error,omitempty"`
+	LastAttempt *time.Time `json:"last_attempt,omitempty"`
 }
 
 // AppUsage is an app's persistent usage metrics: durable, cumulative,

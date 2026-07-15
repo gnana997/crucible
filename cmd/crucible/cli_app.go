@@ -126,21 +126,35 @@ func newAppDomainCmd(o *globalOpts) *cobra.Command {
 		},
 		&cobra.Command{
 			Use:     "ls <app>",
-			Short:   "List an app's custom domains",
+			Short:   "List an app's domains with TLS/certificate status",
 			Aliases: []string{"list"},
 			Args:    cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				domains, err := o.client().ListDomains(cmd.Context(), args[0])
+				details, err := o.client().ListDomainsDetail(cmd.Context(), args[0])
 				if err != nil {
 					return err
 				}
 				if o.isJSON() {
-					return printJSON(cmd.OutOrStdout(), domains)
+					return printJSON(cmd.OutOrStdout(), details)
 				}
-				for _, d := range domains {
-					_, _ = fmt.Fprintln(cmd.OutOrStdout(), d)
+				tw := newTable(cmd.OutOrStdout())
+				_, _ = fmt.Fprintln(tw, "DOMAIN\tKIND\tTLS\tCERT\tEXPIRES")
+				for _, d := range details {
+					kind := "custom"
+					if d.Generated {
+						kind = "generated"
+					}
+					expires := "-"
+					if d.Cert.NotAfter != nil {
+						expires = d.Cert.NotAfter.Format("2006-01-02")
+					}
+					cert := d.Cert.State
+					if d.Cert.State == "failed" && d.Cert.LastError != "" {
+						cert = "failed: " + d.Cert.LastError
+					}
+					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", d.Domain, kind, d.TLSMode, cert, expires)
 				}
-				return nil
+				return tw.Flush()
 			},
 		},
 	)

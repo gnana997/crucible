@@ -292,9 +292,18 @@
           "apps"
         ],
         "summary": "List an app's custom domains",
-        "description": "The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each.",
+        "description": "The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each. With ?detail=1 the response also carries per-domain TLS/certificate status in 'details'.",
         "operationId": "listAppDomains",
         "parameters": [
+          {
+            "name": "detail",
+            "in": "query",
+            "description": "When true, also return per-domain TLS/certificate status in 'details' (including the app's generated \u003capp\u003e.\u003cproxy-domain\u003e name).",
+            "schema": {
+              "type": "boolean",
+              "description": "When true, also return per-domain TLS/certificate status in 'details' (including the app's generated \u003capp\u003e.\u003cproxy-domain\u003e name)."
+            }
+          },
           {
             "name": "name",
             "in": "path",
@@ -3115,6 +3124,27 @@
           }
         }
       },
+      "CertStatus": {
+        "type": "object",
+        "properties": {
+          "last_attempt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "not_after": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "CloneVolReq": {
         "type": "object",
         "properties": {
@@ -3320,9 +3350,32 @@
           }
         }
       },
+      "DomainDetail": {
+        "type": "object",
+        "properties": {
+          "cert": {
+            "$ref": "#/components/schemas/CertStatus"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "generated": {
+            "type": "boolean"
+          },
+          "tls_mode": {
+            "type": "string"
+          }
+        }
+      },
       "DomainListResponse": {
         "type": "object",
         "properties": {
+          "details": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DomainDetail"
+            }
+          },
           "domains": {
             "type": "array",
             "items": {

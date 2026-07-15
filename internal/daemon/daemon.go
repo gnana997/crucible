@@ -35,6 +35,7 @@ import (
 	"github.com/gnana997/crucible/internal/sandbox"
 	"github.com/gnana997/crucible/internal/tokenstore"
 	"github.com/gnana997/crucible/internal/volume"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // Server hosts the crucible HTTP API.
@@ -102,6 +103,15 @@ type Config struct {
 	// Nil makes those routes answer 501.
 	AppManager *app.Manager
 
+	// CertStatusSource, when set, returns the managed-cert status for a domain —
+	// wired from the TLS provider so `GET /apps/{name}/domains?detail=1` can
+	// report per-domain certificate state. Nil ⇒ no cert managed (passthrough or
+	// termination disabled): terminate-mode domains report "pending".
+	CertStatusSource func(domain string) api.CertStatus
+	// ProxyDomain is the ingress base domain, so a detailed domains view can
+	// include the app's generated <app>.<proxy-domain> name. Empty ⇒ omit it.
+	ProxyDomain string
+
 	// RegistryStore, when non-nil, enables the /registry/credentials routes
 	// (manage private-registry pull credentials) and feeds those credentials
 	// to image pulls. Nil makes those routes answer 501 and pulls stay
@@ -166,6 +176,14 @@ func (s *Server) Handler() http.Handler { return s.http.Handler }
 // the app manager — so the caller builds the Server, then the app manager
 // from s.NewAppInstantiator(), then calls this before serving.
 func (s *Server) SetAppManager(m *app.Manager) { s.cfg.AppManager = m }
+
+// SetCertStatusSource wires the TLS provider's per-domain cert status and the
+// ingress base domain (for the app's generated name) into the detailed domains
+// view. Call before serving; nil source leaves terminate-mode domains "pending".
+func (s *Server) SetCertStatusSource(fn func(domain string) api.CertStatus, proxyDomain string) {
+	s.cfg.CertStatusSource = fn
+	s.cfg.ProxyDomain = proxyDomain
+}
 
 // ListenAndServe binds the configured address and serves until the server
 // is shut down or an error occurs. Returns http.ErrServerClosed on clean

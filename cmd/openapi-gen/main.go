@@ -44,6 +44,10 @@ type idParam struct {
 type appNameParam struct {
 	Name string `path:"name" description:"App name (a DNS label, e.g. web)."`
 }
+type listDomainsParam struct {
+	Name   string `path:"name" description:"App name (a DNS label, e.g. web)."`
+	Detail bool   `query:"detail" description:"When true, also return per-domain TLS/certificate status in 'details' (including the app's generated <app>.<proxy-domain> name)."`
+}
 type volNameParam struct {
 	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
 }
@@ -272,8 +276,9 @@ func buildReflector() *openapi3.Reflector {
 		appNameParam{}, nil, http.StatusNoContent, http.StatusNotFound, http.StatusNotImplemented)
 	jsonOp(http.MethodGet, "/apps/{name}/domains", "listAppDomains", "apps", "List an app's custom domains",
 		"The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in "+
-			"terminate mode, obtains a certificate for each.",
-		appNameParam{}, api.DomainListResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
+			"terminate mode, obtains a certificate for each. With ?detail=1 the response also carries "+
+			"per-domain TLS/certificate status in 'details'.",
+		listDomainsParam{}, api.DomainListResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
 	jsonOp(http.MethodPost, "/apps/{name}/domains", "addAppDomain", "apps", "Attach a custom domain to an app",
 		"Attaches a custom domain (FQDN, globally unique — one domain to one app). A request whose Host "+
 			"is the domain then routes to this app, and in terminate mode the proxy obtains a cert for it.",

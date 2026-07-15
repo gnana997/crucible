@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
@@ -16,11 +17,18 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/caddyserver/certmagic"
 	"go.uber.org/zap"
+
+	"github.com/gnana997/crucible/sdk/api"
 )
+
+// renewalLead is how far before expiry a managed cert is reported "expiring"
+// (informational — certmagic renews on its own schedule well before this).
+const renewalLead = 21 * 24 * time.Hour
 
 // Config configures the provider.
 type Config struct {
@@ -52,6 +60,22 @@ type Provider struct {
 	magic  *certmagic.Config
 	issuer *certmagic.ACMEIssuer // nil when Email == "" (manual-cert-only)
 	tlsCfg *tls.Config           // built once; on-demand GetCertificate + ALPN protos
+
+	// mu guards the per-domain status maps below (read by Status, written by the
+	// certmagic OnEvent hook and manual-cert loading).
+	mu sync.Mutex
+	// issue tracks the last ACME issuance/renewal outcome per domain — the only
+	// thing not derivable from the cert cache (a "failed" state, e.g. DNS not
+	// pointed). Cleared on success.
+	issue map[string]issueState
+	// manual maps a domain served by a drop-in manual cert to that cert's expiry.
+	manual map[string]time.Time
+}
+
+// issueState is the last observed ACME attempt for a domain.
+type issueState struct {
+	lastErr     string
+	lastAttempt time.Time
 }
 
 // New builds a provider. With Email set it enables ACME/on-demand; without, it
@@ -64,7 +88,10 @@ func New(c Config) (*Provider, error) {
 		return nil, fmt.Errorf("tlscert: Allow is required when Email (ACME) is set")
 	}
 
-	p := &Provider{}
+	p := &Provider{
+		issue:  make(map[string]issueState),
+		manual: make(map[string]time.Time),
+	}
 	p.cache = certmagic.NewCache(certmagic.CacheOptions{
 		GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
 			return p.magic, nil
@@ -74,6 +101,10 @@ func New(c Config) (*Provider, error) {
 	tmpl := certmagic.Config{
 		Storage: &certmagic.FileStorage{Path: c.CertDir},
 		Logger:  zap.NewNop(), // certmagic is chatty by default; the daemon logs its own summary
+		// OnEvent records ACME issuance/renewal outcomes so Status can report a
+		// "failed" domain (e.g. DNS not pointed at the host) — the one state the
+		// cert cache alone can't reveal.
+		OnEvent: p.onCertEvent,
 	}
 	if c.Email != "" {
 		tmpl.OnDemand = &certmagic.OnDemandConfig{
@@ -154,6 +185,7 @@ func (p *Provider) loadManualCerts(dir string) (int, error) {
 		if _, err := p.magic.CacheUnmanagedCertificatePEMFile(context.Background(), crt, key, nil); err != nil {
 			return n, fmt.Errorf("tlscert: load manual cert %s: %w", crt, err)
 		}
+		p.recordManualSANs(crt) // so Status reports these domains as "manual"
 		n++
 	}
 	return n, nil
@@ -166,6 +198,81 @@ func (p *Provider) NotAfter(domain string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return cert.Leaf.NotAfter, true
+}
+
+// onCertEvent records ACME issuance/renewal outcomes (certmagic OnEvent). Only
+// the failure state is not derivable from the cert cache, so that's what we keep:
+// a success clears any prior failure. Always returns nil (never abort issuance).
+func (p *Provider) onCertEvent(_ context.Context, event string, data map[string]any) error {
+	name, _ := data["identifier"].(string)
+	if name == "" {
+		return nil
+	}
+	switch event {
+	case "cert_obtained":
+		p.mu.Lock()
+		delete(p.issue, name)
+		p.mu.Unlock()
+	case "cert_failed":
+		msg := "issuance failed"
+		if e, ok := data["error"].(error); ok && e != nil {
+			msg = e.Error()
+		}
+		p.mu.Lock()
+		p.issue[name] = issueState{lastErr: msg, lastAttempt: time.Now()}
+		p.mu.Unlock()
+	}
+	return nil
+}
+
+// recordManualSANs parses a manual cert's DNS names so Status can report those
+// domains as "manual" (they are cached unmanaged, so NotAfter won't see them).
+func (p *Provider) recordManualSANs(crtPath string) {
+	pemBytes, err := os.ReadFile(crtPath)
+	if err != nil {
+		return
+	}
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	for _, dns := range cert.DNSNames {
+		p.manual[dns] = cert.NotAfter
+	}
+	p.mu.Unlock()
+}
+
+// Status reports the certificate state for a domain (see api.CertStatus states).
+// It reflects only what the daemon manages — a passthrough app's cert is the
+// guest's, reported by the caller, not here.
+func (p *Provider) Status(domain string) api.CertStatus {
+	p.mu.Lock()
+	if na, ok := p.manual[domain]; ok {
+		p.mu.Unlock()
+		exp := na
+		return api.CertStatus{State: "manual", NotAfter: &exp}
+	}
+	iss, hasIssue := p.issue[domain]
+	p.mu.Unlock()
+
+	if na, ok := p.NotAfter(domain); ok {
+		state := "active"
+		if time.Until(na) < renewalLead {
+			state = "expiring"
+		}
+		exp := na
+		return api.CertStatus{State: state, NotAfter: &exp}
+	}
+	if hasIssue && iss.lastErr != "" {
+		at := iss.lastAttempt
+		return api.CertStatus{State: "failed", LastError: iss.lastErr, LastAttempt: &at}
+	}
+	return api.CertStatus{State: "pending"}
 }
 
 // TLSConfig returns the serving *tls.Config: GetCertificate loads or obtains the

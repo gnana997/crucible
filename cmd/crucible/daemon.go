@@ -763,6 +763,42 @@ Required flags:
 				}
 				defer tp.Close()
 				certProvider = tp
+				// Per-domain cert status for `GET /apps/{name}/domains?detail=1`
+				// (state, expiry, last ACME error) + the app's generated name.
+				srv.SetCertStatusSource(tp.Status, *proxyDomain)
+				// app_cert_state{app,domain,state} + app_cert_not_after_seconds:
+				// per-domain cert status for the CP to alert on (expiry / failed).
+				mx.SetCertStatusSource(func() []metrics.AppCertStat {
+					apps, lerr := appMgr.List()
+					if lerr != nil {
+						return nil
+					}
+					var out []metrics.AppCertStat
+					for _, a := range apps {
+						mode := a.TLSMode
+						if mode == "" {
+							mode = "terminate"
+						}
+						domains := append([]string{}, a.Domains...)
+						if *proxyDomain != "" {
+							domains = append(domains, a.Name+"."+*proxyDomain)
+						}
+						for _, d := range domains {
+							st := metrics.AppCertStat{App: a.Name, Domain: d}
+							if mode == "passthrough" {
+								st.State = "passthrough"
+							} else {
+								cs := tp.Status(d)
+								st.State = cs.State
+								if cs.NotAfter != nil {
+									st.NotAfterUnix = cs.NotAfter.Unix()
+								}
+							}
+							out = append(out, st)
+						}
+					}
+					return out
+				})
 				// Pre-warm a cert when a custom domain is attached, so the first
 				// live HTTPS request isn't delayed by issuance (best-effort).
 				appMgr.SetOnDomainAdd(func(domain string) {

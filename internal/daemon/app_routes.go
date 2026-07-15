@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gnana997/crucible/internal/app"
@@ -163,17 +164,67 @@ func (s *Server) handleAppUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, u)
 }
 
-// handleListAppDomains — GET /apps/{name}/domains.
+// truthy reports whether a query-param value asks for an option (1/true/yes/on).
+func truthy(v string) bool {
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// handleListAppDomains — GET /apps/{name}/domains. With ?detail=1 it also
+// returns per-domain TLS/certificate status (including the app's generated
+// <app>.<proxy-domain> name).
 func (s *Server) handleListAppDomains(w http.ResponseWriter, r *http.Request) {
 	if !s.appsEnabled(w) {
 		return
 	}
-	domains, err := s.cfg.AppManager.ListDomains(r.PathValue("name"))
+	name := r.PathValue("name")
+	domains, err := s.cfg.AppManager.ListDomains(name)
 	if err != nil {
 		writeError(w, appErrStatus(err), err)
 		return
 	}
-	writeJSON(w, http.StatusOK, api.DomainListResponse{Domains: domains})
+	resp := api.DomainListResponse{Domains: domains}
+	if truthy(r.URL.Query().Get("detail")) {
+		app, gerr := s.cfg.AppManager.GetByName(name)
+		if gerr != nil {
+			writeError(w, appErrStatus(gerr), gerr)
+			return
+		}
+		resp.Details = s.domainDetails(app, domains)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// domainDetails builds the per-domain TLS/cert view: the app's generated
+// <app>.<proxy-domain> name first (if a proxy domain is configured), then each
+// attached custom domain. A passthrough app reports state "passthrough" for all;
+// a terminate-mode app consults the cert-status source (nil ⇒ "pending").
+func (s *Server) domainDetails(app api.AppResponse, custom []string) []api.DomainDetail {
+	mode := app.TLSMode
+	if mode == "" {
+		mode = "terminate"
+	}
+	certFor := func(domain string) api.CertStatus {
+		if mode == "passthrough" {
+			return api.CertStatus{State: "passthrough"}
+		}
+		if s.cfg.CertStatusSource == nil {
+			return api.CertStatus{State: "pending"}
+		}
+		return s.cfg.CertStatusSource(domain)
+	}
+	out := make([]api.DomainDetail, 0, len(custom)+1)
+	if s.cfg.ProxyDomain != "" {
+		gen := app.Name + "." + s.cfg.ProxyDomain
+		out = append(out, api.DomainDetail{Domain: gen, Generated: true, TLSMode: mode, Cert: certFor(gen)})
+	}
+	for _, d := range custom {
+		out = append(out, api.DomainDetail{Domain: d, TLSMode: mode, Cert: certFor(d)})
+	}
+	return out
 }
 
 // handleAddAppDomain — POST /apps/{name}/domains, body {"domain": "..."}.

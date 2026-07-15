@@ -71,6 +71,18 @@ func (c *Client) ListDomains(ctx context.Context, name string) ([]string, error)
 	return out.Domains, err
 }
 
+// ListDomainsDetail returns an app's domains with per-domain TLS/certificate
+// status (GET /apps/{name}/domains?detail=1), including the app's generated
+// <app>.<proxy-domain> name.
+func (c *Client) ListDomainsDetail(ctx context.Context, name string) ([]api.DomainDetail, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/apps/"+url.PathEscape(name)+"/domains?detail=1", nil)
+	if err != nil {
+		return nil, err
+	}
+	out, err := decodeInto[api.DomainListResponse](resp)
+	return out.Details, err
+}
+
 // AddDomain attaches a custom domain (FQDN, globally unique) to an app
 // (POST /apps/{name}/domains), returning the updated app.
 func (c *Client) AddDomain(ctx context.Context, name, domain string) (api.AppResponse, error) {

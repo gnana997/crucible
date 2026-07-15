@@ -278,6 +278,10 @@ type appDomainInput struct {
 type domainsOutput struct {
 	App     string   `json:"app"`
 	Domains []string `json:"domains"`
+	// Details carries per-domain TLS/certificate status (populated by
+	// app_domain_ls so an agent can see whether a domain's cert is active,
+	// pending, or failed — e.g. DNS not pointed at the host).
+	Details []api.DomainDetail `json:"details,omitempty"`
 }
 
 func (h *handlers) appDomainAdd(ctx context.Context, _ *mcp.CallToolRequest, in appDomainInput) (*mcp.CallToolResult, domainsOutput, error) {
@@ -313,5 +317,9 @@ func (h *handlers) appDomainLs(ctx context.Context, _ *mcp.CallToolRequest, in a
 	if err != nil {
 		return nil, domainsOutput{}, err
 	}
-	return nil, domainsOutput{App: in.Name, Domains: domains}, nil
+	details, err := h.cfg.Client.ListDomainsDetail(ctx, in.Name)
+	if err != nil {
+		return nil, domainsOutput{}, err
+	}
+	return nil, domainsOutput{App: in.Name, Domains: domains, Details: details}, nil
 }

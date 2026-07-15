@@ -62,7 +62,7 @@ export interface paths {
         };
         /**
          * List an app's custom domains
-         * @description The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each.
+         * @description The custom domains (FQDNs) attached to the app; the ingress proxy routes them and, in terminate mode, obtains a certificate for each. With ?detail=1 the response also carries per-domain TLS/certificate status in 'details'.
          */
         get: operations["listAppDomains"];
         put?: never;
@@ -848,6 +848,14 @@ export interface components {
         BackupListResponse: {
             backups?: components["schemas"]["Backup"][] | null;
         };
+        CertStatus: {
+            /** Format: date-time */
+            last_attempt?: string | null;
+            last_error?: string;
+            /** Format: date-time */
+            not_after?: string | null;
+            state?: string;
+        };
         CloneVolReq: {
             /** @description Name of the new volume to create. */
             to?: string;
@@ -916,7 +924,14 @@ export interface components {
             /** Format: int64 */
             size_bytes?: number;
         };
+        DomainDetail: {
+            cert?: components["schemas"]["CertStatus"];
+            domain?: string;
+            generated?: boolean;
+            tls_mode?: string;
+        };
         DomainListResponse: {
+            details?: components["schemas"]["DomainDetail"][];
             domains?: string[] | null;
         };
         ErrorResponse: {
@@ -1453,7 +1468,10 @@ export interface operations {
     };
     listAppDomains: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, also return per-domain TLS/certificate status in 'details' (including the app's generated <app>.<proxy-domain> name). */
+                detail?: boolean;
+            };
             header?: never;
             path: {
                 /** @description App name (a DNS label, e.g. web). */

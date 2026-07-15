@@ -129,6 +129,49 @@ func (m *Metrics) SetUsageSource(fn func() []AppUsageStat) {
 	m.reg.MustRegister(usageCollector{source: fn})
 }
 
+// AppCertStat is a scrape-time snapshot of one domain's TLS certificate status,
+// for per-domain alerting (expiry, failed issuance). NotAfterUnix is 0 when no
+// managed cert is known (pending/failed/passthrough).
+type AppCertStat struct {
+	App          string
+	Domain       string
+	State        string // passthrough | pending | active | expiring | failed | manual
+	NotAfterUnix int64
+}
+
+var (
+	descCertNotAfter = prometheus.NewDesc("app_cert_not_after_seconds", "Unix expiry of an app domain's managed TLS certificate (0 if none).", []string{"app", "domain"}, nil)
+	descCertState    = prometheus.NewDesc("app_cert_state", "Current TLS certificate state for an app domain (1 for the labeled state).", []string{"app", "domain", "state"}, nil)
+)
+
+// certCollector emits per-domain cert status by reading `source` at each scrape.
+type certCollector struct{ source func() []AppCertStat }
+
+func (c certCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- descCertNotAfter
+	ch <- descCertState
+}
+
+func (c certCollector) Collect(ch chan<- prometheus.Metric) {
+	for _, s := range c.source() {
+		ch <- prometheus.MustNewConstMetric(descCertState, prometheus.GaugeValue, 1, s.App, s.Domain, s.State)
+		if s.NotAfterUnix > 0 {
+			ch <- prometheus.MustNewConstMetric(descCertNotAfter, prometheus.GaugeValue, float64(s.NotAfterUnix), s.App, s.Domain)
+		}
+	}
+}
+
+// SetCertStatusSource registers the per-domain cert-status collector, read from
+// fn at scrape time (fn wraps the app manager's domains + the TLS provider's
+// Status). Pull-model, so a removed domain simply stops being reported. Call at
+// most once.
+func (m *Metrics) SetCertStatusSource(fn func() []AppCertStat) {
+	if m == nil || fn == nil {
+		return
+	}
+	m.reg.MustRegister(certCollector{source: fn})
+}
+
 // ObserveAppRequest records one ingress-proxy request for a KNOWN app: bumps
 // app_requests_total{app,code} and observes app_request_duration_seconds{app}.
 // The caller (proxy) must pass only real app names and a bounded status class

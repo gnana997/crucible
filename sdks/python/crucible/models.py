@@ -42,6 +42,13 @@ class BackupListResponse(BaseModel):
     backups: list[Backup] | None = None
 
 
+class CertStatus(BaseModel):
+    last_attempt: AwareDatetime | None = None
+    last_error: str | None = None
+    not_after: AwareDatetime | None = None
+    state: str | None = None
+
+
 class CloneVolReq(BaseModel):
     to: str | None = Field(None, description='Name of the new volume to create.')
 
@@ -51,7 +58,15 @@ class CreateVolumeRequest(BaseModel):
     size_bytes: int | None = None
 
 
+class DomainDetail(BaseModel):
+    cert: CertStatus | None = None
+    domain: str | None = None
+    generated: bool | None = None
+    tls_mode: str | None = None
+
+
 class DomainListResponse(BaseModel):
+    details: list[DomainDetail] | None = None
     domains: list[str] | None = None
 
 
