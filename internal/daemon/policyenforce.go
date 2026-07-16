@@ -144,6 +144,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// Restore/clone provision a new volume — create-grade.
 		case strings.HasSuffix(path, "/restore"), strings.HasSuffix(path, "/clone"):
 			return policy.OpCreate, true
+		// Growing a volume enlarges its provisioned store — create-grade.
+		case strings.HasSuffix(path, "/grow"):
+			return policy.OpCreate, true
 		// Crypto-shredding a volume irreversibly destroys its data — delete-grade.
 		case strings.HasSuffix(path, "/shred"):
 			return policy.OpDelete, true

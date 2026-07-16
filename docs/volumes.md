@@ -76,6 +76,31 @@ crucible volume rm <name>                    # delete the volume and its data
 The same operations are available over the REST API (`/volumes`) and to agents
 via the MCP tools `volume_create`, `list_volumes`, `delete_volume`.
 
+## Growing a volume
+
+A volume created too small can be grown in place — its backing store and the
+ext4 filesystem on it are enlarged, no recreate, no data movement:
+
+```bash
+crucible volume grow <name> --size 20G   # new TOTAL size (must exceed current)
+```
+
+- **Grow-only.** A size at or below the current one is rejected — ext4 cannot
+  shrink online, and offline shrink is unsafe.
+- **The volume must be detached.** Stop the app (or remove the sandbox) holding
+  it first; `grow` is refused with a `409` while a volume is attached. This is
+  because a snapshot-slept volume's guest has its block-device size pinned by the
+  snapshot, so a grow would not be visible until the volume next boots fresh —
+  growing while detached and restarting the app sidesteps that entirely.
+- **Encrypted volumes** grow too: the LUKS container, its mapping, and the ext4
+  are all resized (transparent — same one command).
+- The daemon host needs **`resize2fs`** (`e2fsprogs`), the same dependency
+  `mkfs.ext4` already implies.
+
+Verified by `scripts/smoke_volume_grow.sh` (grow a plaintext + an encrypted
+volume, the guest filesystem reports the new capacity with data intact; shrink
+and attached-grow are refused).
+
 ## App volumes
 
 Give a durable **app** a volume with `app create --volume NAME:/path`. The data

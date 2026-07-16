@@ -20,8 +20,39 @@ func newVolumeCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"vol"},
 	}
 	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o),
-		newVolumeShredCmd(o), newVolumeRewrapCmd(o), newVolumeKeysCmd(o),
+		newVolumeShredCmd(o), newVolumeGrowCmd(o), newVolumeRewrapCmd(o), newVolumeKeysCmd(o),
 		newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
+	return cmd
+}
+
+// newVolumeGrowCmd is `volume grow <name> --size <newsize>`.
+func newVolumeGrowCmd(o *globalOpts) *cobra.Command {
+	var size string
+	cmd := &cobra.Command{
+		Use:   "grow <name> --size <newsize>",
+		Short: "Grow a detached volume's size (grow-only; stop the app first)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			sizeBytes, err := parseDiskSize(size)
+			if err != nil {
+				return err
+			}
+			if sizeBytes <= 0 {
+				return errors.New("--size is required, e.g. 20G")
+			}
+			v, err := o.client().GrowVolume(cmd.Context(), args[0], sizeBytes)
+			if err != nil {
+				return err
+			}
+			if o.isJSON() {
+				return printJSON(cmd.OutOrStdout(), v)
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), v.Name)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&size, "size", "", "new total size, e.g. 20G (must exceed the current size)")
+	_ = cmd.MarkFlagRequired("size")
 	return cmd
 }
 

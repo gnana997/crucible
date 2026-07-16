@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0-orange)
+![Status: v0.9.1](https://img.shields.io/badge/status-v0.9.1-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -110,8 +110,9 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 ## Roadmap
 
-crucible is at **v0.9.0**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.9.1**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
+- **v0.9.1: grow a volume in place.** `crucible volume grow <name> --size 20G` enlarges a volume's backing store and its ext4 filesystem (encrypted volumes too — the LUKS container, mapping, and ext4 are all resized) with the data untouched, instead of backup → restore-to-a-bigger-one → redeploy. Grow-only; the volume must be detached ([docs/volumes.md](docs/volumes.md#growing-a-volume)).
 - **v0.9.0: guest metrics scrape.** Point the daemon at a Prometheus endpoint **inside** a guest — `app create db --metrics-port 9187` (a `postgres_exporter`, `redis_exporter`, or the app's own metrics) — and it scrapes it and folds the series into the daemon's own `/metrics` + OTLP, labeled by `app`/`instance`. DB-agnostic, capped so a guest can't flood it, and **scale-to-zero aware**: a slept app is never scraped and a scrape never wakes it (`crucible_guest_scrape_up` → 0 while asleep). See a database's own `pg_stat_*` next to the daemon's metrics ([docs/observability.md](docs/observability.md#guest-metrics--scrape-an-apps-metrics)).
 - **v0.8.1: encryption key management.** A **keyring** of multiple keys (env + `--volume-key-dir`), and **key rotation that re-encrypts no data** — `crucible volume rewrap <name> --to-key <id>` re-wraps a volume's key under a different key (the data key never changes), safe on a **live** volume, gated by a default-deny `volume_key` op. Retire an old key with `volume keys reload` (refuses to drop a key a volume still uses); every key op is audit-logged (names + key ids only, never key material) ([docs/encryption.md](docs/encryption.md#multiple-keys--rotation)).
 - **v0.8.0: encryption at rest.** Each persistent volume can be its own **LUKS2 container with its own key** (`crucible volume create pgdata --encrypt`, or `--volume-encrypt` for all): the backing file is ciphertext at rest, encryption is transparent to the guest (a decrypted device node is staged into the VM's chroot, never the ciphertext), and it stays encrypted **even while a scale-to-zero app sleeps**. `crucible volume shred` destroys the key to make data **permanently unrecoverable** (crypto-shred); backups carry the wrapped key so a restore re-keys under the new name. Protects a stolen/seized disk (the AWS-EBS model), not a compromised host root ([docs/encryption.md](docs/encryption.md)).

@@ -62,6 +62,9 @@ var (
 	// ErrKeyNotFound means a volume's (or a requested) encryption key id is not in
 	// the configured keyring — e.g. the key was retired while a volume still used it.
 	ErrKeyNotFound = errors.New("volume: encryption key id not found in the keyring")
+	// ErrNotLarger means a grow was asked to shrink or keep the current size.
+	// Volumes grow only — ext4 cannot shrink online and offline shrink is unsafe.
+	ErrNotLarger = errors.New("volume: new size must be larger than the current size (grow-only, no shrink)")
 )
 
 // Info is a volume record annotated with its live attachment.
@@ -785,6 +788,104 @@ func (m *Manager) Sync(name string) error {
 	defer func() { _ = f.Close() }()
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("volume: fsync %s: %w", name, err)
+	}
+	return nil
+}
+
+// growClaim is the sentinel single-writer holder Grow installs while it resizes,
+// so a concurrent Attach (a boot racing the grow) gets ErrInUse rather than
+// mounting the filesystem mid-resize. It is never a real sandbox id.
+const growClaim = "\x00grow"
+
+// Grow enlarges a volume's backing store and its ext4 filesystem to newSizeBytes
+// (grow-only: ErrNotLarger for a value at or below the current size). The volume
+// MUST be detached — a snapshot-slept volume's guest has its block-device size
+// pinned by the snapshot, so growing it offline would not be seen on wake; the
+// caller (the daemon handler) refuses a grow of an attached volume. Grow claims
+// the single-writer guard for the duration so a fresh Attach can't race the
+// resize, and ErrInUse if the volume is already held.
+//
+// For a plaintext volume it sparse-truncates the backing file and runs resize2fs.
+// For an encrypted volume it grows the LUKS container file, re-opens it so the
+// loop device sees the new size, resizes the LUKS mapping, then grows the ext4 on
+// the decrypted device. Requires resize2fs (e2fsprogs) on the host.
+func (m *Manager) Grow(ctx context.Context, name string, newSizeBytes int64) (Record, error) {
+	if !nameRe.MatchString(name) {
+		return Record{}, ErrInvalidName
+	}
+	m.mu.Lock()
+	if holder, ok := m.attached[name]; ok {
+		m.mu.Unlock()
+		return Record{}, fmt.Errorf("%w (held by sandbox %s)", ErrInUse, holder)
+	}
+	rec, ok, err := m.st.get(name)
+	if err != nil {
+		m.mu.Unlock()
+		return Record{}, err
+	}
+	if !ok {
+		m.mu.Unlock()
+		return Record{}, ErrNotFound
+	}
+	if newSizeBytes <= rec.SizeBytes {
+		m.mu.Unlock()
+		return Record{}, ErrNotLarger
+	}
+	// Claim the guard so nothing attaches (and mounts) the volume mid-resize.
+	m.attached[name] = growClaim
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.attached, name)
+		m.mu.Unlock()
+	}()
+
+	path := filepath.Join(m.dir, name+".img")
+	if rec.Encrypted {
+		if err := m.growEncrypted(ctx, name, path, newSizeBytes, rec); err != nil {
+			return Record{}, err
+		}
+	} else if err := fsutil.GrowExt4(ctx, path, newSizeBytes); err != nil {
+		return Record{}, fmt.Errorf("volume: grow %s: %w", name, err)
+	}
+
+	rec.SizeBytes = newSizeBytes
+	m.mu.Lock()
+	err = m.st.put(rec)
+	m.mu.Unlock()
+	if err != nil {
+		return Record{}, err
+	}
+	return rec, nil
+}
+
+// growEncrypted grows an encrypted volume: enlarge the LUKS container file (which
+// holds the LUKS header plus the data area), open it fresh so cryptsetup's loop
+// device picks up the new size, extend the LUKS mapping to fill it, grow the ext4
+// on the decrypted mapper, then close. Caller holds the growClaim guard, so the
+// mapper is not otherwise open.
+func (m *Manager) growEncrypted(ctx context.Context, name, path string, newSizeBytes int64, rec Record) error {
+	if m.crypt == nil {
+		return ErrEncryptionDisabled
+	}
+	dek, err := m.dekFor(rec)
+	if err != nil {
+		return err
+	}
+	if err := os.Truncate(path, newSizeBytes+cryptdev.LUKSHeaderBytes); err != nil {
+		return fmt.Errorf("volume: grow container %s: %w", name, err)
+	}
+	mname := mapperName(name)
+	mapper, err := m.crypt.Open(ctx, path, dek, mname)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = m.crypt.Close(ctx, mname) }()
+	if err := m.crypt.Resize(ctx, mname, dek); err != nil {
+		return err
+	}
+	if err := fsutil.GrowExt4(ctx, mapper, 0); err != nil {
+		return fmt.Errorf("volume: grow %s: %w", name, err)
 	}
 	return nil
 }

@@ -332,6 +332,43 @@ func (s *Server) handleCloneVolume(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toAPIVolume(volume.Info{Record: rec}))
 }
 
+var errGrowNeedsDetached = errors.New(
+	"volume is attached to an app; grow it while detached (stop the app first) — " +
+		"a snapshot-slept volume's size is pinned until it next boots")
+
+// handleGrowVolume — POST /volumes/{name}/grow. Grows a detached volume's backing
+// store + ext4 filesystem to the requested size (grow-only). Refuses an attached
+// volume (asleep or live): a snapshot-woken guest's block-device size is pinned by
+// the snapshot, so an offline grow would not be seen until the volume next boots
+// fresh.
+func (s *Server) handleGrowVolume(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.GrowVolumeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	name := r.PathValue("name")
+	info, err := s.cfg.Volumes.Get(name)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	if info.AttachedTo != "" {
+		writeError(w, http.StatusConflict, errGrowNeedsDetached)
+		return
+	}
+	rec, err := s.cfg.Volumes.Grow(r.Context(), name, req.SizeBytes)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toAPIVolume(volume.Info{Record: rec}))
+}
+
 // handleListBackups — GET /volumes/{name}/backups (one volume) and GET /backups
 // (all). name is "" for the latter.
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
@@ -448,7 +485,8 @@ func volumeErrStatus(err error) int {
 		errors.Is(err, volume.ErrNotEncrypted),
 		errors.Is(err, volume.ErrKeyNotFound),
 		errors.Is(err, volume.ErrEncryptionDisabled),
-		errors.Is(err, volume.ErrEncryptedCloneUnsupported):
+		errors.Is(err, volume.ErrEncryptedCloneUnsupported),
+		errors.Is(err, volume.ErrNotLarger):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

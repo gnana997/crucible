@@ -131,6 +131,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /volumes/{name}", s.handleGetVolume)
 	mux.HandleFunc("DELETE /volumes/{name}", s.handleDeleteVolume)
 	mux.HandleFunc("POST /volumes/{name}/shred", s.handleShredVolume)
+	mux.HandleFunc("POST /volumes/{name}/grow", s.handleGrowVolume)
 	mux.HandleFunc("POST /volumes/{name}/rewrap", s.handleRewrapVolume)
 	mux.HandleFunc("POST /volumes/rewrap", s.handleBulkRewrap)
 	mux.HandleFunc("POST /volumes/keys/reload", s.handleReloadKeys)

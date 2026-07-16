@@ -95,6 +95,18 @@ func (c *Client) ReloadVolumeKeys(ctx context.Context) error {
 	return expectNoContent(resp)
 }
 
+// GrowVolume enlarges a volume's backing store + ext4 filesystem to sizeBytes
+// (POST /volumes/{name}/grow). Grow-only: a value at or below the current size
+// errors 400. The volume must be detached — errors 409 if it is attached to an
+// app (stop the app first).
+func (c *Client) GrowVolume(ctx context.Context, name string, sizeBytes int64) (api.Volume, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(name)+"/grow", api.GrowVolumeRequest{SizeBytes: sizeBytes})
+	if err != nil {
+		return api.Volume{}, err
+	}
+	return decodeInto[api.Volume](resp)
+}
+
 // BackupVolume takes a point-in-time backup of a volume
 // (POST /volumes/{name}/backups). Errors 409 if the volume is attached to a
 // running sandbox (sleep it first).

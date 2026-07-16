@@ -189,6 +189,13 @@ type CloneVolumeRequest struct {
 	To string `json:"to"` // new volume name
 }
 
+// GrowVolumeRequest is the body of POST /volumes/{name}/grow: enlarge the
+// volume's backing store + filesystem to SizeBytes. Grow-only — a value at or
+// below the current size is rejected.
+type GrowVolumeRequest struct {
+	SizeBytes int64 `json:"size_bytes"` // new total size in bytes
+}
+
 // PortMapping publishes one host port to one guest port.
 type PortMapping struct {
 	// HostIP is the host address to bind. Empty means 0.0.0.0 (reachable

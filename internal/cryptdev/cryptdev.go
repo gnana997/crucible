@@ -126,11 +126,31 @@ func (e *Engine) Erase(ctx context.Context, file string) error {
 	return nil
 }
 
+// Resize grows the active mapper device <name> to fill its backing container
+// after that container's file has been enlarged. Open the (already-grown) file
+// first so cryptsetup's loop device sees the new size, then Resize extends the
+// LUKS data mapping to fill it; the key is supplied on stdin so the resize works
+// regardless of kernel-keyring settings. cryptsetup never shrinks a mapping, so
+// this is grow-only.
+func (e *Engine) Resize(ctx context.Context, name string, key []byte) error {
+	out, err := e.run(ctx, key, "cryptsetup", "resize", "--key-file", "-", name)
+	if err != nil {
+		return fmt.Errorf("cryptdev: resize %s: %w: %s", name, err, tail(out))
+	}
+	return nil
+}
+
 // IsLUKS reports whether file is a LUKS container. A non-LUKS or absent file is
 // reported false (cryptsetup exits non-zero), not an error.
 func (e *Engine) IsLUKS(ctx context.Context, file string) bool {
 	_, err := e.run(ctx, nil, "cryptsetup", "isLuks", file)
 	return err == nil
+}
+
+// Active reports whether a mapper device named name is currently open — i.e. a
+// live or waking holder has the volume's decrypted device mapped.
+func (e *Engine) Active(ctx context.Context, name string) bool {
+	return e.isActive(ctx, name)
 }
 
 // isActive reports whether a mapper device named name is currently open.

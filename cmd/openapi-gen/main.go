@@ -77,6 +77,10 @@ type cloneVolReq struct {
 	Name string `path:"name" description:"Source volume to clone (must be quiescent)."`
 	To   string `json:"to" description:"Name of the new volume to create."`
 }
+type growVolReq struct {
+	volNameParam
+	api.GrowVolumeRequest
+}
 type regHostParam struct {
 	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
 }
@@ -180,7 +184,7 @@ func buildReflector() *openapi3.Reflector {
 	spec := r.SpecEns()
 	spec.Info.
 		WithTitle("crucible").
-		WithVersion("0.5.4").
+		WithVersion("0.9.1").
 		WithDescription("REST API for the crucible daemon, a Firecracker microVM sandbox runtime. " +
 			"The daemon is the contract every SDK mirrors. Auth is a bearer token " +
 			"(`Authorization: Bearer <key>`); `/healthz` is always exempt, and a loopback daemon " +
@@ -453,6 +457,13 @@ func buildReflector() *openapi3.Reflector {
 		"Destroys the volume's keyslots and deletes its wrapped key, making the data permanently "+
 			"unrecoverable. 400 for a plaintext volume; 409 when attached to a live sandbox.",
 		volNameParam{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes/{name}/grow", "growVolume", "volumes", "Grow a volume",
+		"Enlarges a detached volume's backing store and ext4 filesystem to size_bytes (grow-only; a "+
+			"value at or below the current size is rejected). 409 when the volume is attached to an app "+
+			"(stop it first).",
+		growVolReq{}, api.Volume{}, http.StatusOK,
+		http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 
 	jsonOp(http.MethodPost, "/volumes/{name}/rewrap", "rewrapVolume", "volumes", "Re-wrap a volume's encryption key",
 		"Re-wraps the volume's per-volume key under a different keyring key (rotation; no data is "+

@@ -112,6 +112,10 @@ class ExecReq(BaseModel):
     timeout_s: int | None = None
 
 
+class GrowVolReq(BaseModel):
+    size_bytes: int | None = None
+
+
 class HealthCheck(BaseModel):
     cmd: list[str] | None = None
     healthy_threshold: int | None = None

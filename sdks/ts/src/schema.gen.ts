@@ -820,6 +820,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/volumes/{name}/grow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Grow a volume
+         * @description Enlarges a detached volume's backing store and ext4 filesystem to size_bytes (grow-only; a value at or below the current size is rejected). 409 when the volume is attached to an app (stop it first).
+         */
+        post: operations["growVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/volumes/{name}/restore": {
         parameters: {
             query?: never;
@@ -1133,6 +1153,10 @@ export interface components {
         };
         ForkResponse: {
             sandboxes?: components["schemas"]["SandboxResponse"][] | null;
+        };
+        GrowVolReq: {
+            /** Format: int64 */
+            size_bytes?: number;
         };
         HealthCheck: {
             cmd?: string[];
@@ -3813,6 +3837,69 @@ export interface operations {
         responses: {
             /** @description Created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Volume"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    growVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Volume name ([a-z0-9][a-z0-9-]*). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["GrowVolReq"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

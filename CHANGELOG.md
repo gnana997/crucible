@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.1] — 2026-07-16
+
+Grow a volume in place. A volume sized too small no longer means backup →
+restore-to-a-bigger-one → redeploy: its backing store and the ext4 filesystem
+on it are enlarged directly, with the data untouched.
+
+### Added
+
+- **`crucible volume grow <name> --size <newsize>`** enlarges a volume's backing
+  store and ext4 filesystem to the new total size (grow-only — a size at or below
+  the current one is rejected, since ext4 can't shrink online). Encrypted volumes
+  grow too: the LUKS container, its mapping, and the ext4 are all resized in one
+  step. `POST /volumes/{name}/grow` (gated by the `create` op), SDK `GrowVolume`,
+  OpenAPI `growVolume`.
+- The volume must be **detached** (stop the app / remove the sandbox first) — a
+  `409` otherwise. A snapshot-slept volume's guest has its block-device size
+  pinned by the snapshot, so an offline grow only takes effect on the next fresh
+  boot; growing while detached and restarting the app is the clean path (a daemon
+  `--restart` orchestration is the next step). Needs `resize2fs` (`e2fsprogs`).
+- Verified by `scripts/smoke_volume_grow.sh` (plaintext + encrypted grow, the
+  guest reports the new capacity with data intact; shrink and attached-grow
+  refused).
+
 ## [0.9.0] — 2026-07-16
 
 Guest metrics scrape. crucible exposes the host/VM view of a workload (request

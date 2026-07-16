@@ -163,7 +163,15 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.9.0: Guest metrics scrape *(current)*
+### v0.9.1: Grow a volume *(current)*
+
+Enlarge a volume in place instead of backup → restore-to-bigger → redeploy ([volumes.md](volumes.md#growing-a-volume)).
+
+- [x] **`volume grow <name> --size <newsize>`:** enlarges a volume's backing store and its ext4 filesystem to the new total size — grow-only (a size at or below the current one is refused; ext4 can't shrink online). Encrypted volumes grow too: the LUKS container, its mapping, and the ext4 are all resized in one step. `POST /volumes/{name}/grow` (gated by `create`), SDK `GrowVolume`, OpenAPI `growVolume`; the shared `resize2fs` mechanism runs `e2fsck` first so a volume detached from a hard-killed guest resizes cleanly.
+- [x] **Detached-only, safe by construction:** a `409` while attached. A snapshot-slept volume's guest has its block-device size pinned by the snapshot, so an offline grow only takes effect on the next fresh boot — growing while detached and restarting sidesteps that. `scripts/smoke_volume_grow.sh` grows a plaintext + an encrypted volume, confirms the guest reports the new capacity with data intact, and that shrink + attached-grow are refused (14/0 on KVM).
+- Next: an attached-app `stop → grow → start` orchestration (`--restart`) so a running app's volume grows without the manual stop/grow/restart; then incremental backups (v0.9.2).
+
+### v0.9.0: Guest metrics scrape
 
 A workload's own metrics — a database's `pg_stat_*` / Redis `INFO`, or any app's Prometheus endpoint — folded into the daemon's `/metrics` ([observability.md](observability.md#guest-metrics--scrape-an-apps-metrics)).
 
