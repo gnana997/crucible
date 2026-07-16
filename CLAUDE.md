@@ -16,11 +16,11 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.9.1 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.9.2 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
-an MCP server (35 tools), daemon API-key auth with scoped/policy tokens, and a
+an MCP server (37 tools), daemon API-key auth with scoped/policy tokens, and a
 TUI. Two durability tiers: **sandboxes** are ephemeral (a daemon restart drops
 the VM), while **apps** (`crucible app`) are durable — the daemon re-creates a
 healthy instance from persisted desired state. The v0.4 line built apps out:
@@ -193,9 +193,13 @@ store and its ext4 filesystem in place (encrypted volumes too — the LUKS conta
 mapping, and ext4 all resized), grow-only, data untouched; `POST /volumes/{name}/grow`
 gated by `create`, the shared `fsutil.GrowExt4` running `e2fsck` before `resize2fs` so
 a volume detached from a hard-killed guest resizes cleanly. Detached-only (a snapshot
-pins a slept guest's device size); attached-app `stop→grow→start` and incremental
-backups are next. See the ROADMAP for what's after (incremental backups, wildcard/
-DNS-01, fleet).
+pins a slept guest's device size). **v0.9.2** adds cold **`app stop`/`app start`**
+(desired-state: `stop` destroys the instance and detaches its volume — unlike
+`sleep`/`wake`, which snapshot and hold the guard — `start` boots fresh and re-attaches
+at the new size; `POST /apps/{name}/stop|start`, SDK `StopApp`/`StartApp`, MCP
+`app_stop`/`app_start`), making `app stop → volume grow → app start` the recipe to grow
+a running app's volume. Incremental backups are next. See the ROADMAP for what's after
+(incremental backups, wildcard/DNS-01, fleet).
 
 ## Working style
 

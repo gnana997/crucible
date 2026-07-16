@@ -32,6 +32,7 @@ LISTEN="${LISTEN:-127.0.0.1:7916}"
 BASE_URL="http://${LISTEN}"
 MOUNT="${MOUNT:-/var/lib/crucible-growtest}"
 IMAGE="${IMAGE:-alpine:latest}"
+APP_IMAGE="${APP_IMAGE:-nginx:alpine}"
 
 # Sizes (bytes): grow 128 MiB -> 512 MiB; shrink attempt 64 MiB.
 SZ_INIT=$((128*1024*1024))
@@ -88,8 +89,12 @@ echo "   daemon healthy (pid $DAEMON_PID)"
 
 run() { "$CRUCIBLE_BIN" --addr "$BASE_URL" "$@"; }
 vol_size() { curl -s "$BASE_URL/volumes/$1" 2>/dev/null | grep -o '"size_bytes":[0-9]*' | head -1 | grep -o '[0-9]*'; }
+vol_attached() { curl -s "$BASE_URL/volumes/$1" 2>/dev/null | grep -o '"attached_to":"[^"]*"' | head -1; }
 # guest_kb: 1K-blocks total of the filesystem mounted at path, inside sandbox $1.
 guest_kb() { run sandbox exec "$1" -- df -Pk "$2" 2>/dev/null | awk 'NR==2{print $2}'; }
+app_phase() { curl -s "$BASE_URL/apps/$1" 2>/dev/null | grep -o '"phase":"[a-z]*"' | head -1 | grep -o '[a-z]*"$' | tr -d '"'; }
+wait_phase() { local want="$2" t="${3:-400}"; for _ in $(seq 1 "$t"); do [[ "$(app_phase "$1")" == "$want" ]] && return 0; sleep 0.05; done; return 1; }
+app_kb() { run app exec "$1" -- df -Pk "$2" 2>/dev/null | awk 'NR==2{print $2}'; }
 
 # grow_case <volname> <create-flags...> — the shared plaintext/encrypted flow.
 grow_case() {
@@ -150,6 +155,50 @@ if [[ "$HAVE_CRYPT" == 1 ]]; then
   grow_case enc --encrypt
 else
   echo "   (skipped: cryptsetup not installed)"
+fi
+
+echo "== 06 the app recipe: app stop -> volume grow -> app start"
+run volume create appdata --size "$SZ_INIT" >/dev/null 2>&1 && ok "created appdata" || bad "create appdata"
+run app create growapp --image "$APP_IMAGE" --restart always --volume appdata:/data >/dev/null 2>&1
+if wait_phase growapp running 600; then
+  ok "volume app booted"
+  run app exec growapp -- sh -c 'echo recipe-ok > /data/marker && sync' >/dev/null 2>&1 \
+    && ok "wrote marker via the running app" || bad "app exec write"
+  before=$(app_kb growapp /data)
+  # while attached, grow is refused (detached-only).
+  run volume grow appdata --size "$SZ_GROWN" >/dev/null 2>&1 \
+    && bad "grew an attached app volume" || ok "grow refused while the app holds it (409)"
+  # stop -> detaches the volume.
+  run app stop growapp >/dev/null 2>&1 && ok "app stop returned" || bad "app stop"
+  # attached_to is omitempty, so it is absent from the JSON once detached.
+  if [[ -z "$(vol_attached appdata)" ]]; then
+    ok "volume detached after stop"
+  else
+    bad "volume still attached after stop ($(vol_attached appdata))"
+  fi
+  # grow while stopped.
+  if gerr=$(run volume grow appdata --size "$SZ_GROWN" 2>&1); then
+    ok "volume grow appdata (while stopped)"
+  else
+    bad "grow appdata: $gerr"
+  fi
+  # start -> boots fresh, sees the new size.
+  run app start growapp >/dev/null 2>&1 && ok "app start returned" || bad "app start"
+  if wait_phase growapp running 600; then
+    marker=$(run app exec growapp -- cat /data/marker 2>/dev/null | tr -d '\r\n')
+    [[ "$marker" == "recipe-ok" ]] && ok "data intact after stop->grow->start (marker=$marker)" \
+      || bad "marker='$marker' want 'recipe-ok'"
+    after=$(app_kb growapp /data)
+    if [[ -n "$before" && -n "$after" ]] && (( after > before * 3 )); then
+      ok "app's guest filesystem grew (${before}K -> ${after}K blocks)"
+    else
+      bad "app guest fs did not grow (${before}K -> ${after}K blocks)"
+    fi
+  else
+    bad "app did not come back up after start"
+  fi
+else
+  bad "volume app never booted"
 fi
 
 echo "==============================================================="

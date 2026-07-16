@@ -108,6 +108,8 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 | `app shell <name>` | interactive shell in the current instance |
 | `app sleep <name>` | snapshot + stop the VMM (free RAM+CPU), keeping identity + route; wakes **in place** |
 | `app wake <name>` | wake a slept app (restore in place: same IP, clock stepped to now) |
+| `app stop <name>` | **cold** stop: destroy the instance and **detach its volume** (retain the spec); returns once torn down |
+| `app start <name>` | boot a fresh instance from the retained spec (re-attaches its volume at the current size) |
 
 `create` flags: `--image` (required), `--pull`, `--restart`, `--health`
 (http/tcp), `--health-cmd` (exec), `--port` (proxy target port), `-p/--publish` (repeatable),

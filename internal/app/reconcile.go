@@ -664,6 +664,23 @@ func (m *Manager) Delete(id string) error {
 	return nil
 }
 
+// SetDesiredByName flips an app between running and stopped by name (spec
+// retained). Stopping is a COLD stop: the reconciler destroys the running
+// instance, which detaches any volume (not a snapshot — unlike Sleep, which
+// keeps the guard held), so a stopped app's volume can be grown, backed up, or
+// migrated. Starting boots a fresh instance that re-attaches the volume. Absent
+// name is ErrNotFound.
+func (m *Manager) SetDesiredByName(name string, running bool) error {
+	rec, found, err := m.store.GetByName(name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrNotFound
+	}
+	return m.SetDesired(rec.ID, running)
+}
+
 // SetDesired flips an app between running and stopped (spec retained).
 func (m *Manager) SetDesired(id string, running bool) error {
 	rec, found, err := m.store.Get(id)

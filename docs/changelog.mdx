@@ -10,12 +10,21 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.9.2" title="Cold app stop / start">
+
+A desired-state stop/start, and the recipe to grow a running app's volume.
+
+- **`crucible app stop <name>` / `app start <name>`.** A cold stop/start — `stop` destroys the instance and **detaches its volume** (unlike `sleep`/`wake`, which snapshot and keep the single-writer guard held), retaining the app spec; `start` boots a fresh instance that re-attaches the volume at its current size. `POST /apps/{name}/stop` + `/start`, SDK `StopApp`/`StartApp`, MCP `app_stop`/`app_start`.
+- **The grow recipe.** So growing a running app's volume is `app stop db` → `volume grow pgdata --size 20G` → `app start db`. See [apps](apps#the-crucible-app-commands).
+
+</Update>
+
 <Update label="v0.9.1" title="Grow a volume">
 
 Enlarge a volume in place, data untouched — no more backup → restore-to-a-bigger-one → redeploy.
 
 - **`crucible volume grow <name> --size 20G`** grows a volume's backing store and its ext4 filesystem to the new total size. Grow-only (a size at or below the current one is rejected — ext4 can't shrink online). Encrypted volumes grow too: the LUKS container, its mapping, and the ext4 are all resized in one step. See [volumes](volumes#growing-a-volume).
-- **Detached-only.** The volume must be detached (stop the app first) — a `409` otherwise, because a snapshot-slept volume's guest has its device size pinned by the snapshot until it next boots. The shared resize runs `e2fsck` first, so a volume detached from a hard-killed guest resizes cleanly. `POST /volumes/{name}/grow`, SDK `GrowVolume`.
+- **Detached-only.** The volume must be detached — a `409` otherwise, because a snapshot-slept volume's guest has its device size pinned by the snapshot until it next boots. The shared resize runs `e2fsck` first, so a volume detached from a hard-killed guest resizes cleanly. `POST /volumes/{name}/grow`, SDK `GrowVolume`.
 
 </Update>
 

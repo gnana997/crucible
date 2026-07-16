@@ -31,6 +31,8 @@ func newAppCmd(o *globalOpts) *cobra.Command {
 		newAppRmCmd(o),
 		newAppSleepCmd(o),
 		newAppWakeCmd(o),
+		newAppStopCmd(o),
+		newAppStartCmd(o),
 		newAppLogsCmd(o),
 		newAppExecCmd(o),
 		newAppShellCmd(o),
@@ -279,6 +281,41 @@ func newAppWakeCmd(o *globalOpts) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resp, err := o.client().WakeApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd.OutOrStdout(), resp)
+		},
+	}
+}
+
+func newAppStopCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop <name>",
+		Short: "Cold-stop an app: destroy its instance (detaching its volume), keep the spec",
+		Long: "Stop an app's instance entirely (unlike `sleep`, which snapshots and keeps\n" +
+			"the volume's single-writer guard held). The instance is destroyed and its\n" +
+			"volume detached, so the volume can be grown (`volume grow`), backed up, or\n" +
+			"migrated; the app spec is retained, and `app start` boots it again. Returns\n" +
+			"once the instance has actually torn down.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := o.client().StopApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			return printJSON(cmd.OutOrStdout(), resp)
+		},
+	}
+}
+
+func newAppStartCmd(o *globalOpts) *cobra.Command {
+	return &cobra.Command{
+		Use:   "start <name>",
+		Short: "Start a stopped app: boot a fresh instance (re-attaching its volume)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resp, err := o.client().StartApp(cmd.Context(), args[0])
 			if err != nil {
 				return err
 			}

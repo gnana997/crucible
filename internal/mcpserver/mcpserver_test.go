@@ -111,7 +111,7 @@ func TestServerAdvertisesFullCatalog(t *testing.T) {
 	sort.Strings(got)
 
 	want := []string{
-		"app_domain_add", "app_domain_ls", "app_domain_rm", "app_exec", "app_logs", "app_sleep", "app_wake", "capture",
+		"app_domain_add", "app_domain_ls", "app_domain_rm", "app_exec", "app_logs", "app_sleep", "app_start", "app_stop", "app_wake", "capture",
 		"create_app", "create_sandbox", "delete_app", "delete_image", "delete_sandbox", "delete_snapshot", "delete_volume",
 		"exec", "fork", "get_app", "inspect_sandbox", "list_apps", "list_images", "list_profiles", "list_sandboxes",
 		"list_snapshots", "list_volumes", "logs", "read_file", "run", "snapshot", "stop_sandbox", "update_app",

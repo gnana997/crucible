@@ -90,6 +90,10 @@ func (s *Server) routes() *http.ServeMux {
 	// Scale-to-zero (v0.5.0): sleep frees the instance's RAM, wake restores it.
 	mux.HandleFunc("POST /apps/{name}/sleep", s.handleSleepApp)
 	mux.HandleFunc("POST /apps/{name}/wake", s.handleWakeApp)
+	// Cold stop/start (desired-state): stop destroys the instance (detaching
+	// its volume so it can be grown/backed up), start boots a fresh one.
+	mux.HandleFunc("POST /apps/{name}/stop", s.handleStopApp)
+	mux.HandleFunc("POST /apps/{name}/start", s.handleStartApp)
 	// Custom domains (v0.7.0): attach/detach/list FQDNs the ingress proxy routes
 	// (and, in terminate mode, obtains a cert for). Config ops, gated as exec.
 	mux.HandleFunc("GET /apps/{name}/domains", s.handleListAppDomains)

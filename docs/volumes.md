@@ -87,11 +87,21 @@ crucible volume grow <name> --size 20G   # new TOTAL size (must exceed current)
 
 - **Grow-only.** A size at or below the current one is rejected — ext4 cannot
   shrink online, and offline shrink is unsafe.
-- **The volume must be detached.** Stop the app (or remove the sandbox) holding
-  it first; `grow` is refused with a `409` while a volume is attached. This is
-  because a snapshot-slept volume's guest has its block-device size pinned by the
-  snapshot, so a grow would not be visible until the volume next boots fresh —
-  growing while detached and restarting the app sidesteps that entirely.
+- **The volume must be detached.** `grow` is refused with a `409` while a volume
+  is attached — a snapshot-slept volume's guest has its block-device size pinned
+  by the snapshot, so a grow would not be visible until the volume next boots
+  fresh. For an app, cold-stop it, grow, and start it again:
+
+  ```bash
+  crucible app stop db                  # destroy the instance, detach the volume
+  crucible volume grow pgdata --size 20G
+  crucible app start db                 # boot fresh — the guest sees the new size
+  ```
+
+  `app stop` is a **cold** stop (unlike `app sleep`, which snapshots and keeps
+  the volume's single-writer guard held); it returns once the instance has torn
+  down, so the `grow` won't race. `app start` boots a fresh instance that
+  re-attaches the volume at its new size. The spec is retained across the two.
 - **Encrypted volumes** grow too: the LUKS container, its mapping, and the ext4
   are all resized (transparent — same one command).
 - The daemon host needs **`resize2fs`** (`e2fsprogs`), the same dependency

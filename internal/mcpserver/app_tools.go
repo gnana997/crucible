@@ -271,6 +271,28 @@ func (h *handlers) wakeApp(ctx context.Context, _ *mcp.CallToolRequest, in appNa
 	return nil, toAppOutput(resp), nil
 }
 
+func (h *handlers) stopApp(ctx context.Context, _ *mcp.CallToolRequest, in appNameInput) (*mcp.CallToolResult, appOutput, error) {
+	if in.Name == "" {
+		return nil, appOutput{}, fmt.Errorf("name is required")
+	}
+	resp, err := h.cfg.Client.StopApp(ctx, in.Name)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	return nil, toAppOutput(resp), nil
+}
+
+func (h *handlers) startApp(ctx context.Context, _ *mcp.CallToolRequest, in appNameInput) (*mcp.CallToolResult, appOutput, error) {
+	if in.Name == "" {
+		return nil, appOutput{}, fmt.Errorf("name is required")
+	}
+	resp, err := h.cfg.Client.StartApp(ctx, in.Name)
+	if err != nil {
+		return nil, appOutput{}, err
+	}
+	return nil, toAppOutput(resp), nil
+}
+
 // app_domain_* manage the custom domains the ingress proxy routes (and, in
 // terminate mode, obtains a cert for) for an app.
 

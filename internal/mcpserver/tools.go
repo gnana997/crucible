@@ -264,6 +264,10 @@ func registerTools(srv *mcp.Server, cfg Config) {
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.sleepApp) })
 	add("app_wake", "Wake a slept durable app: restore its instance in place (same IP), reseeding its RNG and correcting its clock.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.wakeApp) })
+	add("app_stop", "Cold-stop a durable app: destroy its instance and detach its volume (unlike app_sleep, which snapshots and holds the volume). The spec is retained, so the volume can be grown/backed up and app_start boots it again.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.stopApp) })
+	add("app_start", "Start a stopped durable app: boot a fresh instance, re-attaching its volume at the current size.",
+		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.startApp) })
 	add("app_exec", "Run a command in a durable app's CURRENT instance and return its captured output. The app is addressed by name and resolved to its live instance per call, so this stays correct across a self-heal or rolling update.",
 		func(n, d string) { mcp.AddTool(srv, &mcp.Tool{Name: n, Description: d}, h.appExec) })
 	add("app_logs", "Read a durable app's current-instance logs (entrypoint output and/or exec activity), addressed by name.",

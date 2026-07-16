@@ -127,6 +127,30 @@ func (c *Client) WakeApp(ctx context.Context, name string) (api.AppResponse, err
 	return decodeInto[api.AppResponse](resp)
 }
 
+// StopApp cold-stops an app (POST /apps/{name}/stop): the reconciler destroys
+// the running instance, detaching any volume (unlike SleepApp, which keeps the
+// snapshot + the single-writer guard) — so a stopped app's volume can be grown,
+// backed up, or migrated. The spec is retained; StartApp boots it again. The
+// call waits (bounded) for the instance to actually tear down before returning.
+func (c *Client) StopApp(ctx context.Context, name string) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(name)+"/stop", nil)
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
+// StartApp starts a stopped app (POST /apps/{name}/start): the reconciler boots
+// a fresh instance, re-attaching any volume at its current size. Booting is
+// asynchronous — poll GetApp for the running phase.
+func (c *Client) StartApp(ctx context.Context, name string) (api.AppResponse, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/apps/"+url.PathEscape(name)+"/start", nil)
+	if err != nil {
+		return api.AppResponse{}, err
+	}
+	return decodeInto[api.AppResponse](resp)
+}
+
 // Usage returns every app's persistent usage metrics plus the reading's
 // snapshot time (GET /usage). Values are cumulative — diff two reads to bill.
 func (c *Client) Usage(ctx context.Context) (api.UsageListResponse, error) {

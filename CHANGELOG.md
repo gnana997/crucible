@@ -6,6 +6,24 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.2] — 2026-07-16
+
+Cold `app stop` / `app start`, and the recipe to grow a running app's volume.
+
+### Added
+
+- **`crucible app stop <name>` / `app start <name>`** — a cold desired-state
+  stop/start, distinct from `sleep`/`wake` (which snapshot and keep the volume's
+  single-writer guard held). `stop` destroys the instance and **detaches its
+  volume** — so the volume can be grown, backed up, or migrated — while retaining
+  the app spec; it returns once the instance has actually torn down. `start` boots
+  a fresh instance that re-attaches the volume at its current size. `POST
+  /apps/{name}/stop` + `/start`, SDK `StopApp`/`StartApp`, MCP `app_stop`/
+  `app_start` (37 tools).
+- The **`app stop → volume grow → app start`** recipe is how you grow a running
+  app's volume (grow itself stays detached-only, from v0.9.1). Covered by
+  `scripts/smoke_volume_grow.sh`.
+
 ## [0.9.1] — 2026-07-16
 
 Grow a volume in place. A volume sized too small no longer means backup →
@@ -20,11 +38,9 @@ on it are enlarged directly, with the data untouched.
   grow too: the LUKS container, its mapping, and the ext4 are all resized in one
   step. `POST /volumes/{name}/grow` (gated by the `create` op), SDK `GrowVolume`,
   OpenAPI `growVolume`.
-- The volume must be **detached** (stop the app / remove the sandbox first) — a
-  `409` otherwise. A snapshot-slept volume's guest has its block-device size
-  pinned by the snapshot, so an offline grow only takes effect on the next fresh
-  boot; growing while detached and restarting the app is the clean path (a daemon
-  `--restart` orchestration is the next step). Needs `resize2fs` (`e2fsprogs`).
+- The volume must be **detached** — a `409` otherwise. A snapshot-slept volume's
+  guest has its block-device size pinned by the snapshot, so an offline grow only
+  takes effect on the next fresh boot. Needs `resize2fs` (`e2fsprogs`).
 - Verified by `scripts/smoke_volume_grow.sh` (plaintext + encrypted grow, the
   guest reports the new capacity with data intact; shrink and attached-grow
   refused).

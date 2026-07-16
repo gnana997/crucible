@@ -359,6 +359,34 @@ func TestSetDesiredStopsAndStarts(t *testing.T) {
 	}
 }
 
+func TestSetDesiredByName(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	ctx := context.Background()
+	mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(ctx)
+
+	if err := m.SetDesiredByName("web", false); err != nil {
+		t.Fatal(err)
+	}
+	m.reconcile(ctx)
+	if f.liveCount() != 0 {
+		t.Fatalf("stopped app still has %d live", f.liveCount())
+	}
+
+	if err := m.SetDesiredByName("web", true); err != nil {
+		t.Fatal(err)
+	}
+	m.reconcile(ctx)
+	if f.liveCount() != 1 {
+		t.Fatalf("restarted app has %d live, want 1", f.liveCount())
+	}
+
+	if err := m.SetDesiredByName("nope", false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetDesiredByName unknown = %v, want ErrNotFound", err)
+	}
+}
+
 // TestSurvivesRestart is the headline: desired state persists, and a fresh
 // Manager over the same store re-creates every desired-running app on its
 // first reconcile — exactly the daemon-restart recovery path (old
