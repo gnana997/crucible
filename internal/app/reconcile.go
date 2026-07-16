@@ -278,7 +278,7 @@ type Manager struct {
 	names   map[string]string
 
 	// events is the app lifecycle event stream (activity feed + exact awake
-	// boundaries for billing). Always non-nil. lastPhase de-dups phase_changed
+	// boundaries for usage accounting). Always non-nil. lastPhase de-dups phase_changed
 	// events: the hot lifecycle methods emit exact transitions and the reconcile
 	// pass emits whatever the state machine converged to, both via emitPhase, so
 	// no net phase change is missed and none is emitted twice.
@@ -571,7 +571,7 @@ func (m *Manager) AppUsage(name string) (api.AppUsage, error) {
 }
 
 // usageToAPI converts the internal integer-sub-unit ledger record to the public
-// seconds-based shape (the caller converts seconds→hours for billing).
+// seconds-based shape (the caller converts seconds→hours for usage accounting).
 func usageToAPI(u Usage) api.AppUsage {
 	return api.AppUsage{
 		AppID:              u.AppID,

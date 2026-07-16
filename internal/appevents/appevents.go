@@ -1,7 +1,7 @@
 // Package appevents is a small in-memory stream of app lifecycle events —
 // created, phase changes (booted/slept/woke/crashed/…), health flips, domain
 // changes, delete. A control plane consumes it for an activity timeline and to
-// compute exact awake-intervals for billing (the exact sleep/wake timestamps a
+// compute exact awake-intervals for usage accounting (the exact sleep/wake timestamps a
 // 60s usage poll can't give). It is deliberately ephemeral: a bounded ring plus
 // best-effort fanout to live subscribers (drop-on-full, so a slow consumer can
 // never back-pressure the app), mirroring internal/logstore. The daemon exposes

@@ -163,7 +163,15 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.8.1: Encryption key management *(current)*
+### v0.9.0: Guest metrics scrape *(current)*
+
+A workload's own metrics — a database's `pg_stat_*` / Redis `INFO`, or any app's Prometheus endpoint — folded into the daemon's `/metrics` ([observability.md](observability.md#guest-metrics--scrape-an-apps-metrics)).
+
+- [x] **Scrape a guest `/metrics`:** `app create <name> --metrics-port <p> [--metrics-path]` points the daemon at a Prometheus endpoint inside the guest (a `postgres_exporter`, `redis_exporter`, or the app itself); the daemon scrapes it on `--guest-scrape-interval` and re-exposes the series on its own `/metrics` + OTLP with `app`/`instance` labels. DB-agnostic (it federates the text; the exporter is a guest process). SDK + MCP.
+- [x] **Scale-to-zero aware:** a slept / non-routable instance is never scraped and a scrape never wakes it (direct-dial, not the wake forwarder); `crucible_guest_scrape_up` drops to 0 and the series drop out while asleep. Every scrape is body/series/timeout-capped so a guest can't flood the daemon; a malformed family can't 500 the endpoint. `scripts/smoke_guest_scrape.sh` proves the series land with labels and that sleeping stops the scrape without waking the app.
+- The daemon ships only the generic scrape; wait-event / average-active-sessions sampling (the Performance-Insights core) is a guest-side exporter concern the scrape ingests unchanged. Dashboards / query analysis are downstream.
+
+### v0.8.1: Encryption key management
 
 Multiple keys, and key rotation that re-encrypts no data ([encryption.md](encryption.md#multiple-keys--rotation)).
 

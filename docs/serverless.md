@@ -144,6 +144,12 @@ for the measured distribution.
 
 ## Notes
 
+- **Database metrics.** To see a serverless database's own stats — connections,
+  cache-hit, `pg_stat_*` — run an exporter (`postgres_exporter`, `redis_exporter`)
+  in the guest and point the daemon at it with `--metrics-port`; it folds the
+  series into the daemon's `/metrics`, and is scale-to-zero aware (a slept DB is
+  never scraped and a scrape never wakes it). See
+  [observability](observability.md#guest-metrics--scrape-an-apps-metrics).
 - **Postgres on a volume, two gotchas.** Set `PGDATA` to a **subdirectory** of the
   mount (`-e PGDATA=/var/lib/postgresql/data/pgdata`) so the volume's `lost+found`
   does not make the entrypoint think the data dir is already initialized.

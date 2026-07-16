@@ -10,6 +10,16 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.9.0" title="Guest metrics scrape">
+
+A workload's own metrics — a database's `pg_stat_*` / Redis `INFO`, or any app's Prometheus endpoint — folded into the daemon's `/metrics`.
+
+- **Scrape a guest `/metrics`.** `crucible app create db --metrics-port 9187` points the daemon at a Prometheus endpoint inside the guest (a `postgres_exporter`, `redis_exporter`, or the app itself); it scrapes on `--guest-scrape-interval` and re-exposes the series on its own `/metrics` + OTLP with `app`/`instance` labels — so a `postgres_exporter`'s `pg_stat_database_blks_hit` sits next to the daemon's metrics. DB-agnostic; the exporter is a guest process. See [observability](observability#guest-metrics--scrape-an-apps-metrics).
+- **Scale-to-zero aware.** A slept app is never scraped and a scrape never wakes it (the daemon dials the guest directly, not the wake forwarder); `crucible_guest_scrape_up` drops to 0 while asleep — you only pay for insights while it runs.
+- **Bounded.** Each scrape is body/series/timeout-capped, so a runaway exporter can't flood the daemon or fail the endpoint.
+
+</Update>
+
 <Update label="v0.8.1" title="Encryption key management">
 
 Multiple encryption keys, and key rotation that re-encrypts no data.
@@ -22,8 +32,8 @@ Multiple encryption keys, and key rotation that re-encrypts no data.
 
 <Update label="v0.8.0" title="Encryption at rest">
 
-Each persistent volume can be its own encrypted container with its own key, so a
-tenant's data can be crypto-shredded by destroying that key.
+Each persistent volume can be its own encrypted container with its own key, so
+its data can be crypto-shredded by destroying that key.
 
 - **Per-volume encryption.** With a master key (`--volume-encrypt-key-file` or `CRUCIBLE_VOLUME_KEY`), `crucible volume create pgdata --encrypt` makes the volume a LUKS2 container (`aes-xts-plain64`, AES-256-XTS); `--volume-encrypt` encrypts every new volume by default, `--no-encrypt` opts one out. The per-volume key is sealed under the master key and stored in the record — never in the clear. See [encryption](encryption).
 - **Transparent to the guest, encrypted while asleep.** The daemon opens the container to a decrypted device and stages that device node into the VM's chroot under the jailer (never the ciphertext file), so the kernel does the crypto and the snapshot/wake pager pays no per-page cost. A scale-to-zero app closes its device on sleep and re-opens it on wake — ciphertext at rest even while idle.
@@ -43,7 +53,7 @@ Sensitive config out of the cleartext app spec and into an encrypted store.
 
 <Update label="v0.7.3" title="App lifecycle events">
 
-The app activity timeline — and the exact sleep/wake timing that makes billing precise.
+The app activity timeline — and the exact sleep/wake timing that makes usage accounting precise.
 
 - **Event stream** — `created` / `phase_changed` (booted / slept / woke / crashed, carrying `from`/`to` and `wake_latency_ms`) / `health_changed` / `domain_*` / `deleted`, on `GET /events?since=&app=` (cursor-follow, `read`-gated), `crucible events -f` / `crucible app events`, and as **OTLP log records**. See [observability](observability).
 - **Bounded + non-blocking** — an in-memory ring (`--events-buffer`, default 1024); a slow consumer never back-pressures an app (drop-on-full). Emitted via a de-dup helper so no net phase change is missed and none is emitted twice.

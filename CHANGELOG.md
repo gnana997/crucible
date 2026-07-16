@@ -6,6 +6,43 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.0] — 2026-07-16
+
+Guest metrics scrape. crucible exposes the host/VM view of a workload (request
+metrics, usage, lifecycle) and its logs, but not the engine's own stats — a
+database's `pg_stat_*` / Redis `INFO`, or any app's Prometheus endpoint. Those
+live inside the guest. This release lets the daemon scrape them and fold them into
+its own `/metrics` + OTLP.
+
+### Added
+
+- **Scrape a guest's `/metrics`.** `crucible app create <name> --metrics-port <p>
+  [--metrics-path /metrics]` points the daemon at a Prometheus endpoint inside the
+  guest (a `postgres_exporter`, `redis_exporter`, or the app itself). The daemon
+  scrapes it on `--guest-scrape-interval` (15s default) and re-exposes the series
+  on the daemon's own `/metrics` and over OTLP, with `app` and `instance` labels
+  added — so a `postgres_exporter`'s `pg_stat_database_blks_hit` sits next to the
+  daemon's metrics. DB-agnostic: it only federates the Prometheus text, the exporter
+  is a guest process. In the SDK + MCP (`create_app`/`update_app`)
+  ([docs/observability.md](docs/observability.md#guest-metrics--scrape-an-apps-metrics)).
+- **Scale-to-zero aware.** A slept / non-routable instance is never scraped, and a
+  scrape never wakes it (the daemon dials the guest directly, not the wake-on-connect
+  forwarder). `crucible_guest_scrape_up` drops to `0` and the series drop out while
+  the app sleeps — you only pay for insights while it runs.
+- **Bounded.** Each scrape is capped by `--guest-scrape-max-body` (1 MiB),
+  `--guest-scrape-max-series` (2000, so a runaway exporter can't explode cardinality),
+  and `--guest-scrape-timeout` (5s); over a cap the scrape is dropped and reflected
+  in `crucible_guest_scrape_up` / `_duration_seconds` / `_samples`. A malformed guest
+  family can never fail the whole `/metrics` endpoint.
+
+### Notes
+
+- The daemon ships only the generic scrape mechanism. The exporter is a guest-image
+  process; wait-event / average-active-sessions sampling (the Performance-Insights
+  core) is a guest-side exporter concern that the scrape ingests unchanged — the
+  daemon has no DB-specific sampler. Building dashboards or query analysis on the
+  scraped series is a downstream job for your metrics stack.
+
 ## [0.8.1] — 2026-07-16
 
 Encryption key management. v0.8.0 encrypts each volume under a single master key;
@@ -47,7 +84,7 @@ key without re-encrypting any data, and an audit trail of key operations.
 Encryption at rest. A persistent volume holds a stateful workload's real data — a
 Postgres cluster, a Redis dump — in a backing file on the host disk. Volume
 encryption makes each volume its own LUKS2 container with its own key, so the file
-is ciphertext at rest and a tenant's data can be crypto-shredded by destroying
+is ciphertext at rest and its data can be crypto-shredded by destroying
 that one key. This is the standard encryption-at-rest model (protecting a stolen,
 seized, or decommissioned disk), not confidential computing.
 
@@ -138,7 +175,7 @@ app spec, the API, backups, or logs.
 App lifecycle events. A stream of what happened to your apps — created, booted,
 slept, woke, crashed, health-flipped, updated, deleted — where the metrics
 endpoint only gives a numeric snapshot. A control plane renders an activity
-timeline from it, and computes exact awake-intervals for billing from the precise
+timeline from it, and computes exact awake-intervals for usage accounting from the precise
 sleep/wake timestamps a metrics poll can only approximate.
 
 ### Added

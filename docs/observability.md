@@ -131,6 +131,49 @@ charts RPS and 5xx ratio per app, request-latency percentiles, replicas
 (desired vs ready), the fraction of the fleet asleep, wake-latency p95, and
 disk usage (snapshots / volumes / backups).
 
+### Guest metrics — scrape an app's own `/metrics`
+
+The metrics above are the daemon's **host/VM** view of a workload. To also surface
+a workload's **own** metrics — a database's `pg_stat_*` / Redis `INFO`, or any
+app's Prometheus endpoint — point the daemon at a `/metrics` port inside the guest:
+
+```bash
+crucible app create db --image my-postgres-with-exporter \
+  -p 5432:5432 --min-scale 0 --idle-timeout 30s \
+  --metrics-port 9187          # a postgres_exporter listening on :9187 in the guest
+```
+
+The daemon scrapes that endpoint on its interval (`--guest-scrape-interval`, 15s
+by default) and folds the series straight into this `/metrics` (and OTLP), so a
+`postgres_exporter`'s `pg_stat_database_blks_hit` shows up right next to the
+daemon's own metrics — with `app` and `instance` labels added:
+
+```
+pg_stat_database_blks_hit{app="db",instance="sbx_…",datname="app"} 1.2345e6
+crucible_guest_scrape_up{app="db",instance="sbx_…"} 1
+```
+
+The exporter is a process **inside the guest** (a `postgres_exporter`,
+`redis_exporter`, or the app itself) — the daemon is DB-agnostic, it only
+federates whatever Prometheus text the guest exposes. The port is **not
+published**; the daemon reaches it host-side over the guest's private link (the
+same reach as health checks), so nothing is exposed externally.
+
+Two properties matter for [scale-to-zero](serverless.md):
+
+- **A slept app is never scraped — and a scrape never wakes it.** The daemon only
+  scrapes awake, routable instances and dials the guest directly (not the
+  wake-on-connect forwarder). `crucible_guest_scrape_up` goes to `0` while the app
+  sleeps, and the scraped series drop out — so you only pay for insights while the
+  workload is actually running.
+- **A guest can't flood the daemon.** Each scrape is capped
+  (`--guest-scrape-max-body`, `--guest-scrape-max-series`, `--guest-scrape-timeout`);
+  over a cap the scrape is dropped, `crucible_guest_scrape_up` reports `0`, and
+  `crucible_guest_scrape_samples` shows how many series the last scrape ingested.
+
+This is the raw signal; building dashboards or a query/wait-event analysis on top
+of it is a downstream job for your metrics stack.
+
 ## Profiling — `--pprof-listen`
 
 For profiling the daemon itself (CPU, heap, goroutines):
@@ -154,7 +197,7 @@ crucible daemon … --otlp-endpoint http://collector:4317        # gRPC (default
 crucible daemon … --otlp-endpoint http://collector:4318 --otlp-protocol http
 ```
 
-- `--otlp-protocol grpc|http`, `--otlp-headers k=v,k=v` (auth/tenant),
+- `--otlp-protocol grpc|http`, `--otlp-headers k=v,k=v` (auth/routing),
   `--otlp-insecure` (plaintext).
 - Standard **`OTEL_EXPORTER_OTLP_*`** and `OTEL_RESOURCE_ATTRIBUTES` /
   `OTEL_SERVICE_NAME` env vars are honored natively (flags override them), so if

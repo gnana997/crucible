@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.8.1 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.9.0 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -178,8 +178,17 @@ volume's DEK under a different keyring KEK (LUKS volume key unchanged → no cry
 no data, safe live; `internal/volume` Rewrap/RewrapAll), gated by a new default-deny
 `volume_key` op — plus `volume keys reload` (swap keyring live, refuses dropping an
 in-use key) and structured key-op audit records (`volume_key_created/rotated/shredded`,
-names+ids only, NEVER key bytes). See the ROADMAP for what's after (incremental
-backups, wildcard/DNS-01, fleet).
+names+ids only, NEVER key bytes). **v0.9.0** adds **guest metrics scrape**: `app
+create --metrics-port <p> [--metrics-path]` points the daemon at a Prometheus
+endpoint INSIDE a guest (a `postgres_exporter`/`redis_exporter` or the app itself);
+the daemon scrapes awake instances on `--guest-scrape-interval` and folds the series
+into its own `/metrics` + OTLP with `app`/`instance` labels (`internal/guestscrape`:
+a scrape Manager + an unchecked collector reconstructing const metrics; resolver =
+`sandbox.Manager.Routable` so a slept app is NEVER scraped and a scrape NEVER wakes
+it — direct-dial, not the wake forwarder; body/series/timeout-capped so a guest can't
+flood; `crucible_guest_scrape_up/duration_seconds/samples` meta-metrics). DB-agnostic
+(the exporter is a guest process; no in-daemon sampler). See the ROADMAP for what's
+after (incremental backups, wildcard/DNS-01, fleet).
 
 ## Working style
 
