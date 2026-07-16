@@ -125,6 +125,7 @@ type Proxy struct {
 	onWake      func(time.Duration)
 	onInternal  func()
 	onRequest   func(app, code string, latency time.Duration, internal bool)
+	l4          *l4Manager // per-app-VIP L4 app→app (v0.9.5); nil until New sets it
 	wg          sync.WaitGroup
 }
 
@@ -152,6 +153,7 @@ func New(cfg Config) *Proxy {
 	p.onWake = cfg.OnWake
 	p.onInternal = cfg.OnInternal
 	p.onRequest = cfg.OnRequest
+	p.l4 = newL4Manager(p)
 	p.rp = &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			// Always set by ServeHTTP before this runs; comma-ok so a missing
@@ -446,6 +448,9 @@ func (p *Proxy) Start() error {
 // Stop shuts the listeners down and waits for the accept loops to exit. In-flight
 // SNI splices run to completion on their own (client/guest disconnect).
 func (p *Proxy) Stop(ctx context.Context) {
+	if p.l4 != nil {
+		p.l4.stop(ctx)
+	}
 	if p.httpSrv != nil {
 		_ = p.httpSrv.Shutdown(ctx)
 	}
