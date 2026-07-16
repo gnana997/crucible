@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.9.3 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.9.4 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -204,8 +204,13 @@ a parent as a delta in a chain rooted at a base full; `volume restore --from <ti
 reassembles base + every delta and verifies the result block-for-block against the
 tip's manifest (`internal/volume/incremental.go`: fixed-block hash manifest + delta;
 `BackupRecord.Kind/ParentID/BlockSize`; encryption-transparent — the blocks are LUKS
-ciphertext; parent-delete guarded; export/import carry `kind`/`parent`). See the
-ROADMAP for what's after (storage autoscaling, wildcard/DNS-01, fleet).
+ciphertext; parent-delete guarded; export/import carry `kind`/`parent`). **v0.9.4**
+is pre-1.0 hardening: fuzzing the incremental parsers fixed two daemon-crash bugs (an
+out-of-range block index in an imported `.delta`, a corrupt manifest header — both now
+bounded, with regression seeds in `internal/volume/testdata/fuzz`), and the Go toolchain
+is bumped to 1.25.12 (go.mod `toolchain` directive) clearing 29 stdlib advisories
+(`govulncheck` clean). See the ROADMAP for what's after (storage autoscaling,
+wildcard/DNS-01, fleet).
 
 ## Working style
 

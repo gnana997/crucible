@@ -88,7 +88,7 @@ start_daemon() {
     --chroot-base "$CHROOT_BASE" \
     --kernel "$KERNEL" \
     --rootfs "$ROOTFS" \
-    --work-base "$WORK_BASE" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" \
     --log-format json --log-level info \
     "${gidflag[@]}" \
     "$@" \

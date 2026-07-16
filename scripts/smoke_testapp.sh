@@ -92,7 +92,7 @@ start_daemon() {
     --listen "$LISTEN" \
     --firecracker-bin "$FIRECRACKER_BIN" --jailer-bin "$JAILER_BIN" \
     --chroot-base "$CHROOT_BASE" --kernel "$KERNEL" --rootfs "$KERNEL" \
-    --work-base "$WORK_BASE" --image-dir "$IMAGE_DIR" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" --image-dir "$IMAGE_DIR" \
     --network-egress-iface "$EGRESS_IFACE" \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
@@ -215,7 +215,7 @@ if SBX4="$(cli sandbox create --image "$DIGEST" --memory 256 --publish 127.0.0.1
   else
     fail "localhost-pinned publish unreachable"
   fi
-  cli sandbox rm "$SBX4" >/dev/null 2>&1
+  # Keep SBX4 alive — test 08 snapshots + forks this running server, then removes it.
 else
   fail "localhost-pinned create failed"
 fi
@@ -235,6 +235,7 @@ if [[ -n "${SBX4:-}" ]]; then
   else
     fail "snapshot+fork -p failed (snap=$SNP fork=${FORK:-})"
   fi
+  cli sandbox rm "$SBX4" >/dev/null 2>&1
 else
   fail "no SBX4 to fork (check 07 failed earlier)"
 fi

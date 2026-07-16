@@ -108,7 +108,7 @@ start_daemon() {
     --chroot-base "$CHROOT_BASE" \
     --kernel "$KERNEL" \
     --rootfs "$ROOTFS" \
-    --work-base "$WORK_BASE" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" \
     --log-format json --log-level info \
     >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
@@ -224,6 +224,12 @@ SBX="$(jpath "$CREATE" id 2>/dev/null || true)"
 if [[ -n "$SBX" && "$SBX" == sbx_* ]]; then
   pass "created $SBX with service"
 else
+  # A stale rootfs agent (predating the service-supervision op) reports this;
+  # skip cleanly (exit 77 → SKIP) rather than fail — rebuild the rootfs to run it.
+  if grep -q "does not support service supervision" "$CREATE" 2>/dev/null; then
+    echo "SKIP: guest agent has no service-supervision support — rebuild the rootfs with the current crucible-agent"
+    exit 77
+  fi
   fail "create-with-service: $(cat "$CREATE")"
   echo "cannot continue without a sandbox"; exit 1
 fi

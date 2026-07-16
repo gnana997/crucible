@@ -209,7 +209,7 @@ start_daemon() {
     --chroot-base "$CHROOT_BASE" \
     --kernel "$KERNEL" \
     --rootfs "$ROOTFS" \
-    --work-base "$WORK_BASE" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" \
     --log-format json --log-level info \
     "${extra[@]}" \
     >>"$DAEMON_LOG" 2>&1 &
@@ -487,6 +487,21 @@ trim_file() {
 }
 
 start_daemon
+
+# Preflight: the tests below run python3 workloads inside the guest. If the
+# rootfs has no python3, skip the whole smoke cleanly (exit 77 → SKIP in
+# smoke_all) rather than fail confusingly against the wrong rootfs.
+TEST_DIR="$SMOKE_ROOT/preflight"; mkdir -p "$TEST_DIR"
+PF_SBX=$(api_create "pf_create" '{"vcpus":1,"memory_mib":256}')
+if [[ "$PF_SBX" == sbx_* ]]; then
+  exec_in "pf_py" "$PF_SBX" '{"cmd":["/bin/sh","-c","command -v python3 || true"]}'
+  curl -sS -X DELETE "$BASE_URL/sandboxes/$PF_SBX" >/dev/null 2>&1 || true
+  if ! grep -q python3 "$TEST_DIR/pf_py/stdout" 2>/dev/null; then
+    echo "SKIP: guest rootfs has no python3 — use a python-capable rootfs (e.g. assets/rootfs-with-agent.ext4)"
+    exit 77
+  fi
+fi
+TEST_DIR=""
 
 # ===== TEST 01: default-deny baseline ========================
 start_test "01" "default_deny" \
@@ -779,7 +794,7 @@ status=$(curl -sS -w '%{http_code}' -o "$TEST_DIR/resp.json" \
   -d '{"vcpus":1,"memory_mib":256,"network":{"enabled":true}}')
 echo "$status" > "$TEST_DIR/status"
 assert_eq "http_400" "$status" "400"
-assert_contains "mentions_allowlist" "$TEST_DIR/resp.json" "non-empty allowlist"
+assert_contains "mentions_allowlist" "$TEST_DIR/resp.json" "requires an allowlist"
 
 finish_test
 

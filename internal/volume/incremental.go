@@ -33,6 +33,16 @@ const (
 	// still capturing changes at a useful resolution.
 	defaultBackupBlockSize = 1 << 20
 
+	// maxBackupBlockSize bounds a block size parsed from an (untrusted) imported
+	// delta or an on-disk manifest, so a hostile/corrupt header can't drive a
+	// multi-gigabyte allocation. Our own deltas use defaultBackupBlockSize.
+	maxBackupBlockSize = 64 << 20
+
+	// maxManifestBlocks caps the hash count a manifest header may claim, so a
+	// corrupt count can't drive an unbounded slice allocation. 16M blocks covers a
+	// 16 TiB volume at the 1 MiB default — far beyond any realistic volume.
+	maxManifestBlocks = 1 << 24
+
 	backupKindFull        = "full"
 	backupKindIncremental = "incremental"
 
@@ -157,7 +167,21 @@ func readManifest(path string) (*blockManifest, error) {
 		BlockSize: int(binary.BigEndian.Uint32(hdr[8:])),
 		ImageSize: int64(binary.BigEndian.Uint64(hdr[12:])),
 	}
+	if m.BlockSize <= 0 || m.BlockSize > maxBackupBlockSize {
+		return nil, fmt.Errorf("volume: manifest %s has an implausible block size %d", path, m.BlockSize)
+	}
+	if m.ImageSize < 0 {
+		return nil, fmt.Errorf("volume: manifest %s has a negative image size", path)
+	}
 	n := binary.BigEndian.Uint64(hdr[20:])
+	// A corrupt count must not drive a huge allocation: cap it, then require the
+	// file to actually hold that many hashes before allocating.
+	if n > maxManifestBlocks {
+		return nil, fmt.Errorf("volume: manifest %s hash count %d exceeds the %d ceiling", path, n, maxManifestBlocks)
+	}
+	if fi, ferr := f.Stat(); ferr == nil && fi.Size() < int64(len(hdr))+int64(n)*32 {
+		return nil, fmt.Errorf("volume: manifest %s too small for %d hashes", path, n)
+	}
 	m.Hashes = make([][32]byte, n)
 	for i := uint64(0); i < n; i++ {
 		if _, err := io.ReadFull(f, m.Hashes[i][:]); err != nil {
@@ -257,12 +281,21 @@ func applyDelta(targetPath, deltaPath string) error {
 	bs := int64(binary.BigEndian.Uint32(hdr[8:]))
 	imageSize := int64(binary.BigEndian.Uint64(hdr[12:]))
 	nChanged := binary.BigEndian.Uint64(hdr[20:])
+	// The delta may be an untrusted imported stream: bound the block size (it sizes
+	// a buffer) and reject a negative image size before allocating or truncating.
+	if bs <= 0 || bs > maxBackupBlockSize {
+		return fmt.Errorf("%w: implausible delta block size %d", ErrBackupChainBroken, bs)
+	}
+	if imageSize < 0 {
+		return fmt.Errorf("%w: negative delta image size", ErrBackupChainBroken)
+	}
 
 	out, err := os.OpenFile(targetPath, os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = out.Close() }()
+	nBlocks := (imageSize + bs - 1) / bs
 	idx := make([]byte, 8)
 	buf := make([]byte, bs)
 	for j := uint64(0); j < nChanged; j++ {
@@ -270,6 +303,10 @@ func applyDelta(targetPath, deltaPath string) error {
 			return fmt.Errorf("%w: read delta index: %v", ErrBackupChainBroken, err)
 		}
 		i := int64(binary.BigEndian.Uint64(idx))
+		// A hostile/corrupt index must not drive a negative or out-of-range slice.
+		if i < 0 || i >= nBlocks {
+			return fmt.Errorf("%w: delta block index %d out of range [0,%d)", ErrBackupChainBroken, i, nBlocks)
+		}
 		blen := blockLen(i, imageSize, bs)
 		if _, err := io.ReadFull(in, buf[:blen]); err != nil {
 			return fmt.Errorf("%w: read delta block %d: %v", ErrBackupChainBroken, i, err)

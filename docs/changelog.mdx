@@ -10,6 +10,15 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.9.4" title="Hardening">
+
+Pre-1.0 hardening. Fuzzing the v0.9.3 incremental-backup parsers found two ways a crafted backup could crash the daemon on restore — both fixed.
+
+- **Crash-safe backup restore.** An out-of-range block index in an imported `.delta`, and a corrupt manifest header, could panic the daemon (negative slice / unbounded allocation). The delta and manifest readers now bound the block size, index, image size, and hash count; the crash inputs are kept as regression seeds. Reachable only with the default-deny `volume_backup` op, but a crash is a crash.
+- **Go 1.25.12.** The toolchain is bumped to clear 29 standard-library security advisories the build was exposed to — no code change, and `govulncheck` now reports zero vulnerabilities in called code.
+
+</Update>
+
 <Update label="v0.9.3" title="Incremental backups">
 
 Back up only what changed — a base full plus a chain of small deltas.

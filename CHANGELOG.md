@@ -6,6 +6,28 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.4] — 2026-07-16
+
+Hardening (pre-1.0). Fuzzing the v0.9.3 incremental-backup parsers found two ways
+a crafted backup could crash the daemon; both are fixed, and the Go toolchain is
+bumped to clear the standard-library advisories.
+
+### Fixed
+
+- **A malicious/corrupt imported backup can no longer crash the daemon on restore.**
+  Fuzzing surfaced two panics in the incremental parser: an out-of-range block
+  index in an imported `.delta` produced a negative slice length (`slice bounds out
+  of range`), and a corrupt manifest header drove an unbounded allocation
+  (`makeslice: len out of range`). The delta/manifest readers now bound the block
+  size, the block index, the image size, and the hash count (and check the file is
+  large enough for the count it claims). The crash inputs are kept as regression
+  seeds. Only reachable by a caller already holding the default-deny `volume_backup`
+  op, but a crash is a crash.
+- **Go toolchain → 1.25.12**, clearing 29 standard-library security advisories the
+  build was exposed to (no code change; `go.mod` `toolchain` directive, fetched
+  automatically with the default `GOTOOLCHAIN=auto`). `govulncheck` now reports 0
+  vulnerabilities in called code.
+
 ## [0.9.3] — 2026-07-16
 
 Incremental volume backups. A backup no longer has to be a full whole-image copy

@@ -2,6 +2,8 @@ module github.com/gnana997/crucible
 
 go 1.25.0
 
+toolchain go1.25.12
+
 require (
 	github.com/caddyserver/certmagic v0.25.4
 	github.com/charmbracelet/bubbles v1.0.0

@@ -85,7 +85,7 @@ start_daemon() {
     --listen "$LISTEN" \
     --firecracker-bin "$FIRECRACKER_BIN" --jailer-bin "$JAILER_BIN" \
     --chroot-base "$CHROOT_BASE" --kernel "$KERNEL" --rootfs "$KERNEL" \
-    --work-base "$WORK_BASE" --image-dir "$IMAGE_DIR" --log-dir "$LOG_DIR" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" --image-dir "$IMAGE_DIR" --log-dir "$LOG_DIR" \
     --log-format json --log-level info >>"$DAEMON_LOG" 2>&1 &
   DAEMON_PID=$!
   for _ in {1..50}; do

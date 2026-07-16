@@ -96,7 +96,7 @@ start_daemon() {
     --firecracker-bin "$FAKE_FC" \
     --kernel "$FAKE_KERNEL" \
     --rootfs "$FAKE_ROOTFS" \
-    --work-base "$WORK_BASE" \
+    --work-base "$WORK_BASE" --app-db "$WORK_BASE-apps.db" \
     --image-dir "$IMAGE_DIR" \
     --log-format json --log-level info \
     >>"$DAEMON_LOG" 2>&1 &
