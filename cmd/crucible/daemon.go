@@ -30,6 +30,7 @@ import (
 	"github.com/gnana997/crucible/internal/app"
 	"github.com/gnana997/crucible/internal/daemon"
 	"github.com/gnana997/crucible/internal/fsutil"
+	"github.com/gnana997/crucible/internal/guestscrape"
 	"github.com/gnana997/crucible/internal/ingress"
 	"github.com/gnana997/crucible/internal/jailer"
 	"github.com/gnana997/crucible/internal/logstore"
@@ -45,6 +46,7 @@ import (
 	"github.com/gnana997/crucible/internal/tlscert"
 	"github.com/gnana997/crucible/internal/tokenstore"
 	"github.com/gnana997/crucible/internal/volume"
+	"github.com/gnana997/crucible/sdk/api"
 )
 
 // defaultTokenFile is where the daemon's API-key store lives by default.
@@ -108,6 +110,36 @@ func (a internalAuthorizer) appForGuestIP(ip string) (string, bool) {
 // (<app>.internal) when --internal-networking is enabled (v0.5.1).
 const internalNetworkZone = "internal"
 
+// appLister is the app-manager method the scrape adapter needs (an interface so
+// the filtering is unit-testable).
+type appLister interface {
+	List() ([]api.AppResponse, error)
+}
+
+// appScrapeTargets adapts the app manager to guestscrape.TargetSource: the apps
+// that configured a --metrics-port, each with its current instance.
+type appScrapeTargets struct{ apps appLister }
+
+func (a appScrapeTargets) Targets() []guestscrape.Target {
+	list, err := a.apps.List()
+	if err != nil {
+		return nil
+	}
+	out := make([]guestscrape.Target, 0, len(list))
+	for _, ap := range list {
+		if ap.MetricsPort <= 0 || ap.Status == nil || ap.Status.InstanceID == "" {
+			continue
+		}
+		out = append(out, guestscrape.Target{
+			App:      ap.Name,
+			Instance: ap.Status.InstanceID,
+			Port:     ap.MetricsPort,
+			Path:     ap.MetricsPath,
+		})
+	}
+	return out
+}
+
 // The return value is the exit code for the parent main().
 func runDaemon(args []string, stdout, stderr io.Writer) int {
 	// `crucible daemon token …` manages the API-key store (not the daemon).
@@ -138,9 +170,16 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		otlpHeaders  = fs.String("otlp-headers", "", "OTLP headers as k=v,k=v (auth/routing); also OTEL_EXPORTER_OTLP_HEADERS")
 		otlpInsecure = fs.Bool("otlp-insecure", false, "use plaintext (no TLS) for the OTLP exporter")
 		otlpLogs     = fs.Bool("otlp-logs", true, "export app logs over OTLP when --otlp-endpoint is set (requires --log-dir)")
-		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
-		noWaitAgent  = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
-		agentTimeout = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
+		// Guest metrics scrape: fold an app's own Prometheus endpoint (a
+		// postgres_exporter, redis_exporter, or the app itself, via `app create
+		// --metrics-port`) into the daemon /metrics + OTLP. Awake instances only.
+		scrapeInterval  = fs.Duration("guest-scrape-interval", 15*time.Second, "how often to scrape apps' --metrics-port endpoints")
+		scrapeTimeout   = fs.Duration("guest-scrape-timeout", 5*time.Second, "per-scrape timeout for a guest metrics endpoint")
+		scrapeMaxBody   = fs.Int64("guest-scrape-max-body", 1<<20, "max bytes read from a guest metrics endpoint per scrape")
+		scrapeMaxSeries = fs.Int("guest-scrape-max-series", 2000, "max series accepted from a guest metrics endpoint per scrape")
+		drainStr        = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
+		noWaitAgent     = fs.Bool("no-wait-for-agent", false, "skip guest agent readiness polling on create (dev-only; needed when rootfs has no crucible-agent)")
+		agentTimeout    = fs.String("agent-ready-timeout", "15s", "max wait for guest agent /healthz on create (ignored when --no-wait-for-agent)")
 		// Jailer flags: when --jailer-bin is set, the daemon wraps every
 		// firecracker instance in its own jailer chroot + mount/pid
 		// namespace + cgroup v2 slice, and drops to --jail-uid/--jail-gid
@@ -747,6 +786,22 @@ Required flags:
 				logger.Warn("app reconciler start failed", "err", serr)
 			} else {
 				logger.Info("durable apps enabled", "app_db", *appDB)
+			}
+			// Guest metrics scrape (v0.9.0): fold an app's own Prometheus endpoint
+			// into /metrics + OTLP. Awake instances only (resolver = the sandbox
+			// manager's Routable). Always on — a no-op until an app sets --metrics-port.
+			scr := guestscrape.New(appScrapeTargets{appMgr}, mgr, guestscrape.Options{
+				Interval:  *scrapeInterval,
+				Timeout:   *scrapeTimeout,
+				MaxBody:   *scrapeMaxBody,
+				MaxSeries: *scrapeMaxSeries,
+				Logger:    logger.With("component", "guest_scrape"),
+			})
+			if rerr := mx.Register(scr.Collector()); rerr != nil {
+				logger.Warn("guest metrics scrape collector not registered", "err", rerr)
+			} else {
+				go scr.Run(context.Background())
+				logger.Info("guest metrics scrape enabled", "interval", *scrapeInterval)
 			}
 		}
 	}

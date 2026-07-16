@@ -948,6 +948,8 @@ export interface components {
             id?: string;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
+            metrics_path?: string;
+            metrics_port?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
             port?: number;
@@ -1057,6 +1059,8 @@ export interface components {
             http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
+            metrics_path?: string;
+            metrics_port?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
             port?: number;
@@ -1311,6 +1315,8 @@ export interface components {
             http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
             memory_mib?: number;
+            metrics_path?: string;
+            metrics_port?: number;
             name?: string;
             network?: components["schemas"]["NetworkRequest"];
             port?: number;

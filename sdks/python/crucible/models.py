@@ -378,6 +378,8 @@ class CreateAppRequest(BaseModel):
     http_redirect: bool | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
+    metrics_path: str | None = None
+    metrics_port: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
     port: int | None = None
@@ -446,6 +448,8 @@ class UpdateAppReq(BaseModel):
     http_redirect: bool | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
+    metrics_path: str | None = None
+    metrics_port: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
     port: int | None = None
@@ -501,6 +505,8 @@ class AppResponse(BaseModel):
     id: str | None = None
     image: ImageRef | None = None
     memory_mib: int | None = None
+    metrics_path: str | None = None
+    metrics_port: int | None = None
     name: str | None = None
     network: NetworkRequest | None = None
     port: int | None = None

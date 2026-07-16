@@ -23,6 +23,8 @@ type createAppInput struct {
 	Pull          string   `json:"pull,omitempty" jsonschema:"image pull policy: missing (default), always, or never"`
 	Publish       []string `json:"publish,omitempty" jsonschema:"host port mappings [HOST_IP:]HOST:GUEST[/tcp]"`
 	PublishAll    bool     `json:"publish_all,omitempty" jsonschema:"publish every port the image EXPOSEs (guest N → host N); explicit publish entries win"`
+	MetricsPort   int      `json:"metrics_port,omitempty" jsonschema:"guest port exposing a Prometheus /metrics endpoint to scrape into the daemon /metrics + OTLP (awake instances only; not published); 0 = none"`
+	MetricsPath   string   `json:"metrics_path,omitempty" jsonschema:"path for metrics_port (default /metrics)"`
 	Env           []string `json:"env,omitempty" jsonschema:"environment variables as KEY=VALUE strings for the app's entrypoint"`
 	Restart       string   `json:"restart,omitempty" jsonschema:"instance restart policy: always (default), on-failure, or never"`
 	VCPUs         int      `json:"vcpus,omitempty" jsonschema:"vCPUs; omit for the daemon default"`
@@ -156,17 +158,19 @@ func (h *handlers) appSpecFrom(in createAppInput) (api.AppSpec, error) {
 		restart = wire.RestartAlways
 	}
 	spec := api.AppSpec{
-		Name:       in.Name,
-		Image:      &api.ImageRef{OCI: in.Image},
-		Pull:       in.Pull,
-		VCPUs:      in.VCPUs,
-		MemoryMiB:  in.MemoryMiB,
-		Env:        envMap,
-		Port:       in.Port,
-		PublishAll: in.PublishAll,
-		Network:    mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress),
-		Restart:    wire.RestartPolicy{Policy: restart},
-		CanCall:    in.CanCall,
+		Name:        in.Name,
+		Image:       &api.ImageRef{OCI: in.Image},
+		Pull:        in.Pull,
+		VCPUs:       in.VCPUs,
+		MemoryMiB:   in.MemoryMiB,
+		Env:         envMap,
+		Port:        in.Port,
+		PublishAll:  in.PublishAll,
+		MetricsPort: in.MetricsPort,
+		MetricsPath: in.MetricsPath,
+		Network:     mcpNetwork(in.NetAllow, in.NetAllowCIDR, in.NetFullEgress),
+		Restart:     wire.RestartPolicy{Policy: restart},
+		CanCall:     in.CanCall,
 	}
 	for _, p := range in.Publish {
 		pm, perr := api.ParsePublish(p)

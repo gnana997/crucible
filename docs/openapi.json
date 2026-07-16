@@ -3439,6 +3439,12 @@
           "memory_mib": {
             "type": "integer"
           },
+          "metrics_path": {
+            "type": "string"
+          },
+          "metrics_port": {
+            "type": "integer"
+          },
           "name": {
             "type": "string"
           },
@@ -3753,6 +3759,12 @@
             "$ref": "#/components/schemas/ImageRef"
           },
           "memory_mib": {
+            "type": "integer"
+          },
+          "metrics_path": {
+            "type": "string"
+          },
+          "metrics_port": {
             "type": "integer"
           },
           "name": {
@@ -4552,6 +4564,12 @@
             "$ref": "#/components/schemas/ImageRef"
           },
           "memory_mib": {
+            "type": "integer"
+          },
+          "metrics_path": {
+            "type": "string"
+          },
+          "metrics_port": {
             "type": "integer"
           },
           "name": {

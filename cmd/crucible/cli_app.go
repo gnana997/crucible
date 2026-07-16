@@ -293,7 +293,8 @@ type appSpecOpts struct {
 	image, pull, restart, health, healthCmd, disk string
 	idleTimeout, connIdleTimeout, tlsMode         string
 	vcpus, memory, port, minScale                 int
-	maxScale, targetConcurrency                   int
+	maxScale, targetConcurrency, metricsPort      int
+	metricsPath                                   string
 	netAllow, publish, env, netAllowCIDR, canCall []string
 	volumes, secrets                              []string
 	secretsFrom                                   string
@@ -318,6 +319,8 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringArrayVarP(&a.publish, "publish", "p", nil, "publish a host port [HOST_IP:]HOST:GUEST[/tcp] (repeatable)")
 	f.StringArrayVar(&a.volumes, "volume", nil, "attach a persistent volume NAME:/path (repeatable); the app becomes single-writer (destroy-then-boot redeploy, stop/start sleep) and its data survives redeploys/sleep/restarts")
 	f.BoolVarP(&a.publishAll, "publish-all", "P", false, "publish every port the image EXPOSEs (guest N → host N)")
+	f.IntVar(&a.metricsPort, "metrics-port", 0, "guest port exposing a Prometheus /metrics endpoint (a postgres_exporter/redis_exporter or the app itself) to scrape into the daemon's /metrics + OTLP; scraped only while awake, not published")
+	f.StringVar(&a.metricsPath, "metrics-path", "", "path for --metrics-port (default /metrics)")
 	f.StringArrayVarP(&a.env, "env", "e", nil, "environment variable KEY=VALUE for the app's entrypoint (repeatable)")
 	f.StringVar(&a.idleTimeout, "idle-timeout", "", "auto-sleep (scale-to-zero) after this idle duration, e.g. 30s (wakes on the next request via the ingress proxy, or on the next TCP connection to a published port)")
 	f.IntVar(&a.minScale, "min-scale", 0, "minimum warm instances: 0 = may sleep when idle, 1 = keep one running")
@@ -358,6 +361,8 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 		Env:           envMap,
 		Port:          a.port,
 		PublishAll:    a.publishAll,
+		MetricsPort:   a.metricsPort,
+		MetricsPath:   a.metricsPath,
 		Restart:       wire.RestartPolicy{Policy: a.restart},
 		CanCall:       a.canCall,
 		TLSMode:       a.tlsMode,

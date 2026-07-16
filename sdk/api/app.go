@@ -48,6 +48,17 @@ type AppSpec struct {
 	// only; an explicit Publish entry for a guest port takes precedence.
 	PublishAll bool `json:"publish_all,omitempty"`
 
+	// MetricsPort, when set, is a guest port exposing a Prometheus /metrics
+	// endpoint (a postgres_exporter, redis_exporter, or the app's own metrics)
+	// that the daemon scrapes and folds into its own /metrics + OTLP, labeled by
+	// app + instance. Scraped only while the instance is awake (a slept app is
+	// never scraped or woken). Not published — the daemon reaches it host-side.
+	// 0 = no scrape.
+	MetricsPort int `json:"metrics_port,omitempty"`
+
+	// MetricsPath is the scrape path on MetricsPort (default /metrics).
+	MetricsPath string `json:"metrics_path,omitempty"`
+
 	// Port is the guest port the ingress proxy forwards to when routing this
 	// app by name (v0.4.2). Zero lets the daemon default it from a single
 	// published/EXPOSEd port. Independent of Publish, which is the direct
