@@ -541,6 +541,7 @@ Required flags:
 				_, _ = fmt.Fprintf(stderr, "error: enable volume encryption: %v\n", eerr)
 				return 2
 			}
+			volMgr.SetAuditLogger(logger.With("component", "volume_key_audit"))
 			logger.Info("volume encryption enabled", "keys", len(ring), "default_key", *volumeDefaultKey, "default_encrypt", *volumeEncrypt)
 			// A reloader for POST /volumes/keys/reload: re-read the key sources and
 			// swap the keyring in without a restart.

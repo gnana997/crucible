@@ -1,11 +1,15 @@
 package volume
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gnana997/crucible/internal/cryptdev"
@@ -196,6 +200,37 @@ func TestReloadKeyringRefusesDroppingUsedKey(t *testing.T) {
 	}
 	if _, ok := m.kekFor("k3"); !ok {
 		t.Fatal("reloaded keyring missing the new key k3")
+	}
+}
+
+func TestAuditNeverLogsKeyMaterial(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	k1, k2 := kek32(t), kek32(t)
+	setKeyring(m, map[string][]byte{"k1": k1, "k2": k2}, "k1")
+	var buf bytes.Buffer
+	m.SetAuditLogger(slog.New(slog.NewJSONHandler(&buf, nil)))
+
+	dek, _ := cryptdev.NewDEK()
+	wrapped, _ := cryptdev.WrapKey(k1, dek, []byte("data"))
+	if err := m.st.put(Record{Name: "data", SizeBytes: testSize, Formatted: true, HostID: "h", Encrypted: true, WrappedKey: wrapped, KeyID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Rewrap("data", "k2"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "volume_key_rotated") || !strings.Contains(out, `"to_key_id":"k2"`) || !strings.Contains(out, `"from_key_id":"k1"`) {
+		t.Fatalf("audit record missing/incomplete: %s", out)
+	}
+	// No key material — raw or base64 — may ever appear in an audit record.
+	for _, secret := range [][]byte{k1, k2, dek, wrapped} {
+		if bytes.Contains(buf.Bytes(), secret) {
+			t.Fatal("SECURITY: an audit record contains raw key material")
+		}
+		if strings.Contains(out, base64.StdEncoding.EncodeToString(secret)) {
+			t.Fatal("SECURITY: an audit record contains base64 key material")
+		}
 	}
 }
 

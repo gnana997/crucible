@@ -6,6 +6,42 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.8.1] — 2026-07-16
+
+Encryption key management. v0.8.0 encrypts each volume under a single master key;
+this release adds a keyring of multiple keys, key rotation that re-wraps a volume's
+key without re-encrypting any data, and an audit trail of key operations.
+
+### Added
+
+- **Keyring.** The daemon can hold more than one encryption key: additional keys
+  come from `CRUCIBLE_VOLUME_KEY_<ID>` env vars (kept off disk) and `<id>.key`
+  files under `--volume-key-dir`, alongside the existing default key.
+  `--volume-default-key <id>` picks which key wraps new volumes; `volume ls` shows
+  each volume's `KEY` ([docs/encryption.md](docs/encryption.md#multiple-keys--rotation)).
+- **Rotate a key without re-encrypting data.** `crucible volume rewrap <name>
+  --to-key <id>` (and `--all --from-key <id>` to move every volume off a key)
+  re-wraps the per-volume key under a different keyring key. The LUKS volume key
+  that encrypts the data never changes, so there is no `cryptsetup` run, no data
+  movement, and no downtime — it is safe on a live, attached volume. `POST
+  /volumes/{name}/rewrap` + `/volumes/rewrap`, gated by a new default-deny
+  `volume_key` scoped op; also in the SDKs.
+- **Reload the keyring without a restart.** `crucible volume keys reload` (`POST
+  /volumes/keys/reload`) re-reads the key sources and swaps the keyring in — after
+  adding a new key, or after retiring an old one. It refuses to drop a key any
+  volume still uses, and a volume whose key is missing fails to open with a clear
+  error, so keys can't strand data.
+- **Key-operation audit.** `volume_key_created`, `volume_key_rotated` (with the
+  from/to key ids), and `volume_shredded` are emitted as structured log records
+  (and over OTLP when configured), carrying volume names and key ids only — never
+  key material.
+
+### Notes
+
+- Rotation re-wraps the *wrapping* key; re-encrypting the underlying data (needed
+  only if a data key is compromised) is a separate, expensive `cryptsetup
+  reencrypt` procedure, out of scope here.
+
 ## [0.8.0] — 2026-07-16
 
 Encryption at rest. A persistent volume holds a stateful workload's real data — a

@@ -163,7 +163,15 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.8.0: Encryption at rest *(current)*
+### v0.8.1: Encryption key management *(current)*
+
+Multiple keys, and key rotation that re-encrypts no data ([encryption.md](encryption.md#multiple-keys--rotation)).
+
+- [x] **Keyring:** more than one encryption key — additional keys from `CRUCIBLE_VOLUME_KEY_<ID>` env (off-disk) and `<id>.key` files under `--volume-key-dir`, alongside the default key. `--volume-default-key <id>` wraps new volumes; `volume ls` shows each volume's `KEY`.
+- [x] **Rotate without re-encrypting data:** `volume rewrap <name> --to-key <id>` (+ `--all --from-key <id>`) re-wraps the per-volume key under a different key — the LUKS volume key never changes, so no `cryptsetup`, no data movement, no downtime, safe on a live volume. `POST /volumes/{name}/rewrap` + `/volumes/rewrap`, gated by a new default-deny `volume_key` op; SDK + CLI.
+- [x] **Reload + retire:** `volume keys reload` swaps the keyring in without a restart (refuses to drop a key a volume still uses; a missing key fails to open with a clear error). Every key op — created / rotated / shredded — is audit-logged with names + key ids only, never key material. `scripts/smoke_key_rotation.sh` rotates a running app's volume, retires the old key, and confirms the data survives + no key material hits the log.
+
+### v0.8.0: Encryption at rest
 
 A persistent volume's data — encrypted on disk with a per-volume key you can destroy ([encryption.md](encryption.md)).
 

@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,7 @@ type Manager struct {
 	keys           map[string][]byte
 	defaultKeyID   string // set once at EnableEncryption; reload does not change it
 	defaultEncrypt bool
+	audit          *slog.Logger // key-operation audit trail; nil = off
 
 	mu       sync.Mutex
 	attached map[string]string // volume name -> sandbox id holding the single-writer claim
@@ -168,6 +170,7 @@ func (m *Manager) Rewrap(name, toKeyID string) error {
 	if rec.KeyID == toKeyID {
 		return nil
 	}
+	fromKeyID := rec.KeyID
 	dek, err := m.dekFor(rec) // unwraps with the record's current key
 	if err != nil {
 		return err
@@ -177,7 +180,11 @@ func (m *Manager) Rewrap(name, toKeyID string) error {
 		return err
 	}
 	rec.WrappedKey, rec.KeyID = wrapped, toKeyID
-	return m.st.put(rec)
+	if err := m.st.put(rec); err != nil {
+		return err
+	}
+	m.auditKey("volume_key_rotated", "volume", name, "from_key_id", fromKeyID, "to_key_id", toKeyID)
+	return nil
 }
 
 // RewrapAll re-wraps every encrypted volume currently wrapped under fromKeyID to
@@ -272,6 +279,17 @@ func (m *Manager) reapOrphanDevices() {
 
 // EncryptionEnabled reports whether per-volume encryption is configured.
 func (m *Manager) EncryptionEnabled() bool { return m.crypt != nil }
+
+// SetAuditLogger sets the logger that records key operations (create / rotate /
+// shred). Records carry volume names and key ids ONLY — never key material.
+func (m *Manager) SetAuditLogger(l *slog.Logger) { m.audit = l }
+
+// auditKey emits a key-operation audit record. attrs must never include key bytes.
+func (m *Manager) auditKey(event string, attrs ...any) {
+	if m.audit != nil {
+		m.audit.Info(event, attrs...)
+	}
+}
 
 // CreateOpts carries per-call overrides for Create. A nil Encrypt uses the
 // manager's default (--volume-encrypt); a non-nil Encrypt forces the choice. An
@@ -440,6 +458,9 @@ func (m *Manager) Create(name string, sizeBytes int64, opts CreateOpts) (Record,
 		_ = os.Remove(path) // never leave a keyless container the backfill would mistype
 		return Record{}, err
 	}
+	if rec.Encrypted {
+		m.auditKey("volume_key_created", "volume", name, "key_id", rec.KeyID)
+	}
 	return rec, nil
 }
 
@@ -483,6 +504,7 @@ func (m *Manager) Shred(name string) error {
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("volume: remove backing file: %w", err)
 	}
+	m.auditKey("volume_shredded", "volume", name)
 	return nil
 }
 

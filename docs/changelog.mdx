@@ -10,6 +10,16 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.8.1" title="Encryption key management">
+
+Multiple encryption keys, and key rotation that re-encrypts no data.
+
+- **Keyring.** More than one key (via `CRUCIBLE_VOLUME_KEY_<ID>` env or `--volume-key-dir`), so different volumes can use different keys; `--volume-default-key` picks the one for new volumes, and `volume ls` shows each volume's `KEY`. See [encryption](encryption#multiple-keys--rotation).
+- **Rotate without re-encrypting data.** `crucible volume rewrap <name> --to-key <id>` (and `--all --from-key <id>`) re-wraps a volume's key under a different key — the key that encrypts the data never changes, so there's no `cryptsetup` run, no data movement, and no downtime, even on a live volume. Gated by a default-deny `volume_key` op.
+- **Reload, retire, audit.** `crucible volume keys reload` swaps the keyring in without a restart (refusing to drop a key a volume still uses); every key operation is audit-logged with names and key ids only, never key material.
+
+</Update>
+
 <Update label="v0.8.0" title="Encryption at rest">
 
 Each persistent volume can be its own encrypted container with its own key, so a

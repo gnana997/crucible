@@ -1,6 +1,6 @@
 ---
 title: Volume encryption
-description: "Encryption at rest for persistent volumes: each volume is its own LUKS container with its own key, so a tenant's data can be crypto-shredded by destroying that one key."
+description: "Encryption at rest for persistent volumes: each volume is its own LUKS container with its own key, so its data can be crypto-shredded by destroying that one key."
 ---
 
 # Volume encryption
@@ -8,8 +8,8 @@ description: "Encryption at rest for persistent volumes: each volume is its own 
 A [persistent volume](volumes.md) holds a stateful workload's real data — a
 Postgres cluster, a Redis dump, a user's files. That data lives in a backing file
 on the host disk. **Volume encryption** makes each volume its own LUKS2 container
-with its **own key**, so the backing file is ciphertext at rest and a tenant's
-data can be **crypto-shredded** by destroying that one key.
+with its **own key**, so the backing file is ciphertext at rest and its data can
+be **crypto-shredded** by destroying that one key.
 
 This is the standard **encryption-at-rest** model (the same one AWS EBS gives
 you): it protects a **stolen, seized, RMA'd, or decommissioned disk**, and it
@@ -124,6 +124,68 @@ crucible volume shred pgdata     # destroys the keyslots + deletes the wrapped k
 plaintext volume (use `volume rm`). It is gated by the default-deny `delete`
 scoped-token op. When several volumes share one key, destroying that key
 crypto-shreds all of them at once.
+
+## Multiple keys & rotation
+
+The daemon can hold a **keyring** of more than one key, so different volumes can
+be wrapped under different keys — and any key can be **rotated** without
+re-encrypting a single byte of data.
+
+Keys are loaded from, in addition to the default key:
+
+```bash
+# additional keys off-disk (preferred):
+CRUCIBLE_VOLUME_KEY_archive="$(cat archive.key.b64)" crucible daemon …
+
+# or as files under a directory (id = filename without .key):
+crucible daemon … --volume-key-dir /etc/crucible/volume-keys   # 2026q3.key → id "2026q3"
+```
+
+`--volume-default-key <id>` chooses which key wraps new volumes (default
+`default`); `volume create --encrypt` uses it, and a create can name another key.
+`volume ls` shows each volume's `KEY`:
+
+```
+NAME     SIZE   ENCRYPTED  KEY       ATTACHED  HOST   AGE
+pgdata   10G    yes        default   -         host1  5m
+appdata  5G     yes        2026q3    -         host1  1m
+```
+
+### Rotate a key — no data is re-encrypted
+
+Rotation **re-wraps** a volume's per-volume key under a different keyring key. The
+key that actually encrypts the data (the LUKS volume key) never changes, so there
+is no `cryptsetup` run, no data movement, and no downtime — it is safe on a
+**live, attached** volume:
+
+```bash
+crucible volume rewrap pgdata --to-key 2026q3      # one volume
+crucible volume rewrap --all --from-key default --to-key 2026q3   # every volume on a key
+```
+
+(Re-encrypting the underlying data — needed only if a *data* key is compromised —
+is a separate, expensive `cryptsetup reencrypt` procedure, not part of `rewrap`.)
+
+### Add or retire a key without a restart
+
+Drop a new key into the env/dir, then reload the keyring in place:
+
+```bash
+crucible volume keys reload
+```
+
+To retire an old key: `rewrap --all --from-key <old> --to-key <new>`, remove the
+old key's file/env, then `keys reload`. Reload **refuses to drop a key that any
+volume still uses** (and a volume whose key is missing fails to open with a clear
+error), so you can't strand data. Rewrap and reload are gated by the default-deny
+`volume_key` scoped-token op.
+
+### Audit
+
+Every key operation — `volume_key_created`, `volume_key_rotated` (with the from/to
+key ids), and `volume_shredded` — is emitted as a structured log record (and over
+OTLP when configured). The records carry **volume names and key ids only, never
+key material**.
 
 ## What it protects (and what it doesn't)
 
