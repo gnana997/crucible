@@ -2337,14 +2337,15 @@ func validateSpec(spec api.AppSpec) error {
 		if sp.MaxScale > 0 && sp.MaxScale < sp.MinScale {
 			return fmt.Errorf("app: sleep max_scale (%d) must be >= min_scale (%d)", sp.MaxScale, sp.MinScale)
 		}
-		// Scale-to-zero (min_scale 0 + idle_timeout) needs a way to be woken. Two
-		// wake paths exist: an HTTP --port through the ingress proxy, or a published
-		// host port (-p) fronted by the L4 waking forwarder (v0.6.1). With neither,
-		// a slept app can never come back — reject it rather than silently strand it
-		// always-on. (PublishAll/-P is not a wake trigger: the forwarder needs an
-		// explicit host→guest mapping, so pair -P with an explicit -p or --port.)
-		if sp.MinScale == 0 && sp.IdleTimeoutSec > 0 && spec.Port == 0 && len(spec.Publish) == 0 {
-			return errors.New("app: a scale-to-zero app needs a wake trigger — set --port (HTTP proxy) or publish a host port with -p (TCP), or use --min-scale 1")
+		// Scale-to-zero (min_scale 0 + idle_timeout) needs a way to be woken. Three
+		// wake paths exist: an HTTP --port through the ingress proxy, a published host
+		// port (-p) fronted by the L4 waking forwarder (v0.6.1), or an app→app L4
+		// --internal-port whose per-app-VIP listener wakes on connect (v0.9.5). With
+		// none, a slept app can never come back — reject it rather than silently
+		// strand it always-on. (PublishAll/-P is not a wake trigger: the forwarder
+		// needs an explicit host→guest mapping, so pair -P with an explicit -p or --port.)
+		if sp.MinScale == 0 && sp.IdleTimeoutSec > 0 && spec.Port == 0 && len(spec.Publish) == 0 && len(spec.InternalPorts) == 0 {
+			return errors.New("app: a scale-to-zero app needs a wake trigger — set --port (HTTP proxy), publish a host port with -p (TCP), expose --internal-port (app→app), or use --min-scale 1")
 		}
 		if len(spec.Volumes) > 0 {
 			// A volume app is single-writer: it can never run 2+ live instances,

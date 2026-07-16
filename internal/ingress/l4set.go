@@ -123,15 +123,18 @@ func (s *InternalL4Set) setupLocked(app string, ports []L4Port) {
 		s.pool.Release(vip)
 		return
 	}
-	if err := s.hooks.OpenPorts(vip, tcpPortsOf(ports)); err != nil {
-		s.log.Error("internal-l4: open nft ports failed", "app", app, "vip", vip, "err", err)
+	// Bind the proxy listeners BEFORE opening the nft accepts, so nft never accepts
+	// guest→VIP:port while no listener is up to shadow a 0.0.0.0 host service. (Until
+	// OpenPorts runs, guest→VIP:port has no nft accept and is dropped by default.)
+	if err := s.hooks.Bind(app, vip, ports); err != nil {
+		s.log.Error("internal-l4: bind proxy listeners failed", "app", app, "vip", vip, "err", err)
 		_ = s.hooks.RemoveVIP(vip)
 		s.pool.Release(vip)
 		return
 	}
-	if err := s.hooks.Bind(app, vip, ports); err != nil {
-		s.log.Error("internal-l4: bind proxy listeners failed", "app", app, "vip", vip, "err", err)
-		_ = s.hooks.ClosePorts(vip, tcpPortsOf(ports))
+	if err := s.hooks.OpenPorts(vip, tcpPortsOf(ports)); err != nil {
+		s.log.Error("internal-l4: open nft ports failed", "app", app, "vip", vip, "err", err)
+		s.hooks.Unbind(app)
 		_ = s.hooks.RemoveVIP(vip)
 		s.pool.Release(vip)
 		return
@@ -141,16 +144,32 @@ func (s *InternalL4Set) setupLocked(app string, ports []L4Port) {
 }
 
 func (s *InternalL4Set) teardownLocked(app string, b *binding) {
-	s.hooks.Unbind(app)
-	if err := s.hooks.ClosePorts(b.vip, tcpPortsOf(b.ports)); err != nil {
-		s.log.Warn("internal-l4: close nft ports failed", "app", app, "vip", b.vip, "err", err)
-	}
+	// Order matters for isolation: drop the VIP address FIRST so VIP:port becomes
+	// non-local (packets fall to the FORWARD path and are dropped by peer isolation)
+	// BEFORE the proxy listener that shadows any 0.0.0.0 host service is closed. Then
+	// remove the nft accepts, then close the listener.
+	clean := true
 	if err := s.hooks.RemoveVIP(b.vip); err != nil {
+		clean = false
 		s.log.Warn("internal-l4: remove VIP failed", "app", app, "vip", b.vip, "err", err)
 	}
-	s.pool.Release(b.vip)
+	if err := s.hooks.ClosePorts(b.vip, tcpPortsOf(b.ports)); err != nil {
+		clean = false
+		s.log.Warn("internal-l4: close nft ports failed", "app", app, "vip", b.vip, "err", err)
+	}
+	s.hooks.Unbind(app)
 	delete(s.state, app)
-	s.log.Info("internal-l4: app un-exposed", "app", app, "vip", b.vip)
+	// Return the VIP to the pool ONLY if its address AND nft accepts were fully
+	// removed. If either failed, LEAK the VIP (never reassign it) — a reassigned VIP
+	// inheriting a stale accept could route a guest to a host service. A leaked VIP
+	// from a /16 pool is a cheap price vs. that isolation break; a daemon restart
+	// rebuilds the pool clean.
+	if clean {
+		s.pool.Release(b.vip)
+	} else {
+		s.log.Error("internal-l4: VIP retired without reuse (teardown left residual state)", "app", app, "vip", b.vip)
+	}
+	s.log.Info("internal-l4: app un-exposed", "app", app, "vip", b.vip, "vip_reusable", clean)
 }
 
 // Close tears every exposed app down (daemon shutdown).

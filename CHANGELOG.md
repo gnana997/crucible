@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.5] — 2026-07-17
+
+App→app networking for any TCP protocol. The existing `<app>.internal` path routed
+at L7 (HTTP `Host` header) only; this adds a raw-TCP path so a peer can reach a
+database, cache, or any non-HTTP service by name — the byte stream (and its TLS) is
+spliced through untouched.
+
+### Added
+
+- **`--internal-l4` (daemon) + `app create --internal-port PORT[/tcp|/http]`.** An
+  app that declares an internal port gets its own stable **per-app VIP**, and a peer
+  granted `--can-call` reaches it at `<app>.internal:PORT`. A `tcp` port (the default)
+  is a **blind byte splice** — any protocol, and TLS passes through end to end, so a
+  client speaks the service's native wire protocol with full `verify-full` TLS; an
+  `http` port routes through the L7 proxy (per-request load-balancing, status metrics).
+  The same guarantees as the L7 path hold: default-deny, **wake-on-connect** (a
+  scale-to-zero callee wakes on the first connection), and peer isolation (the VIP is
+  the only path). `AppSpec.InternalPorts` on the Go SDK; `AppResponse.InternalVIP` and
+  a per-app internal address shown in `app get`. New `--internal-vip-cidr` (default
+  `10.21.0.0/16`, validated disjoint from `--network-subnet-pool`). Experimental, off
+  by default; requires `--internal-networking`. See
+  [apps.md](docs/apps.md#raw-tcp-any-protocol--internal-l4).
+- **Only declared ports are reachable, and per-app fair-share.** The firewall opens a
+  VIP for exactly the ports an app declares — never an arbitrary `0.0.0.0` host
+  service. A per-app connection cap under a global ceiling stops one grantee from
+  starving the whole app→app mesh, and a per-source rate limit bounds connection
+  churn. New `/metrics`: `app_internal_l4_connections_total{outcome}` (incl. `denied`,
+  `shed_cap`, `shed_rate`) and `app_internal_l4_bytes_total`.
+  `scripts/smoke_internal_l4.sh` validates the raw-TCP splice (redis `PING`→`+PONG`),
+  default-deny, undeclared-port refusal, wake-on-connect, and peer isolation on KVM.
+
 ## [0.9.4] — 2026-07-16
 
 Hardening (pre-1.0). Fuzzing the v0.9.3 incremental-backup parsers found two ways

@@ -230,23 +230,9 @@ func (r *Resolver) ResolveSetInternal(host string) ([]Target, error) {
 }
 
 func (r *Resolver) resolveSet(name string) ([]Target, error) {
-	if name == "" {
-		return nil, ErrNoRoute
-	}
-	resp, err := r.apps.GetByName(name)
+	resp, err := r.runningApp(name)
 	if err != nil {
-		return nil, ErrNoRoute
-	}
-	if resp.Status == nil {
-		return nil, ErrNoInstance
-	}
-	switch resp.Status.Phase {
-	case "asleep", "waking":
-		return nil, ErrAsleep
-	case "running":
-		// routable
-	default:
-		return nil, ErrNoInstance
+		return nil, err
 	}
 	port := resp.Port
 	if port == 0 {
@@ -255,6 +241,52 @@ func (r *Resolver) resolveSet(name string) ([]Target, error) {
 	if port <= 0 {
 		return nil, ErrNoRoute
 	}
+	return r.instanceSet(resp, port)
+}
+
+// resolveSetPort is resolveSet but dials an EXPLICIT guest port — the app→app L4
+// listener's declared internal port — independent of the app's --port/publish. An L4
+// service (a database) commonly exposes a raw port with no HTTP --port at all, so
+// deriving the port from the app spec (as resolveSet does) would wrongly fail it.
+func (r *Resolver) resolveSetPort(name string, port int) ([]Target, error) {
+	if port <= 0 {
+		return nil, ErrNoRoute
+	}
+	resp, err := r.runningApp(name)
+	if err != nil {
+		return nil, err
+	}
+	return r.instanceSet(resp, port)
+}
+
+// runningApp resolves a name to its app record, returning ErrNoRoute (unknown),
+// ErrNoInstance (no status), or ErrAsleep (slept/waking) as appropriate; nil error
+// only for a running app.
+func (r *Resolver) runningApp(name string) (api.AppResponse, error) {
+	if name == "" {
+		return api.AppResponse{}, ErrNoRoute
+	}
+	resp, err := r.apps.GetByName(name)
+	if err != nil {
+		return api.AppResponse{}, ErrNoRoute
+	}
+	if resp.Status == nil {
+		return api.AppResponse{}, ErrNoInstance
+	}
+	switch resp.Status.Phase {
+	case "asleep", "waking":
+		return api.AppResponse{}, ErrAsleep
+	case "running":
+		// routable
+	default:
+		return api.AppResponse{}, ErrNoInstance
+	}
+	return resp, nil
+}
+
+// instanceSet builds the live endpoint set (every running instance's guest IP on the
+// given port). ErrNoInstance when the app is running but no instance IP is known yet.
+func (r *Resolver) instanceSet(resp api.AppResponse, port int) ([]Target, error) {
 	set := make([]Target, 0, len(resp.Status.Instances))
 	for _, in := range resp.Status.Instances {
 		if ip, live := r.instances.GuestIP(in.InstanceID); live && ip != "" {

@@ -60,12 +60,12 @@ func (a appInstantiator) Create(ctx context.Context, appID string, spec api.AppS
 	if ierr != nil {
 		return "", ierr.err
 	}
-	// A proxied app (Port set), or a wake-on-TCP app whose publish we just
-	// suppressed, needs a NIC so the ingress proxy / the waking forwarder can
-	// reach the guest over its veth — even with no published ports or egress.
-	// Synthesize a deny-all network (ingress-reachable, egress-denied), mirroring
-	// the publish path in buildCreateConfig.
-	if cfg.Network == nil && (spec.Port > 0 || wakeOnTCP) {
+	// A proxied app (Port set), a wake-on-TCP app whose publish we just suppressed,
+	// or an app→app L4 app that exposes an --internal-port, needs a NIC so the
+	// ingress proxy / the waking forwarder can reach the guest over its veth — even
+	// with no published ports or egress. Synthesize a deny-all network
+	// (ingress-reachable, egress-denied), mirroring the publish path in buildCreateConfig.
+	if cfg.Network == nil && (spec.Port > 0 || wakeOnTCP || len(spec.InternalPorts) > 0) {
 		denyAll, derr := network.New(nil)
 		if derr != nil {
 			return "", fmt.Errorf("app %s: deny-all network: %w", appID, derr)

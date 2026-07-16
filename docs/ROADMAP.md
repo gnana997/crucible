@@ -163,7 +163,22 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.9.3: Incremental backups *(current)*
+### v0.9.5: App→app networking for any TCP protocol *(current)*
+
+Reach a peer's raw TCP port by name — postgres, redis, any protocol — not just HTTP ([apps.md](apps.md#raw-tcp-for-any-protocol)).
+
+- [x] **`--internal-l4` + `app create --internal-port PORT[/tcp|/http]`:** an app that declares an internal port gets its own stable **per-app VIP**, and a peer granted `--can-call` reaches it at `<app>.internal:PORT`. A `tcp` port is a **blind byte splice** — any protocol, TLS passes through end to end, so a client speaks the service's native wire protocol with full `verify-full` TLS; an `http` port routes through the L7 proxy (per-request load-balancing + status metrics). The L7-path guarantees still hold: default-deny, **wake-on-connect** (a scale-to-zero callee wakes on the first connection), and peer isolation (the VIP is the only path). `AppSpec.InternalPorts` / `AppResponse.InternalVIP` on the SDK; `internal_vip` in `app get`; new `--internal-vip-cidr` (default `10.21.0.0/16`, validated disjoint from `--network-subnet-pool`). Experimental, off by default; requires `--internal-networking`.
+- [x] **Declared-ports-only + fair-share:** the firewall opens a VIP for exactly the ports declared — never an arbitrary `0.0.0.0` host service. A per-app connection cap under a global ceiling keeps one grantee from starving the mesh; a per-source rate limit bounds connection churn. `app_internal_l4_connections_total{outcome}` (incl. `denied`/`shed_cap`/`shed_rate`) + `app_internal_l4_bytes_total` on `/metrics`. `scripts/smoke_internal_l4.sh` proves the raw-TCP splice (redis `PING`/`+PONG`), default-deny, undeclared-port refusal, wake-on-connect, and peer isolation on KVM.
+- Routing is L7 by `Host` on the shared anycast VIP when `--internal-l4` is off (unchanged); the per-app-VIP model becomes the default in a follow-up once soaked. Next: storage autoscaling, then the v1.0 gate.
+
+### v0.9.4: Hardening
+
+Pre-1.0 hardening — fuzzing the incremental-backup parsers.
+
+- [x] **Crash-safe backup restore:** fuzzing the v0.9.3 incremental parsers found two daemon-crash inputs (an out-of-range block index in an imported `.delta`; a corrupt manifest header) — both bounded now, with regression seeds. Reachable only via the default-deny `volume_backup` op, but a crash is a crash.
+- [x] **Go 1.25.12:** toolchain bump clearing 29 standard-library security advisories (`govulncheck` clean; no code change).
+
+### v0.9.3: Incremental backups
 
 Back up only what changed — a base full plus a chain of deltas ([backups.md](backups.md#incremental-backups)).
 

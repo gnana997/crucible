@@ -3,6 +3,7 @@ package ingress
 import (
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/gnana997/crucible/sdk/api"
@@ -31,7 +32,10 @@ type recHooks struct {
 	bound            map[string]netip.Addr
 	boundPorts       map[string][]L4Port
 	unbound          []string
+	order            []string // hook call order, for teardown/setup ordering assertions
 	bindErr, openErr error
+	removeErr        error
+	closeErr         error
 }
 
 func newRecHooks() *recHooks {
@@ -40,11 +44,28 @@ func newRecHooks() *recHooks {
 
 func (h *recHooks) hooks() InternalL4Hooks {
 	return InternalL4Hooks{
-		AddVIP:     func(v netip.Addr) error { h.added = append(h.added, v); return nil },
-		RemoveVIP:  func(v netip.Addr) error { h.removed = append(h.removed, v); return nil },
-		OpenPorts:  func(v netip.Addr, p []int) error { h.opened[v] = p; return h.openErr },
-		ClosePorts: func(v netip.Addr, p []int) error { h.closed[v] = p; return nil },
+		AddVIP: func(v netip.Addr) error {
+			h.order = append(h.order, "AddVIP")
+			h.added = append(h.added, v)
+			return nil
+		},
+		RemoveVIP: func(v netip.Addr) error {
+			h.order = append(h.order, "RemoveVIP")
+			h.removed = append(h.removed, v)
+			return h.removeErr
+		},
+		OpenPorts: func(v netip.Addr, p []int) error {
+			h.order = append(h.order, "OpenPorts")
+			h.opened[v] = p
+			return h.openErr
+		},
+		ClosePorts: func(v netip.Addr, p []int) error {
+			h.order = append(h.order, "ClosePorts")
+			h.closed[v] = p
+			return h.closeErr
+		},
 		Bind: func(app string, v netip.Addr, ports []L4Port) error {
+			h.order = append(h.order, "Bind")
 			if h.bindErr != nil {
 				return h.bindErr
 			}
@@ -52,7 +73,7 @@ func (h *recHooks) hooks() InternalL4Hooks {
 			h.boundPorts[app] = ports
 			return nil
 		},
-		Unbind: func(app string) { h.unbound = append(h.unbound, app) },
+		Unbind: func(app string) { h.order = append(h.order, "Unbind"); h.unbound = append(h.unbound, app) },
 	}
 }
 
@@ -155,6 +176,57 @@ func TestInternalL4SetBindFailureRollsBack(t *testing.T) {
 	// Rollback: nft closed, VIP removed + released.
 	if len(h.removed) != 1 || len(pool.released) != 1 {
 		t.Fatalf("bind failure must roll back VIP: removed=%v released=%v", h.removed, pool.released)
+	}
+}
+
+// TestInternalL4SetSafeOrdering: setup must bind the listener BEFORE opening the nft
+// accept (no window where nft accepts but no listener shadows a host service); teardown
+// must remove the VIP + nft accept BEFORE closing the listener.
+func TestInternalL4SetSafeOrdering(t *testing.T) {
+	pool := &seqPool{}
+	h := newRecHooks()
+	s := NewInternalL4Set(pool, h.hooks(), quietLog())
+
+	s.Reconcile([]api.AppSpec{specWithPorts("db", api.InternalPort{Port: 5432})})
+	// Setup order: AddVIP → Bind → OpenPorts (listener up before nft accepts).
+	if got := strings.Join(h.order, ","); got != "AddVIP,Bind,OpenPorts" {
+		t.Fatalf("setup order = %q, want AddVIP,Bind,OpenPorts", got)
+	}
+	h.order = nil
+	s.Reconcile(nil)
+	// Teardown order: RemoveVIP → ClosePorts → Unbind (VIP non-local + nft closed
+	// before the listener that shadows a host service is closed).
+	if got := strings.Join(h.order, ","); got != "RemoveVIP,ClosePorts,Unbind" {
+		t.Fatalf("teardown order = %q, want RemoveVIP,ClosePorts,Unbind", got)
+	}
+}
+
+// TestInternalL4SetLeaksVIPOnTeardownFailure: if the nft accept (or VIP address) can't
+// be removed, the VIP must NOT be returned to the pool — a reassigned VIP inheriting a
+// stale accept could route a guest to a host service.
+func TestInternalL4SetLeaksVIPOnTeardownFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(h *recHooks)
+	}{
+		{"ClosePorts fails", func(h *recHooks) { h.closeErr = errors.New("nft delete boom") }},
+		{"RemoveVIP fails", func(h *recHooks) { h.removeErr = errors.New("ip addr del boom") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := &seqPool{}
+			h := newRecHooks()
+			s := NewInternalL4Set(pool, h.hooks(), quietLog())
+			s.Reconcile([]api.AppSpec{specWithPorts("db", api.InternalPort{Port: 5432})})
+			tc.set(h)
+			s.Reconcile(nil) // teardown with a failing hook
+
+			if len(pool.released) != 0 {
+				t.Fatalf("VIP released despite teardown failure — could be reassigned with stale state: %v", pool.released)
+			}
+			if _, ok := s.VIPFor("db"); ok {
+				t.Fatal("app must be un-exposed even when teardown left residual state")
+			}
+		})
 	}
 }
 

@@ -73,7 +73,7 @@ func New() *Metrics {
 		}),
 		l4Connections: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "app_internal_l4_connections_total",
-			Help: "App→app L4 (per-app VIP) connections by outcome (spliced, denied, no_route, dial_error).",
+			Help: "App→app L4 (per-app VIP) connections by outcome (spliced, denied, no_route, dial_error, shed_cap, shed_rate).",
 		}, []string{"outcome"}),
 		l4Bytes: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "app_internal_l4_bytes_total",

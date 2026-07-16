@@ -228,9 +228,39 @@ only for granted callers — otherwise **NXDOMAIN**, so a guest can't even
 on the Go SDK (`AppSpec.CanCall`) and MCP (`create_app`/`update_app`). Authorized
 app→app requests are counted by `app_internal_requests_total` on `/metrics`.
 
-> This is the **stateless** frontend→API tier. A shared *stateful* app (a
-> database) waits for volumes — until then, run the database's persistence
-> outside the app model.
+### Raw TCP for any protocol
+
+The path above routes at **L7** (by HTTP `Host` header), so it only carries HTTP.
+For a non-HTTP service — postgres, redis, mysql, mongo, gRPC over raw TCP — start
+the daemon with **`--internal-l4`** (experimental, off by default; requires
+`--internal-networking`). Each app that **declares** internal ports gets its own
+stable **per-app VIP**, and `<app>.internal:PORT` becomes a **blind byte splice**:
+any protocol crosses untouched, and TLS passes straight through, so a client
+speaks the service's native wire protocol — with full end-to-end TLS — to the app.
+
+```bash
+# expose a raw TCP port to authorized peers (repeatable)
+crucible app create db  --image postgres:16 --internal-port 5432
+crucible app create api --image myapi --port 8080 --can-call db
+# inside api's guest:  psql "host=db.internal port=5432 sslmode=verify-full ..."
+```
+
+Everything from the L7 path still applies: **default-deny** (`--can-call`),
+**wake-on-connect** (a scale-to-zero `db` wakes on the first connection), and
+**peer isolation** (the VIP is the only path; guests still can't reach each other
+directly). Two extra guarantees matter for raw TCP:
+
+- **Only declared ports are reachable.** A peer can reach `db.internal` *only* on
+  a port `db` declared — never an arbitrary host service. Undeclared ports are
+  refused at the firewall.
+- **Per-port protocol.** `--internal-port 5432` (or `5432/tcp`) is a raw splice;
+  `--internal-port 80/http` routes that port through the L7 proxy instead (keeping
+  per-request load-balancing and status metrics). The app's assigned VIP shows in
+  `app get` as `internal_vip`.
+
+L4 connections are counted by `app_internal_l4_connections_total{outcome}` (incl.
+`denied`) and `app_internal_l4_bytes_total` on `/metrics`. Set ports on the Go SDK
+(`AppSpec.InternalPorts`) too.
 
 ## Horizontal scale-out
 

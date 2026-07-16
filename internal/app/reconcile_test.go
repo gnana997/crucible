@@ -1014,6 +1014,27 @@ func TestValidateSpecInternalPorts(t *testing.T) {
 	}
 }
 
+// TestValidateSpecInternalPortWakesScaleToZero: an app→app L4 --internal-port is a
+// valid scale-to-zero wake trigger (its per-app-VIP listener wakes on connect), so a
+// slept app exposing ONLY an internal port — no --port / -p — must be accepted.
+func TestValidateSpecInternalPortWakesScaleToZero(t *testing.T) {
+	base := nginxSpec("db", wire.RestartAlways)
+	base.Port = 0
+	base.Publish = nil
+	base.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 60}
+
+	// No wake trigger at all → rejected (would strand the slept app).
+	base.InternalPorts = nil
+	if err := validateSpec(base); err == nil {
+		t.Fatal("scale-to-zero app with no wake trigger should be rejected")
+	}
+	// --internal-port is the wake trigger → accepted.
+	base.InternalPorts = []api.InternalPort{{Port: 5432}}
+	if err := validateSpec(base); err != nil {
+		t.Fatalf("scale-to-zero app exposing --internal-port should be accepted: %v", err)
+	}
+}
+
 // crashInstance removes one instance without going through Destroy (a single
 // replica's VM dying underneath the daemon).
 func (f *fakeInstantiator) crashInstance(id string) {

@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.9.4 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.9.5 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -209,7 +209,25 @@ is pre-1.0 hardening: fuzzing the incremental parsers fixed two daemon-crash bug
 out-of-range block index in an imported `.delta`, a corrupt manifest header — both now
 bounded, with regression seeds in `internal/volume/testdata/fuzz`), and the Go toolchain
 is bumped to 1.25.12 (go.mod `toolchain` directive) clearing 29 stdlib advisories
-(`govulncheck` clean). See the ROADMAP for what's after (storage autoscaling,
+(`govulncheck` clean). **v0.9.5** adds **app→app networking for any TCP protocol**: with
+the daemon's `--internal-l4`, an app that declares `app create --internal-port
+PORT[/tcp|/http]` gets its own stable **per-app VIP** (IPv4, `--internal-vip-cidr`
+default `10.21.0.0/16`, validated disjoint from the subnet pool) and a `--can-call`
+peer reaches it at `<app>.internal:PORT` over a **blind byte splice** — any protocol,
+TLS passes through end to end, so a client speaks the service's native wire protocol
+(`psql sslmode=verify-full`). Reuses the existing splice/wake/LB/authz pipeline: per-app
+VIP addressing + per-port handler (`tcp` = L4 splice; `http` = the L7 proxy), the DNS
+zone answers `<app>.internal` with the app's VIP, and a new `internal/network/vippool.go`
++ `internal/ingress/l4.go`/`l4set.go` bind `VIP:port` via `SO_REUSEPORT` and dispatch.
+Firewall opens a VIP only for the declared ports (nft `l4_vip_ports` set, kernel-attested
+source gate) — never a host `0.0.0.0` service; **default-deny** (`--can-call`),
+**wake-on-connect**, and **peer isolation** all still hold. Hardened after an adversarial
+review: per-app connection cap (256) under a global ceiling + per-source rate limit so
+one grantee can't starve the mesh, and setup/teardown ordered so nft never accepts while
+no listener shadows a host service. `AppSpec.InternalPorts`/`AppResponse.InternalVIP`;
+`app_internal_l4_connections_total{outcome}` + `_bytes_total` on `/metrics`;
+`scripts/smoke_internal_l4.sh` (8/8 KVM). Experimental, off by default; requires
+`--internal-networking`. See the ROADMAP for what's after (storage autoscaling,
 wildcard/DNS-01, fleet).
 
 ## Working style

@@ -1,7 +1,7 @@
 ---
 title: Changelog
 description: What shipped in each crucible release.
-date: "2026-07-16"
+date: "2026-07-17"
 ---
 
 # Changelog
@@ -9,6 +9,16 @@ date: "2026-07-16"
 Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
+
+<Update label="v0.9.5" title="App→app networking for any TCP protocol">
+
+Reach a peer's raw TCP port by name — postgres, redis, any protocol — not just HTTP.
+
+- **`--internal-l4` + `crucible app create db --internal-port 5432`.** With the daemon's `--internal-l4`, an app that declares an internal port gets its own stable **per-app VIP**, and a granted peer reaches it at `<app>.internal:PORT` over a **blind byte splice** — any protocol crosses untouched and TLS passes straight through, so a client speaks the service's native wire protocol (e.g. `psql "host=db.internal sslmode=verify-full"`) end to end. Everything the HTTP path already had still applies: **default-deny** (`--can-call`), **wake-on-connect** (a scale-to-zero database wakes on the first connection), and **peer isolation** (the VIP is the only path). See [apps](apps#raw-tcp-for-any-protocol).
+- **Only declared ports.** A peer can reach a VIP only on a port the app declared — never an arbitrary host service. Ports carry a protocol: `--internal-port 5432` (or `/tcp`) is a raw splice; `--internal-port 80/http` routes that port through the L7 proxy. The assigned address shows in `app get` as `internal_vip`; L4 connections and bytes are on `/metrics` (`app_internal_l4_connections_total{outcome}`, `app_internal_l4_bytes_total`).
+- **Fair and bounded.** A per-app connection cap under a global ceiling keeps one grantee from starving the mesh, a per-source rate limit bounds connection churn, and the firewall opens a VIP only for the exact ports declared. `scripts/smoke_internal_l4.sh` proves the raw-TCP splice (a redis `PING`/`+PONG`), default-deny, undeclared-port refusal, wake-on-connect, and peer isolation on real KVM.
+
+</Update>
 
 <Update label="v0.9.4" title="Hardening">
 

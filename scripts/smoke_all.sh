@@ -61,6 +61,7 @@ SMOKES=(
   "kvm        smoke_egress.sh"       # egress modes + SSRF tripwire (v0.4.1)
   "kvm        smoke_proxy.sh"        # ingress proxy: reach-by-name + isolation (v0.4.2)
   "kvm        smoke_app_to_app.sh"   # app→app networking: grant/deny + wake + peer isolation (v0.5.1)
+  "kvm        smoke_internal_l4.sh"  # app→app L4: raw-TCP (redis) via per-app VIP; declared-ports-only + deny + wake (v0.9.5)
   "kvm        smoke_app_scaleout.sh" # horizontal scale-out: autoscale + P2C balance + warm-fork (v0.5.2)
   "kvm        smoke_zerodowntime.sh" # zero-downtime rolling app update (v0.4.3)
   "kvm        smoke_leaks.sh"        # resource + data leaks: drain/rm/scale/sleep orphans + isolation
