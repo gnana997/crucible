@@ -48,12 +48,16 @@ const (
 	// Managing secrets is its own capability, default-deny — even listing bundle
 	// names is secret-management, not a plain read.
 	OpSecret Operation = "secret"
+	// OpVolumeKey gates volume encryption-key management — re-wrapping a volume's
+	// key under a different keyring key (rotation) and reloading the keyring. It is
+	// key management, default-deny, distinct from delete.
+	OpVolumeKey Operation = "volume_key"
 )
 
 // KnownOperations returns the valid operation verbs, in a stable order (useful
 // for error messages and docs).
 func KnownOperations() []Operation {
-	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup, OpVolumeBackup, OpSecret}
+	return []Operation{OpCreate, OpExec, OpSnapshot, OpFork, OpDelete, OpRead, OpRegistry, OpCapture, OpAdminBackup, OpVolumeBackup, OpSecret, OpVolumeKey}
 }
 
 func isKnownOp(op Operation) bool {

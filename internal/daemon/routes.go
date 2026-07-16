@@ -131,6 +131,9 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /volumes/{name}", s.handleGetVolume)
 	mux.HandleFunc("DELETE /volumes/{name}", s.handleDeleteVolume)
 	mux.HandleFunc("POST /volumes/{name}/shred", s.handleShredVolume)
+	mux.HandleFunc("POST /volumes/{name}/rewrap", s.handleRewrapVolume)
+	mux.HandleFunc("POST /volumes/rewrap", s.handleBulkRewrap)
+	mux.HandleFunc("POST /volumes/keys/reload", s.handleReloadKeys)
 	// Volume backups (v0.6.3). Create gates as `snapshot`, list as `read`,
 	// delete as `delete`.
 	mux.HandleFunc("POST /volumes/{name}/backups", s.handleBackupVolume)

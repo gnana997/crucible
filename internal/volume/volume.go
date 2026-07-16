@@ -84,8 +84,9 @@ type Manager struct {
 	// KeyID selects which KEK wraps its per-volume DEK. defaultKeyID is the key
 	// new volumes are wrapped under unless a CreateOpts overrides it.
 	crypt          *cryptdev.Engine
+	keysMu         sync.RWMutex // guards keys (ReloadKeyring can swap it live)
 	keys           map[string][]byte
-	defaultKeyID   string
+	defaultKeyID   string // set once at EnableEncryption; reload does not change it
 	defaultEncrypt bool
 
 	mu       sync.Mutex
@@ -116,7 +117,9 @@ func (m *Manager) EnableEncryption(keyring map[string][]byte, defaultKeyID strin
 		return err
 	}
 	m.crypt = cryptdev.New()
+	m.keysMu.Lock()
 	m.keys = keys
+	m.keysMu.Unlock()
 	m.defaultKeyID = defaultKeyID
 	m.defaultEncrypt = defaultEncrypt
 	// A crashed daemon can leave decrypted mapper nodes open with no live sandbox
@@ -126,10 +129,120 @@ func (m *Manager) EnableEncryption(keyring map[string][]byte, defaultKeyID strin
 	return nil
 }
 
-// kekFor returns the keyring KEK for keyID.
+// kekFor returns the keyring KEK for keyID (safe for concurrent use with reload).
 func (m *Manager) kekFor(keyID string) ([]byte, bool) {
+	m.keysMu.RLock()
 	kek, ok := m.keys[keyID]
+	m.keysMu.RUnlock()
 	return kek, ok
+}
+
+// Rewrap re-wraps an encrypted volume's per-volume key from its current keyring
+// key to toKeyID — a KEK rotation that changes ONLY the record's wrapped key, not
+// the LUKS container or the data, so it is safe on a live volume. No-op if already
+// wrapped under toKeyID. ErrNotFound if absent; ErrNotEncrypted for a plaintext
+// volume; ErrKeyNotFound if the current or target key id is not in the keyring.
+func (m *Manager) Rewrap(name, toKeyID string) error {
+	if !nameRe.MatchString(name) {
+		return ErrInvalidName
+	}
+	if m.crypt == nil {
+		return ErrEncryptionDisabled
+	}
+	toKEK, ok := m.kekFor(toKeyID)
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrKeyNotFound, toKeyID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec, ok, err := m.st.get(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	if !rec.Encrypted {
+		return ErrNotEncrypted
+	}
+	if rec.KeyID == toKeyID {
+		return nil
+	}
+	dek, err := m.dekFor(rec) // unwraps with the record's current key
+	if err != nil {
+		return err
+	}
+	wrapped, err := cryptdev.WrapKey(toKEK, dek, []byte(name))
+	if err != nil {
+		return err
+	}
+	rec.WrappedKey, rec.KeyID = wrapped, toKeyID
+	return m.st.put(rec)
+}
+
+// RewrapAll re-wraps every encrypted volume currently wrapped under fromKeyID to
+// toKeyID, returning how many were rewrapped — the "rotate every volume off an
+// old key so it can be retired" operation. On a per-volume error it returns the
+// count done so far plus the error.
+func (m *Manager) RewrapAll(fromKeyID, toKeyID string) (int, error) {
+	if m.crypt == nil {
+		return 0, ErrEncryptionDisabled
+	}
+	if _, ok := m.kekFor(toKeyID); !ok {
+		return 0, fmt.Errorf("%w: %q", ErrKeyNotFound, toKeyID)
+	}
+	recs, err := m.st.list()
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, r := range recs {
+		if r.Encrypted && r.KeyID == fromKeyID {
+			if err := m.Rewrap(r.Name, toKeyID); err != nil {
+				return n, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}
+
+// ReloadKeyring swaps the keyring for a freshly-loaded one (e.g. after new key
+// files are added), without a daemon restart. It refuses to drop a key that any
+// volume still references — rewrap those volumes first. The default key id is
+// unchanged (that is a startup flag).
+func (m *Manager) ReloadKeyring(keyring map[string][]byte) error {
+	if m.crypt == nil {
+		return ErrEncryptionDisabled
+	}
+	if len(keyring) == 0 {
+		return errors.New("volume: keyring is empty")
+	}
+	if _, ok := keyring[m.defaultKeyID]; !ok {
+		return fmt.Errorf("volume: default key %q missing from the reloaded keyring", m.defaultKeyID)
+	}
+	keys := make(map[string][]byte, len(keyring))
+	for id, kek := range keyring {
+		if len(kek) != cryptdev.KEKSize {
+			return fmt.Errorf("volume: key %q must be %d bytes, got %d", id, cryptdev.KEKSize, len(kek))
+		}
+		keys[id] = append([]byte(nil), kek...)
+	}
+	recs, err := m.st.list()
+	if err != nil {
+		return err
+	}
+	for _, r := range recs {
+		if r.Encrypted {
+			if _, ok := keys[r.KeyID]; !ok {
+				return fmt.Errorf("%w: %q is still used by volume %s (rewrap it before removing the key)", ErrKeyNotFound, r.KeyID, r.Name)
+			}
+		}
+	}
+	m.keysMu.Lock()
+	m.keys = keys
+	m.keysMu.Unlock()
+	return nil
 }
 
 // reapOrphanDevices closes any crucible-owned mapper devices found open. Called

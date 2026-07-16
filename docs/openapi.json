@@ -2688,6 +2688,92 @@
         }
       }
     },
+    "/volumes/keys/reload": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Reload the encryption keyring",
+        "description": "Re-reads the daemon's key sources and swaps the keyring in without a restart. Refuses to drop a key a volume still uses.",
+        "operationId": "reloadVolumeKeys",
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/volumes/rewrap": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Re-wrap every volume off a key",
+        "description": "Re-wraps every volume currently on from_key_id to to_key_id — rotate a key off so it can be retired.",
+        "operationId": "rewrapVolumes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkRewrapRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkRewrapResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/volumes/{name}": {
       "delete": {
         "tags": [
@@ -3046,6 +3132,72 @@
           },
           "409": {
             "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Not Implemented",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/volumes/{name}/rewrap": {
+      "post": {
+        "tags": [
+          "volumes"
+        ],
+        "summary": "Re-wrap a volume's encryption key",
+        "description": "Re-wraps the volume's per-volume key under a different keyring key (rotation; no data is re-encrypted, safe on a live volume). 400 for a plaintext volume or an unknown key id.",
+        "operationId": "rewrapVolume",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Volume name ([a-z0-9][a-z0-9-]*).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Volume name ([a-z0-9][a-z0-9-]*)."
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RewrapVolumeReq"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
             "content": {
               "application/json": {
                 "schema": {
@@ -3471,6 +3623,25 @@
               "$ref": "#/components/schemas/Backup"
             },
             "nullable": true
+          }
+        }
+      },
+      "BulkRewrapRequest": {
+        "type": "object",
+        "properties": {
+          "from_key_id": {
+            "type": "string"
+          },
+          "to_key_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BulkRewrapResponse": {
+        "type": "object",
+        "properties": {
+          "rewrapped": {
+            "type": "integer"
           }
         }
       },
@@ -4198,6 +4369,14 @@
           }
         }
       },
+      "RewrapVolumeReq": {
+        "type": "object",
+        "properties": {
+          "to_key_id": {
+            "type": "string"
+          }
+        }
+      },
       "SandboxResponse": {
         "type": "object",
         "properties": {
@@ -4455,6 +4634,9 @@
             "type": "boolean"
           },
           "host_id": {
+            "type": "string"
+          },
+          "key_id": {
             "type": "string"
           },
           "name": {

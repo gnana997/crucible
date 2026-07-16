@@ -147,7 +147,7 @@ of created/phase_changed/health/domain/deleted transitions, served by `GET /even
 a Manager `emitPhase` dedup helper: exact sleep/wake boundaries emit directly (with
 `wake_latency_ms`) and a reconcile-pass sweep (`emitPhaseChanges`, step 4 of
 reconcile) catches reconciler-driven transitions centrally — no missed net phase
-change, no 12-site refactor. Resolves the CP billing poll-vs-push question (exact
+change, no 12-site refactor. Resolves the usage-metering poll-vs-push question (exact
 awake-intervals). **v0.7.4** adds **secrets**: encrypted secret BUNDLES (k8s-Secret
 model — named `map[string]string` sealed AES-256-GCM in `internal/secretstore`,
 name as AEAD AAD) injected via **envFrom** (`AppSpec.SecretEnvFrom`) at

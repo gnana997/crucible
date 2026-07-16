@@ -126,6 +126,25 @@ type Volume struct {
 	HostID     string    `json:"host_id,omitempty"`     // host this volume is pinned to
 	AttachedTo string    `json:"attached_to,omitempty"` // sandbox id, empty if detached
 	Encrypted  bool      `json:"encrypted,omitempty"`   // per-volume LUKS encryption at rest
+	KeyID      string    `json:"key_id,omitempty"`      // keyring id whose key wraps this volume (encrypted only)
+}
+
+// RewrapVolumeRequest is the body of POST /volumes/{name}/rewrap: re-wrap the
+// volume's key under keyring key ToKeyID (rotation; no data is re-encrypted).
+type RewrapVolumeRequest struct {
+	ToKeyID string `json:"to_key_id"`
+}
+
+// BulkRewrapRequest is the body of POST /volumes/rewrap: re-wrap every volume
+// currently on FromKeyID to ToKeyID.
+type BulkRewrapRequest struct {
+	FromKeyID string `json:"from_key_id"`
+	ToKeyID   string `json:"to_key_id"`
+}
+
+// BulkRewrapResponse reports how many volumes a bulk rewrap re-keyed.
+type BulkRewrapResponse struct {
+	Rewrapped int `json:"rewrapped"`
 }
 
 // CreateVolumeRequest is the body of POST /volumes.

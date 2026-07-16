@@ -147,6 +147,9 @@ func operationFor(method, path string) (policy.Operation, bool) {
 		// Crypto-shredding a volume irreversibly destroys its data — delete-grade.
 		case strings.HasSuffix(path, "/shred"):
 			return policy.OpDelete, true
+		// Re-wrapping a volume's key / reloading the keyring is key management.
+		case strings.HasSuffix(path, "/rewrap"), strings.HasSuffix(path, "/keys/reload"):
+			return policy.OpVolumeKey, true
 		case strings.HasSuffix(path, "/exec"):
 			return policy.OpExec, true
 		// Writing files into a sandbox is exec-grade power over the guest.

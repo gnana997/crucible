@@ -20,7 +20,64 @@ func newVolumeCmd(o *globalOpts) *cobra.Command {
 		Aliases: []string{"vol"},
 	}
 	cmd.AddCommand(newVolumeCreateCmd(o), newVolumeLsCmd(o), newVolumeRmCmd(o),
-		newVolumeShredCmd(o), newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
+		newVolumeShredCmd(o), newVolumeRewrapCmd(o), newVolumeKeysCmd(o),
+		newVolumeBackupCmd(o), newVolumeRestoreCmd(o), newVolumeCloneCmd(o))
+	return cmd
+}
+
+func newVolumeRewrapCmd(o *globalOpts) *cobra.Command {
+	var toKey, fromKey string
+	var all bool
+	cmd := &cobra.Command{
+		Use:   "rewrap [<name>] --to-key <id>",
+		Short: "Re-wrap a volume's encryption key under a different key (rotation; no data is re-encrypted)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if toKey == "" {
+				return errors.New("--to-key is required")
+			}
+			cl := o.client()
+			if all {
+				if fromKey == "" {
+					return errors.New("--all requires --from-key <id>")
+				}
+				n, err := cl.RewrapAllVolumes(cmd.Context(), fromKey, toKey)
+				if err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "rewrapped %d volume(s) from %q to %q\n", n, fromKey, toKey)
+				return nil
+			}
+			if len(args) != 1 {
+				return errors.New("give a volume name, or --all --from-key <id>")
+			}
+			if err := cl.RewrapVolume(cmd.Context(), args[0], toKey); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), args[0])
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&toKey, "to-key", "", "keyring id to re-wrap under (required)")
+	cmd.Flags().StringVar(&fromKey, "from-key", "", "with --all: only volumes currently on this key")
+	cmd.Flags().BoolVar(&all, "all", false, "rewrap every volume on --from-key")
+	return cmd
+}
+
+func newVolumeKeysCmd(o *globalOpts) *cobra.Command {
+	cmd := &cobra.Command{Use: "keys", Short: "Manage the volume encryption keyring"}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "reload",
+		Short: "Re-read the daemon's key sources and swap the keyring in without a restart",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if err := o.client().ReloadVolumeKeys(cmd.Context()); err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "keyring reloaded")
+			return nil
+		},
+	})
 	return cmd
 }
 
@@ -101,8 +158,8 @@ func newVolumeBackupExportCmd(o *globalOpts) *cobra.Command {
 		Use:   "export <id>",
 		Short: "Stream a backup off the host (needs the 'volume_backup' scoped op)",
 		Long: "Stream a backup's bytes to a file or stdout so you can ship it off the host\n" +
-			"(the control plane does this to push backups to an object store). Gzip by\n" +
-			"default (the image is sparse); --raw streams the backing file uncompressed.",
+			"to your own storage. Gzip by default (the image is sparse); --raw streams\n" +
+			"the backing file uncompressed.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var w io.Writer
@@ -307,7 +364,7 @@ func newVolumeLsCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), vols)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			_, _ = fmt.Fprintln(tw, "NAME\tSIZE\tENCRYPTED\tATTACHED\tHOST\tAGE")
+			_, _ = fmt.Fprintln(tw, "NAME\tSIZE\tENCRYPTED\tKEY\tATTACHED\tHOST\tAGE")
 			for _, v := range vols {
 				attached := "-"
 				if v.AttachedTo != "" {
@@ -321,7 +378,11 @@ func newVolumeLsCmd(o *globalOpts) *cobra.Command {
 				if v.Encrypted {
 					enc = "yes"
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, humanSize(v.SizeBytes), enc, attached, host, age(v.CreatedAt))
+				key := v.KeyID
+				if key == "" {
+					key = "-"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", v.Name, humanSize(v.SizeBytes), enc, key, attached, host, age(v.CreatedAt))
 			}
 			return tw.Flush()
 		},

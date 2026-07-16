@@ -33,6 +33,7 @@ func toAPIVolume(i volume.Info) api.Volume {
 		HostID:     i.HostID,
 		AttachedTo: i.AttachedTo,
 		Encrypted:  i.Encrypted,
+		KeyID:      i.KeyID,
 	}
 }
 
@@ -118,6 +119,72 @@ func (s *Server) handleShredVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.cfg.Volumes.Shred(r.PathValue("name")); err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRewrapVolume — POST /volumes/{name}/rewrap. Re-wraps the volume's key
+// under another keyring key (rotation; no data re-encrypted). Safe on a live
+// volume. 400 for a plaintext volume or an unknown key id; 404 if absent.
+func (s *Server) handleRewrapVolume(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.RewrapVolumeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.ToKeyID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("to_key_id is required"))
+		return
+	}
+	if err := s.cfg.Volumes.Rewrap(r.PathValue("name"), req.ToKeyID); err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleBulkRewrap — POST /volumes/rewrap. Re-wraps every volume on FromKeyID to
+// ToKeyID (rotate a key off, then retire it). Returns the count.
+func (s *Server) handleBulkRewrap(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	var req api.BulkRewrapRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if req.FromKeyID == "" || req.ToKeyID == "" {
+		writeError(w, http.StatusBadRequest, errors.New("from_key_id and to_key_id are required"))
+		return
+	}
+	n, err := s.cfg.Volumes.RewrapAll(req.FromKeyID, req.ToKeyID)
+	if err != nil {
+		writeError(w, volumeErrStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.BulkRewrapResponse{Rewrapped: n})
+}
+
+// handleReloadKeys — POST /volumes/keys/reload. Re-reads the configured key
+// sources and swaps the keyring in without a restart (refuses to drop a key a
+// volume still uses). 501 if the daemon has no keyring reloader wired.
+func (s *Server) handleReloadKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.volumesEnabled(w) {
+		return
+	}
+	if s.cfg.ReloadVolumeKeys == nil {
+		writeError(w, http.StatusNotImplemented, errors.New("volume encryption is not enabled on this daemon"))
+		return
+	}
+	if err := s.cfg.ReloadVolumeKeys(); err != nil {
 		writeError(w, volumeErrStatus(err), err)
 		return
 	}
@@ -296,7 +363,7 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleExportBackup — GET /backups/{id}/export[?compress=gzip|none]. Streams a
-// backup's backing file off the host so the control plane can ship it to an
+// backup's backing file off the host so a caller can ship it to an
 // object store; the daemon stays provider-agnostic. Default gzip (the .img is a
 // sparse ext4 image, so gzip collapses the holes over the wire); `none` streams
 // raw for a caller that dedups its own way. X-Crucible-Backup-Size carries the
@@ -326,7 +393,7 @@ func (s *Server) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.img"`)
 	}
 	// Headers (and 200) are committed on the first write; a mid-stream failure
-	// can only be signalled by truncating the body (the CP verifies the size),
+	// can only be signalled by truncating the body (the caller verifies the size),
 	// so log it, mirroring handleAdminBackup.
 	if !gzipped {
 		if _, err := io.Copy(w, f); err != nil {
@@ -345,7 +412,7 @@ func (s *Server) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleImportBackup — POST /backups/import?source=<vol>&consistency=<c>&compress=gzip|none.
-// Streams a backup's bytes onto the host (the CP pushes them from an object
+// Streams a backup's bytes onto the host (a caller pushes them from an object
 // store during restore) and registers a record; RestoreTo then materialises a
 // volume. The body is an unbounded stream (a backup is large), so it is NOT
 // size-capped. Default gzip, symmetric with export. Gated by volume_backup.
@@ -377,7 +444,11 @@ func volumeErrStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, volume.ErrExists), errors.Is(err, volume.ErrInUse):
 		return http.StatusConflict
-	case errors.Is(err, volume.ErrInvalidName):
+	case errors.Is(err, volume.ErrInvalidName),
+		errors.Is(err, volume.ErrNotEncrypted),
+		errors.Is(err, volume.ErrKeyNotFound),
+		errors.Is(err, volume.ErrEncryptionDisabled),
+		errors.Is(err, volume.ErrEncryptedCloneUnsupported):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

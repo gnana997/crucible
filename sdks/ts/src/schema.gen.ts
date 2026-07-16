@@ -718,6 +718,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/volumes/keys/reload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reload the encryption keyring
+         * @description Re-reads the daemon's key sources and swaps the keyring in without a restart. Refuses to drop a key a volume still uses.
+         */
+        post: operations["reloadVolumeKeys"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/rewrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-wrap every volume off a key
+         * @description Re-wraps every volume currently on from_key_id to to_key_id — rotate a key off so it can be retired.
+         */
+        post: operations["rewrapVolumes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/volumes/{name}": {
         parameters: {
             query?: never;
@@ -794,6 +834,26 @@ export interface paths {
          * @description Materialises a backup into the new volume {name}. 409 when {name} already exists (restore never overwrites), 404 when the backup is gone.
          */
         post: operations["restoreVolume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/volumes/{name}/rewrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-wrap a volume's encryption key
+         * @description Re-wraps the volume's per-volume key under a different keyring key (rotation; no data is re-encrypted, safe on a live volume). 400 for a plaintext volume or an unknown key id.
+         */
+        post: operations["rewrapVolume"];
         delete?: never;
         options?: never;
         head?: never;
@@ -951,6 +1011,13 @@ export interface components {
         };
         BackupListResponse: {
             backups?: components["schemas"]["Backup"][] | null;
+        };
+        BulkRewrapRequest: {
+            from_key_id?: string;
+            to_key_id?: string;
+        };
+        BulkRewrapResponse: {
+            rewrapped?: number;
         };
         CertStatus: {
             /** Format: date-time */
@@ -1184,6 +1251,9 @@ export interface components {
             /** @description Backup id to restore. */
             from?: string;
         };
+        RewrapVolumeReq: {
+            to_key_id?: string;
+        };
         SandboxResponse: {
             /** Format: date-time */
             created_at?: string;
@@ -1266,6 +1336,7 @@ export interface components {
             created_at?: string;
             encrypted?: boolean;
             host_id?: string;
+            key_id?: string;
             name?: string;
             /** Format: int64 */
             size_bytes?: number;
@@ -3469,6 +3540,84 @@ export interface operations {
             };
         };
     };
+    reloadVolumeKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rewrapVolumes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["BulkRewrapRequest"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkRewrapResponse"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getVolume: {
         parameters: {
             query?: never;
@@ -3748,6 +3897,58 @@ export interface operations {
             };
             /** @description Conflict */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Implemented */
+            501: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rewrapVolume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Volume name ([a-z0-9][a-z0-9-]*). */
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RewrapVolumeReq"];
+            };
+        };
+        responses: {
+            /** @description No Content */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Not Found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -187,8 +187,8 @@ A stream of app lifecycle transitions — `created`, `phase_changed`
 `domain_removed`, `updated`, `deleted`. Where `/metrics` is a numeric snapshot,
 this is the *timeline*: what happened, in order, with exact timestamps. A control
 plane renders an activity feed from it and — because `phase_changed` carries the
-exact sleep/wake moments — computes precise awake-intervals for billing that a
-60s metrics poll can only approximate.
+exact sleep/wake moments — computes precise awake-intervals for usage accounting
+that a 60s metrics poll can only approximate.
 
 ```bash
 crucible events -f                 # tail all apps

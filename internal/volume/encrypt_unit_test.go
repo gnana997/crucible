@@ -130,6 +130,75 @@ func containsKey(b []byte, key string) bool {
 	return ok
 }
 
+// setKeyring wires a keyring directly, bypassing EnableEncryption's cryptsetup
+// probe — so the pure-crypto rewrap/reload logic is testable without root. The
+// engine is set non-nil but never invoked (rewrap touches only the record).
+func setKeyring(m *Manager, keys map[string][]byte, defaultKeyID string) {
+	m.crypt = cryptdev.New()
+	m.keys = keys
+	m.defaultKeyID = defaultKeyID
+}
+
+func TestRewrapReKeysWithoutTouchingData(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	k1, k2 := kek32(t), kek32(t)
+	setKeyring(m, map[string][]byte{"k1": k1, "k2": k2}, "k1")
+
+	dek, _ := cryptdev.NewDEK()
+	wrapped, _ := cryptdev.WrapKey(k1, dek, []byte("data"))
+	if err := m.st.put(Record{Name: "data", SizeBytes: testSize, Formatted: true, HostID: "h", Encrypted: true, WrappedKey: wrapped, KeyID: "k1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Rewrap("data", "k2"); err != nil {
+		t.Fatalf("Rewrap: %v", err)
+	}
+	got, err := m.Get("data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.KeyID != "k2" {
+		t.Fatalf("KeyID = %q, want k2", got.KeyID)
+	}
+	// The data key must be unchanged — recovered under k2, identical to the original.
+	back, err := cryptdev.UnwrapKey(k2, got.WrappedKey, []byte("data"))
+	if err != nil {
+		t.Fatalf("unwrap under k2: %v", err)
+	}
+	if string(back) != string(dek) {
+		t.Fatal("the data key changed on rewrap — the volume would be unopenable")
+	}
+	// It must no longer open under the old key.
+	if _, err := cryptdev.UnwrapKey(k1, got.WrappedKey, []byte("data")); err == nil {
+		t.Fatal("the rewrapped key still opens under the old KEK")
+	}
+
+	// Rewrap to an unknown key id is refused.
+	if err := m.Rewrap("data", "ghost"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("Rewrap to unknown key = %v, want ErrKeyNotFound", err)
+	}
+}
+
+func TestReloadKeyringRefusesDroppingUsedKey(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	k1, k2 := kek32(t), kek32(t)
+	setKeyring(m, map[string][]byte{"k1": k1, "k2": k2}, "k1")
+	if err := m.st.put(Record{Name: "data", SizeBytes: testSize, Formatted: true, HostID: "h", Encrypted: true, WrappedKey: []byte{1, 2, 3, 4}, KeyID: "k2"}); err != nil {
+		t.Fatal(err)
+	}
+	// Dropping k2 while a volume uses it must be refused.
+	if err := m.ReloadKeyring(map[string][]byte{"k1": k1}); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("reload dropping an in-use key = %v, want ErrKeyNotFound", err)
+	}
+	// Keeping both (and adding a third) is fine.
+	if err := m.ReloadKeyring(map[string][]byte{"k1": k1, "k2": k2, "k3": kek32(t)}); err != nil {
+		t.Fatalf("reload keeping in-use keys: %v", err)
+	}
+	if _, ok := m.kekFor("k3"); !ok {
+		t.Fatal("reloaded keyring missing the new key k3")
+	}
+}
+
 func TestBackfillSkipsLUKSContainer(t *testing.T) {
 	dir := t.TempDir()
 	// Drop a file that begins with the LUKS magic but has no record — simulating

@@ -57,6 +57,15 @@ class BackupListResponse(BaseModel):
     backups: list[Backup] | None = None
 
 
+class BulkRewrapRequest(BaseModel):
+    from_key_id: str | None = None
+    to_key_id: str | None = None
+
+
+class BulkRewrapResponse(BaseModel):
+    rewrapped: int | None = None
+
+
 class CertStatus(BaseModel):
     last_attempt: AwareDatetime | None = None
     last_error: str | None = None
@@ -222,6 +231,10 @@ class RestoreVolReq(BaseModel):
     from_: str | None = Field(None, alias='from', description='Backup id to restore.')
 
 
+class RewrapVolumeReq(BaseModel):
+    to_key_id: str | None = None
+
+
 class SandboxResponse(BaseModel):
     created_at: AwareDatetime | None = None
     id: str | None = None
@@ -278,6 +291,7 @@ class Volume(BaseModel):
     created_at: AwareDatetime | None = None
     encrypted: bool | None = None
     host_id: str | None = None
+    key_id: str | None = None
     name: str | None = None
     size_bytes: int | None = None
 

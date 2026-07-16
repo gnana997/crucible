@@ -235,3 +235,84 @@ func TestKeyringMultiKeyAndRetire(t *testing.T) {
 		t.Fatalf("b under a retired key = %v, want ErrKeyNotFound", err)
 	}
 }
+
+// TestRewrapKeepsDataThenRetireOldKey proves rotation on a real LUKS container:
+// a volume created under k1 is rewrapped to k2 (touching only the record), and
+// after the old key k1 is retired it still opens under k2 with its data intact —
+// the container itself was never re-encrypted.
+func TestRewrapKeepsDataThenRetireOldKey(t *testing.T) {
+	requireCryptRoot(t)
+
+	dir := t.TempDir()
+	k1, k2 := kek32(t), kek32(t)
+	m := newMgr(t, dir)
+	if err := m.EnableEncryption(map[string][]byte{"k1": k1, "k2": k2}, "k1", false); err != nil {
+		t.Fatalf("EnableEncryption: %v", err)
+	}
+	yes := true
+	if _, err := m.Create("data", 64<<20, CreateOpts{Encrypt: &yes}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	marker := []byte("REWRAP-marker-7c1e")
+	writeVolMarker(t, m, "data", marker)
+
+	// Rotate the key: k1 → k2. No cryptsetup on the container, no data movement.
+	if err := m.Rewrap("data", "k2"); err != nil {
+		t.Fatalf("Rewrap: %v", err)
+	}
+	if got, _ := m.Get("data"); got.KeyID != "k2" {
+		t.Fatalf("KeyID after rewrap = %q, want k2", got.KeyID)
+	}
+	_ = m.Close()
+
+	// Retire k1 entirely: reopen with only k2. The volume must still open + read.
+	m2, err := NewManager(dir, testSize, "testhost", os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = m2.Close() }()
+	if err := m2.EnableEncryption(map[string][]byte{"k2": k2}, "k2", false); err != nil {
+		t.Fatalf("EnableEncryption (only k2): %v", err)
+	}
+	if got := readVolMarker(t, m2, "data"); !bytes.Equal(got, marker) {
+		t.Fatalf("marker after rewrap+retire = %q, want %q", got, marker)
+	}
+}
+
+// writeVolMarker mounts an encrypted volume's device and writes a marker file.
+func writeVolMarker(t *testing.T, m *Manager, name string, marker []byte) {
+	t.Helper()
+	mapper, err := m.OpenDevice(name)
+	if err != nil {
+		t.Fatalf("OpenDevice %s: %v", name, err)
+	}
+	defer func() { _ = m.CloseDevice(name) }()
+	mnt := t.TempDir()
+	if err := syscall.Mount(mapper, mnt, "ext4", 0, ""); err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	defer func() { _ = syscall.Unmount(mnt, 0) }()
+	if err := os.WriteFile(filepath.Join(mnt, "m.txt"), marker, 0o600); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+}
+
+// readVolMarker mounts an encrypted volume's device and reads the marker file.
+func readVolMarker(t *testing.T, m *Manager, name string) []byte {
+	t.Helper()
+	mapper, err := m.OpenDevice(name)
+	if err != nil {
+		t.Fatalf("OpenDevice %s: %v", name, err)
+	}
+	defer func() { _ = m.CloseDevice(name) }()
+	mnt := t.TempDir()
+	if err := syscall.Mount(mapper, mnt, "ext4", 0, ""); err != nil {
+		t.Fatalf("mount: %v", err)
+	}
+	defer func() { _ = syscall.Unmount(mnt, 0) }()
+	got, err := os.ReadFile(filepath.Join(mnt, "m.txt"))
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	return got
+}

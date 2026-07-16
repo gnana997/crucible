@@ -62,6 +62,10 @@ type putSecretReq struct {
 type volNameParam struct {
 	Name string `path:"name" description:"Volume name ([a-z0-9][a-z0-9-]*)."`
 }
+type rewrapVolumeReq struct {
+	volNameParam
+	api.RewrapVolumeRequest
+}
 type backupIDParam struct {
 	ID string `path:"id" description:"Backup id (<volume>-<timestamp>)."`
 }
@@ -449,6 +453,20 @@ func buildReflector() *openapi3.Reflector {
 		"Destroys the volume's keyslots and deletes its wrapped key, making the data permanently "+
 			"unrecoverable. 400 for a plaintext volume; 409 when attached to a live sandbox.",
 		volNameParam{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes/{name}/rewrap", "rewrapVolume", "volumes", "Re-wrap a volume's encryption key",
+		"Re-wraps the volume's per-volume key under a different keyring key (rotation; no data is "+
+			"re-encrypted, safe on a live volume). 400 for a plaintext volume or an unknown key id.",
+		rewrapVolumeReq{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotFound, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes/rewrap", "rewrapVolumes", "volumes", "Re-wrap every volume off a key",
+		"Re-wraps every volume currently on from_key_id to to_key_id — rotate a key off so it can be retired.",
+		api.BulkRewrapRequest{}, api.BulkRewrapResponse{}, http.StatusOK, http.StatusBadRequest, http.StatusNotImplemented)
+
+	jsonOp(http.MethodPost, "/volumes/keys/reload", "reloadVolumeKeys", "volumes", "Reload the encryption keyring",
+		"Re-reads the daemon's key sources and swaps the keyring in without a restart. Refuses to drop a "+
+			"key a volume still uses.",
+		struct{}{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotImplemented)
 
 	jsonOp(http.MethodPost, "/volumes/{name}/backups", "backupVolume", "volumes", "Back up a volume",
 		"Takes a consistent point-in-time backup of the volume, restorable to a new volume. "+

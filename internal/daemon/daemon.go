@@ -129,6 +129,11 @@ type Config struct {
 	// persistent volumes) and reflects them in create requests. Nil makes
 	// those routes answer 501 and a create requesting a volume is rejected.
 	Volumes *volume.Manager
+
+	// ReloadVolumeKeys re-reads the configured volume encryption key sources and
+	// swaps the keyring in without a restart. nil when encryption is off; the
+	// /volumes/keys/reload route answers 501 then.
+	ReloadVolumeKeys func() error
 }
 
 const (

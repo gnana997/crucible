@@ -126,7 +126,7 @@ for the measured distribution.
 
 - request/response databases and caches with pooled clients (postgres, mysql,
   redis, mongo); reaping lets them scale to zero between bursts of use;
-- dev / preview / CI environments, per-tenant databases, internal tools, agent
+- dev / preview / CI environments, per-user databases, internal tools, agent
   sandboxes; idle most of the time, so they mostly cost nothing;
 - connection-scoped pub/sub / realtime backends with `--keep-connections`; awake
   while clients are connected, asleep overnight.

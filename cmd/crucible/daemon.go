@@ -135,7 +135,7 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		pprofListen  = fs.String("pprof-listen", "", "serve Go net/http/pprof on this address for daemon profiling; empty = off. Exposes process memory — bind loopback (e.g. 127.0.0.1:6060) or protect the port")
 		otlpEndpoint = fs.String("otlp-endpoint", "", "OTLP endpoint to push metrics to (e.g. http://collector:4317); empty = off. Honors OTEL_EXPORTER_OTLP_ENDPOINT")
 		otlpProtocol = fs.String("otlp-protocol", "", "OTLP protocol: grpc (default) or http")
-		otlpHeaders  = fs.String("otlp-headers", "", "OTLP headers as k=v,k=v (auth/tenant); also OTEL_EXPORTER_OTLP_HEADERS")
+		otlpHeaders  = fs.String("otlp-headers", "", "OTLP headers as k=v,k=v (auth/routing); also OTEL_EXPORTER_OTLP_HEADERS")
 		otlpInsecure = fs.Bool("otlp-insecure", false, "use plaintext (no TLS) for the OTLP exporter")
 		otlpLogs     = fs.Bool("otlp-logs", true, "export app logs over OTLP when --otlp-endpoint is set (requires --log-dir)")
 		drainStr     = fs.String("drain-timeout", "30s", "max wallclock to wait for in-flight requests + sandbox drain on shutdown")
@@ -507,6 +507,7 @@ Required flags:
 	// volumes hardlink into the jail (volume.Manager / jailer.Stage enforce
 	// it at attach time).
 	var volMgr *volume.Manager
+	var reloadVolumeKeys func() error
 	if *volumeDir != "" {
 		vuid, vgid := os.Getuid(), os.Getgid()
 		if *jailerBin != "" {
@@ -541,6 +542,16 @@ Required flags:
 				return 2
 			}
 			logger.Info("volume encryption enabled", "keys", len(ring), "default_key", *volumeDefaultKey, "default_encrypt", *volumeEncrypt)
+			// A reloader for POST /volumes/keys/reload: re-read the key sources and
+			// swap the keyring in without a restart.
+			vkFile, vkDir := *volumeKeyFile, *volumeKeyDir
+			reloadVolumeKeys = func() error {
+				ring, _, err := buildVolumeKeyring(vkFile, vkDir)
+				if err != nil {
+					return err
+				}
+				return volMgr.ReloadKeyring(ring)
+			}
 			// Volume encryption protects the data volume, but a slept app's memory
 			// snapshot (which can hold cached rows) is written under --work-base — in
 			// the clear unless that sits on an encrypted filesystem. Advise when we
@@ -671,18 +682,19 @@ Required flags:
 	}
 
 	srv, err := daemon.New(daemon.Config{
-		Manager:       mgr,
-		Addr:          *addr,
-		Logger:        logger,
-		Metrics:       mx,
-		TokenStore:    tokens,
-		TLSCert:       *tlsCert,
-		TLSKey:        *tlsKey,
-		Images:        imageStore,
-		LogStore:      logStore,
-		RegistryStore: regStore,
-		SecretStore:   secStore,
-		Volumes:       volMgr,
+		Manager:          mgr,
+		Addr:             *addr,
+		Logger:           logger,
+		Metrics:          mx,
+		TokenStore:       tokens,
+		TLSCert:          *tlsCert,
+		TLSKey:           *tlsKey,
+		Images:           imageStore,
+		LogStore:         logStore,
+		RegistryStore:    regStore,
+		SecretStore:      secStore,
+		Volumes:          volMgr,
+		ReloadVolumeKeys: reloadVolumeKeys,
 	})
 	if err != nil {
 		logger.Error("daemon init failed", "err", err)
@@ -837,7 +849,7 @@ Required flags:
 				// (state, expiry, last ACME error) + the app's generated name.
 				srv.SetCertStatusSource(tp.Status, *proxyDomain)
 				// app_cert_state{app,domain,state} + app_cert_not_after_seconds:
-				// per-domain cert status for the CP to alert on (expiry / failed).
+				// per-domain cert status for monitoring to alert on (expiry / failed).
 				mx.SetCertStatusSource(func() []metrics.AppCertStat {
 					apps, lerr := appMgr.List()
 					if lerr != nil {

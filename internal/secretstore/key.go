@@ -10,8 +10,8 @@ import (
 )
 
 // EnvKeyVar holds a base64-encoded master key. It takes precedence over a key
-// file so a KMS / systemd-credential wrapper (or the control plane) can inject
-// the key without it ever touching the same disk as the ciphertext.
+// file so a KMS or systemd-credential wrapper can inject the key without it ever
+// touching the same disk as the ciphertext.
 const EnvKeyVar = "CRUCIBLE_SECRETS_KEY"
 
 // LoadMasterKey resolves the AES-256 secret-store master key from

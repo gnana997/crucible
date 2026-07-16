@@ -62,6 +62,39 @@ func (c *Client) ShredVolume(ctx context.Context, name string) error {
 	return expectNoContent(resp)
 }
 
+// RewrapVolume re-wraps an encrypted volume's key under keyring key toKeyID
+// (POST /volumes/{name}/rewrap) — a key rotation that touches only the record,
+// not the data, so it is safe on a live volume.
+func (c *Client) RewrapVolume(ctx context.Context, name, toKeyID string) error {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(name)+"/rewrap", api.RewrapVolumeRequest{ToKeyID: toKeyID})
+	if err != nil {
+		return err
+	}
+	return expectNoContent(resp)
+}
+
+// RewrapAllVolumes re-wraps every volume currently on fromKeyID to toKeyID
+// (POST /volumes/rewrap), returning the number rewrapped — the "rotate a key off,
+// then retire it" operation.
+func (c *Client) RewrapAllVolumes(ctx context.Context, fromKeyID, toKeyID string) (int, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/rewrap", api.BulkRewrapRequest{FromKeyID: fromKeyID, ToKeyID: toKeyID})
+	if err != nil {
+		return 0, err
+	}
+	out, err := decodeInto[api.BulkRewrapResponse](resp)
+	return out.Rewrapped, err
+}
+
+// ReloadVolumeKeys re-reads the daemon's volume encryption key sources and swaps
+// the keyring in without a restart (POST /volumes/keys/reload).
+func (c *Client) ReloadVolumeKeys(ctx context.Context) error {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/keys/reload", nil)
+	if err != nil {
+		return err
+	}
+	return expectNoContent(resp)
+}
+
 // BackupVolume takes a point-in-time backup of a volume
 // (POST /volumes/{name}/backups). Errors 409 if the volume is attached to a
 // running sandbox (sleep it first).
@@ -96,7 +129,7 @@ type ExportOptions struct {
 }
 
 // ExportBackup streams a backup's bytes off the host to w (GET
-// /backups/{id}/export), so a caller (the control plane) can ship it to an
+// /backups/{id}/export), so a caller can ship it to an
 // object store. Requires the `volume_backup` scoped-token op — it moves volume
 // data across the boundary. Returns the decompressed byte size (the
 // X-Crucible-Backup-Size header), which the caller can verify against what it
@@ -140,7 +173,7 @@ type ImportOptions struct {
 
 // ImportBackup streams a backup's bytes onto the host (POST /backups/import) and
 // returns the new record; RestoreBackup then materialises a volume from it. This
-// is how the control plane restores an off-host backup onto a (possibly fresh)
+// is how a caller restores an off-host backup onto a (possibly fresh)
 // host. Requires the `volume_backup` scoped-token op.
 func (c *Client) ImportBackup(ctx context.Context, opt ImportOptions, r io.Reader) (api.Backup, error) {
 	q := url.Values{}

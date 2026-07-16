@@ -122,15 +122,15 @@ crucible volume shred pgdata     # destroys the keyslots + deletes the wrapped k
 
 `shred` is refused while the volume is attached to a live sandbox, and on a
 plaintext volume (use `volume rm`). It is gated by the default-deny `delete`
-scoped-token op. For a managed control plane, a per-tenant key means deleting a
-tenant crypto-shreds all their volumes at once.
+scoped-token op. When several volumes share one key, destroying that key
+crypto-shreds all of them at once.
 
 ## What it protects (and what it doesn't)
 
 | Threat | Protected? |
 |---|---|
 | Stolen / seized / RMA'd / decommissioned disk | ✅ ciphertext at rest |
-| Crypto-shred a volume (or a whole tenant's key) | ✅ data unrecoverable, immediately |
+| Crypto-shred a volume (or destroy a shared key) | ✅ data unrecoverable, immediately |
 | One guest reading another's volume | ✅ single-writer + separate keys + isolation |
 | A compromised **host root** | ❌ it holds the live device-mapper (the AWS-EBS model) |
 | The guest itself | ❌ it legitimately mounts plaintext |
@@ -138,7 +138,7 @@ tenant crypto-shreds all their volumes at once.
 Closing the host-root gap needs confidential computing (encrypted guest RAM),
 which Firecracker does not support and which is fundamentally incompatible with
 the lazy-paging that powers sub-second [scale-to-zero](serverless.md) wake. So the
-honest claim is **"encryption at rest with per-tenant keys and crypto-shred,"**
+honest claim is **"encryption at rest with per-volume keys and crypto-shred,"**
 never "we can't read your data."
 
 ## Slept apps and the memory snapshot
