@@ -161,12 +161,44 @@ func newVolumeCloneCmd(o *globalOpts) *cobra.Command {
 // newVolumeBackupCmd is `volume backup <name>` (create a backup) plus `ls`/`rm`
 // subcommands. A first arg that isn't a subcommand is the volume to back up.
 func newVolumeBackupCmd(o *globalOpts) *cobra.Command {
+	var parent string
+	var incremental bool
 	cmd := &cobra.Command{
 		Use:   "backup <name>",
-		Short: "Back up a volume (point-in-time copy; restore to a new volume with `volume restore`)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Back up a volume (full, or --incremental for only the changed blocks)",
+		Long: "Take a point-in-time backup of a volume, restorable to a new volume with\n" +
+			"`volume restore`. A plain backup is a full copy. --parent <id> takes an\n" +
+			"INCREMENTAL (only the blocks changed since that backup); --incremental is a\n" +
+			"shortcut for --parent <the volume's latest backup>. Restore the chain's tip\n" +
+			"and the base + deltas are reassembled automatically.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			b, err := o.client().BackupVolume(cmd.Context(), args[0])
+			cl := o.client()
+			name := args[0]
+			if incremental && parent == "" {
+				// Default the parent to the volume's most recent backup.
+				page, err := cl.ListBackups(cmd.Context(), name)
+				if err != nil {
+					return err
+				}
+				if len(page.Items) == 0 {
+					return fmt.Errorf("no existing backup of %q to base an incremental on; take a full backup first", name)
+				}
+				latest := page.Items[0]
+				for _, b := range page.Items[1:] {
+					if b.CreatedAt.After(latest.CreatedAt) {
+						latest = b
+					}
+				}
+				parent = latest.ID
+			}
+			var b api.Backup
+			var err error
+			if parent != "" {
+				b, err = cl.BackupVolumeIncremental(cmd.Context(), name, parent)
+			} else {
+				b, err = cl.BackupVolume(cmd.Context(), name)
+			}
 			if err != nil {
 				return err
 			}
@@ -177,6 +209,8 @@ func newVolumeBackupCmd(o *globalOpts) *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&parent, "parent", "", "take an incremental against this backup id")
+	cmd.Flags().BoolVar(&incremental, "incremental", false, "take an incremental against the volume's latest backup")
 	cmd.AddCommand(newVolumeBackupLsCmd(o), newVolumeBackupRmCmd(o),
 		newVolumeBackupExportCmd(o), newVolumeBackupImportCmd(o))
 	return cmd
@@ -226,14 +260,16 @@ func newVolumeBackupExportCmd(o *globalOpts) *cobra.Command {
 }
 
 func newVolumeBackupImportCmd(o *globalOpts) *cobra.Command {
-	var source, consistency, in string
+	var source, consistency, in, parent string
 	var raw bool
 	cmd := &cobra.Command{
 		Use:   "import --source <volume>",
 		Short: "Stream a backup onto the host (needs the 'volume_backup' scoped op)",
 		Long: "Place an off-host backup onto this host and register it, printing the new\n" +
 			"backup id; then `volume restore --from <id> --to <new>` materialises a volume.\n" +
-			"Reads a file (-f) or stdin. Expects gzip (as `export` produces) unless --raw.",
+			"Reads a file (-f) or stdin. Expects gzip (as `export` produces) unless --raw.\n\n" +
+			"For an INCREMENTAL, pass --parent <id> = the id THIS host returned when you\n" +
+			"imported its parent (import a chain base-first, mapping each returned id).",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if source == "" {
@@ -253,9 +289,11 @@ func newVolumeBackupImportCmd(o *globalOpts) *cobra.Command {
 				}
 				r = cmd.InOrStdin()
 			}
-			b, err := o.client().ImportBackup(cmd.Context(), client.ImportOptions{
-				SourceVolume: source, Consistency: consistency, Raw: raw,
-			}, r)
+			opt := client.ImportOptions{SourceVolume: source, Consistency: consistency, Raw: raw}
+			if parent != "" {
+				opt.Kind, opt.Parent = "incremental", parent
+			}
+			b, err := o.client().ImportBackup(cmd.Context(), opt, r)
 			if err != nil {
 				return err
 			}
@@ -270,6 +308,7 @@ func newVolumeBackupImportCmd(o *globalOpts) *cobra.Command {
 	cmd.Flags().StringVar(&consistency, "consistency", "", "consistency level to record (default: filesystem)")
 	cmd.Flags().StringVarP(&in, "file", "f", "", "read the backup from this file (default: stdin)")
 	cmd.Flags().BoolVar(&raw, "raw", false, "the input is uncompressed (default: expect gzip)")
+	cmd.Flags().StringVar(&parent, "parent", "", "import an incremental delta whose parent has this (local) backup id")
 	return cmd
 }
 
@@ -292,9 +331,17 @@ func newVolumeBackupLsCmd(o *globalOpts) *cobra.Command {
 				return printJSON(cmd.OutOrStdout(), page.Items)
 			}
 			tw := newTable(cmd.OutOrStdout())
-			_, _ = fmt.Fprintln(tw, "ID\tVOLUME\tSIZE\tCONSISTENCY\tAGE")
+			_, _ = fmt.Fprintln(tw, "ID\tVOLUME\tKIND\tPARENT\tSIZE\tAGE")
 			for _, b := range page.Items {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", b.ID, b.SourceVolume, humanSize(b.SizeBytes), b.Consistency, age(b.CreatedAt))
+				kind := b.Kind
+				if kind == "" {
+					kind = "full"
+				}
+				parent := b.ParentID
+				if parent == "" {
+					parent = "-"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", b.ID, b.SourceVolume, kind, parent, humanSize(b.SizeBytes), age(b.CreatedAt))
 			}
 			return tw.Flush()
 		},

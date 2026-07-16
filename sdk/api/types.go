@@ -170,6 +170,11 @@ type Backup struct {
 	Consistency  string    `json:"consistency,omitempty"` // "filesystem"
 	HostID       string    `json:"host_id,omitempty"`
 	Encrypted    bool      `json:"encrypted,omitempty"` // backup of an encrypted volume (ciphertext)
+	// Kind is "full" (a whole-image copy) or "incremental" (only the blocks
+	// changed since ParentID). Empty means full (legacy). ParentID is set for an
+	// incremental — its immediate parent backup in the chain.
+	Kind     string `json:"kind,omitempty"`
+	ParentID string `json:"parent_id,omitempty"`
 }
 
 // BackupListResponse is the body of GET /backups and GET /volumes/{name}/backups.

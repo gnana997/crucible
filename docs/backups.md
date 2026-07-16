@@ -112,14 +112,50 @@ A restored or cloned volume mounts read-write in a guest and, if its source was
 not cleanly unmounted, replays its journal on first mount, exactly like any
 crash-recovered filesystem.
 
+## Incremental backups
+
+A plain `volume backup` is a **full** whole-image copy. An **incremental** stores
+only the blocks that changed since a parent backup, so frequent backups stay
+cheap:
+
+```bash
+crucible volume backup db                       # a full (the base)
+# … later, after more writes …
+crucible volume backup db --incremental         # only the changed blocks, vs the latest backup
+crucible volume backup db --parent <backup-id>  # … or against a specific parent
+```
+
+- A backup **chain** is a base full plus a run of incrementals, each relative to
+  its parent. Restore the **tip** and the base and every delta are reassembled
+  automatically — `volume restore --from <incremental-id> --to <name>` just works.
+- The whole chain must be present to restore; deleting a backup that an
+  incremental still depends on is refused (delete the children first).
+- **How it works.** With no changed-block tracking in the stack, a delta is
+  computed by hashing each fixed block (1 MiB) of the current image and shipping
+  only those that differ from the parent's manifest of block hashes. On restore
+  the reconstructed image is verified block-for-block against the tip's manifest,
+  so a corrupt or incomplete chain is caught, not silently restored. It works on
+  encrypted volumes too — the blocks are the LUKS ciphertext (AES-XTS is
+  per-block), so nothing decrypts to compute a delta.
+- **Cadence and retention are yours** (or your control plane's): the daemon gives
+  the full/incremental primitives; deciding *when* to take a full vs an
+  incremental, and *how long* to keep them, is policy on top.
+
+`backup ls` shows each backup's `KIND` (full / incremental) and `PARENT`.
+Incrementals also export/import off-host like fulls — export each backup in the
+chain and re-import them base-first (pass `--parent <local-id>` for each delta),
+then restore the tip. See [off-host backups](#off-host-backups-export--import).
+
 ## Command reference
 
 | Command | What it does |
 |---|---|
-| `volume backup <name>` | Back up a volume; prints the backup id |
-| `volume backup ls [<name>]` | List backups (all, or for one volume) |
-| `volume backup rm <id>...` | Delete backups by id |
-| `volume restore --from <id> --to <name>` | Restore a backup into a new volume |
+| `volume backup <name>` | Back up a volume (full); prints the backup id |
+| `volume backup <name> --incremental` | Incremental against the volume's latest backup |
+| `volume backup <name> --parent <id>` | Incremental against a specific backup |
+| `volume backup ls [<name>]` | List backups (all, or for one volume) with kind/parent |
+| `volume backup rm <id>...` | Delete backups by id (refused while a child depends on it) |
+| `volume restore --from <id> --to <name>` | Restore a backup (a chain tip reassembles) into a new volume |
 | `volume clone <src> <dst>` | Copy a volume into a new one |
 
 All are available over the REST API (`POST /volumes/{name}/backups`, `GET
@@ -128,8 +164,12 @@ MCP tools (`volume_backup`, `volume_restore`).
 
 Acceptance: `scripts/smoke_backups.sh` covers a detached backup (loop-mounted to
 verify the data), a slept-app backup, a live backup via fsfreeze on a reflink
-filesystem, a restore into a new volume, and an independent clone. See also
-[volumes.md](volumes.md) and [serverless.md](serverless.md).
+filesystem, a restore into a new volume, and an independent clone;
+`scripts/smoke_incremental_backup.sh` covers a full → incremental chain (the delta
+is far smaller than the full), a tip restore that reassembles base + delta (data
+intact, plaintext and encrypted), the parent-delete guard, and an off-host chain
+export/import round-trip. See also [volumes.md](volumes.md) and
+[serverless.md](serverless.md).
 
 ## Off-host backups (export / import)
 

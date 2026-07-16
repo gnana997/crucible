@@ -49,6 +49,8 @@ class Backup(BaseModel):
     encrypted: bool | None = None
     host_id: str | None = None
     id: str | None = None
+    kind: str | None = None
+    parent_id: str | None = None
     size_bytes: int | None = None
     source_volume: str | None = None
 

@@ -163,7 +163,15 @@ A volume-backed app used to cold-boot on wake (sleep destroyed the instance; wak
 - [x] **Durable-while-asleep fsync:** the volume backing file is fsync'd host-side before the VMM stops (Firecracker does not flush drive backing files on snapshot), so a host crash while asleep cannot lose committed rows.
 - [x] **Automatic cold-boot fallback:** a snapshot-restore failure falls back to stop/start cold-create, so a wake never fails.
 
-### v0.9.2: Cold app stop/start *(current)*
+### v0.9.3: Incremental backups *(current)*
+
+Back up only what changed — a base full plus a chain of deltas ([backups.md](backups.md#incremental-backups)).
+
+- [x] **`volume backup <name> --incremental` / `--parent <id>`:** records only the blocks changed since a parent backup, as a delta. `volume restore --from <tip>` reassembles the whole chain (base + deltas) and verifies the reconstructed image block-for-block against the tip's manifest — a corrupt or missing link is caught. `POST /volumes/{name}/backups?parent=<id>`, SDK `BackupVolumeIncremental`; `backup ls` shows `KIND`/`PARENT`; deleting a parent with a live child is refused.
+- [x] **Block-level, encryption-transparent:** with no changed-block tracking in the stack, a delta hashes each 1 MiB block and ships only those differing from the parent's manifest. On an encrypted volume the blocks are the LUKS ciphertext (AES-XTS is per-block), so nothing decrypts. Incrementals export/import off-host like fulls (import a chain base-first, `--parent <local-id>`). `scripts/smoke_incremental_backup.sh` covers the chain, tip restore (plaintext + encrypted), the parent-delete guard, and the off-host round-trip.
+- Cadence + retention (full-vs-incremental scheduling, GC) stay a control-plane concern. Next: storage autoscaling (online volume grow of an attached app), then the v1.0 gate.
+
+### v0.9.2: Cold app stop/start
 
 A desired-state stop/start, and the recipe to grow a running app's volume ([apps.md](apps.md#the-crucible-app-commands)).
 

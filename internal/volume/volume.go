@@ -937,6 +937,7 @@ func (m *Manager) Backup(name string) (BackupRecord, error) {
 		ID: id, SourceVolume: name, SizeBytes: rec.SizeBytes,
 		CreatedAt: time.Now().UTC(), Consistency: "filesystem", HostID: m.hostID, Path: dst,
 		Encrypted: rec.Encrypted, WrappedKey: rec.WrappedKey, KeyID: rec.KeyID,
+		Kind: backupKindFull,
 	}
 	if err := m.st.putBackup(brec); err != nil {
 		_ = os.Remove(dst)
@@ -1008,6 +1009,12 @@ type ImportMeta struct {
 	SourceVolume string
 	Consistency  string
 	Compressed   bool
+	// Kind is "incremental" to import a delta stream (Path becomes a .delta and
+	// ParentID is recorded — the parent's id ON THIS HOST); empty/"full" imports a
+	// whole-image .img. The caller imports a chain base-first, mapping each
+	// imported id to the fresh id returned.
+	Kind     string
+	ParentID string
 }
 
 // ImportBackup writes an incoming backup stream into the backup dir and
@@ -1024,12 +1031,20 @@ func (m *Manager) ImportBackup(meta ImportMeta, r io.Reader) (BackupRecord, erro
 	if consistency == "" {
 		consistency = "filesystem"
 	}
+	incremental := meta.Kind == backupKindIncremental
+	if incremental && meta.ParentID == "" {
+		return BackupRecord{}, fmt.Errorf("%w: incremental import needs a parent id", ErrBackupChainBroken)
+	}
 	id := meta.SourceVolume + "-" + time.Now().UTC().Format("20060102T150405.000Z")
 	destDir := filepath.Join(m.backupDir, meta.SourceVolume)
 	if err := os.MkdirAll(destDir, 0o700); err != nil {
 		return BackupRecord{}, fmt.Errorf("volume: create backup dir %s: %w", destDir, err)
 	}
-	dst := filepath.Join(destDir, id+".img")
+	ext := ".img"
+	if incremental {
+		ext = ".delta"
+	}
+	dst := filepath.Join(destDir, id+ext)
 	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return BackupRecord{}, fmt.Errorf("volume: create backup file: %w", err)
@@ -1061,6 +1076,12 @@ func (m *Manager) ImportBackup(meta ImportMeta, r io.Reader) (BackupRecord, erro
 	brec := BackupRecord{
 		ID: id, SourceVolume: meta.SourceVolume, SizeBytes: n,
 		CreatedAt: time.Now().UTC(), Consistency: consistency, HostID: m.hostID, Path: dst,
+		Kind: backupKindFull,
+	}
+	if incremental {
+		brec.Kind, brec.ParentID = backupKindIncremental, meta.ParentID
+		// SizeBytes on a delta record is the on-wire byte count, not a logical
+		// volume size; the restored volume's size comes from the chain's images.
 	}
 	if err := m.st.putBackup(brec); err != nil {
 		return BackupRecord{}, err
@@ -1079,8 +1100,19 @@ func (m *Manager) DeleteBackup(id string) error {
 	if !ok {
 		return ErrBackupNotFound
 	}
+	// Refuse to break a chain: an incremental depends on its parent's bytes.
+	kids, err := m.backupChildren(rec)
+	if err != nil {
+		return err
+	}
+	if len(kids) > 0 {
+		return fmt.Errorf("%w: %s (dependents: %d)", ErrBackupHasChildren, id, len(kids))
+	}
 	if err := os.Remove(rec.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("volume: remove backup file: %w", err)
+	}
+	if err := os.Remove(backupManifestPath(rec.Path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("volume: remove backup manifest: %w", err)
 	}
 	return m.st.delBackup(id)
 }
@@ -1111,7 +1143,34 @@ func (m *Manager) RestoreTo(backupID, newName string) (Record, error) {
 	if brec.Encrypted {
 		enc = &rewrapSrc{sourceName: brec.SourceVolume, wrappedKey: brec.WrappedKey, keyID: brec.KeyID}
 	}
-	return m.materialize(newName, brec.Path, brec.SizeBytes, enc)
+	// A full backup materializes straight from its .img (the v0.6.3 fast path). An
+	// incremental first reassembles its chain (base full + each delta) into a temp
+	// image, then materializes from that.
+	if brec.Kind != backupKindIncremental {
+		return m.materialize(newName, brec.Path, brec.SizeBytes, enc)
+	}
+	chain, err := m.resolveChain(backupID)
+	if err != nil {
+		return Record{}, err
+	}
+	tmpPath := filepath.Join(m.dir, newName+".reconstruct.tmp")
+	_ = os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := m.reconstructChain(chain, tmpPath); err != nil {
+		return Record{}, err
+	}
+	// Derive the logical size from the reconstructed image (an imported delta's
+	// record SizeBytes is the wire byte count, not the volume size): the image is
+	// the ext4 file, or the LUKS container (logical = container - header).
+	fi, err := os.Stat(tmpPath)
+	if err != nil {
+		return Record{}, err
+	}
+	logical := fi.Size()
+	if brec.Encrypted {
+		logical -= cryptdev.LUKSHeaderBytes
+	}
+	return m.materialize(newName, tmpPath, logical, enc)
 }
 
 // Clone copies a quiescent source volume into a NEW volume dst, returning dst's

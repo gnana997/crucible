@@ -50,6 +50,14 @@ type BackupRecord struct {
 	Encrypted  bool   `json:"encrypted,omitempty"`
 	WrappedKey []byte `json:"wrapped_key,omitempty"`
 	KeyID      string `json:"key_id,omitempty"`
+	// Kind is "full" (a whole-image copy; Path is a .img) or "incremental" (only
+	// the blocks changed since ParentID; Path is a .delta). Empty is treated as
+	// "full" (legacy backups predate incrementals). BlockSize is the delta/
+	// manifest block size in bytes (0 for a legacy full — its manifest, when
+	// needed, is computed at the default size).
+	Kind      string `json:"kind,omitempty"`
+	ParentID  string `json:"parent_id,omitempty"`
+	BlockSize int    `json:"block_size,omitempty"`
 }
 
 var (

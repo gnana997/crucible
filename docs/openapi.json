@@ -3,7 +3,7 @@
   "info": {
     "title": "crucible",
     "description": "REST API for the crucible daemon, a Firecracker microVM sandbox runtime. The daemon is the contract every SDK mirrors. Auth is a bearer token (`Authorization: Bearer \u003ckey\u003e`); `/healthz` is always exempt, and a loopback daemon with no keys configured serves unauthenticated. The exec and service-log endpoints stream a binary frame protocol OpenAPI cannot model — see the guides for the frame format.",
-    "version": "0.9.2"
+    "version": "0.9.3"
   },
   "paths": {
     "/apps": {
@@ -2929,9 +2929,18 @@
           "volumes"
         ],
         "summary": "Back up a volume",
-        "description": "Takes a consistent point-in-time backup of the volume, restorable to a new volume. 409 when the volume is attached to a running sandbox (sleep it first).",
+        "description": "Takes a consistent point-in-time backup of the volume, restorable to a new volume. A full whole-image copy by default; with ?parent=\u003cid\u003e an incremental of only the blocks changed since that backup. 409 when the volume is attached to a running sandbox (sleep it first).",
         "operationId": "backupVolume",
         "parameters": [
+          {
+            "name": "parent",
+            "in": "query",
+            "description": "Take an incremental backup against this backup id; empty takes a full whole-image backup.",
+            "schema": {
+              "type": "string",
+              "description": "Take an incremental backup against this backup id; empty takes a full whole-image backup."
+            }
+          },
           {
             "name": "name",
             "in": "path",
@@ -3692,6 +3701,12 @@
             "type": "string"
           },
           "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "parent_id": {
             "type": "string"
           },
           "size_bytes": {

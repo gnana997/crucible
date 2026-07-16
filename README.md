@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.9.2](https://img.shields.io/badge/status-v0.9.2-orange)
+![Status: v0.9.3](https://img.shields.io/badge/status-v0.9.3-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -110,8 +110,9 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 ## Roadmap
 
-crucible is at **v0.9.2**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.9.3**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
+- **v0.9.3: incremental backups.** `crucible volume backup db --incremental` ships only the blocks changed since the last backup, as a delta in a chain rooted at a base full; restoring the tip reassembles base + deltas and verifies the result block-for-block. Works on encrypted volumes too (the blocks are LUKS ciphertext), and exports off-host like a full ([docs/backups.md](docs/backups.md#incremental-backups)).
 - **v0.9.2: cold `app stop` / `app start`.** A desired-state stop/start distinct from `sleep`/`wake` — `stop` destroys the instance and **detaches its volume** (keeping the spec), `start` boots a fresh instance that re-attaches at the current size. So `app stop db` → `volume grow pgdata --size 20G` → `app start db` is the recipe to grow a running app's volume ([docs/apps.md](docs/apps.md#the-crucible-app-commands)).
 - **v0.9.1: grow a volume in place.** `crucible volume grow <name> --size 20G` enlarges a volume's backing store and its ext4 filesystem (encrypted volumes too — the LUKS container, mapping, and ext4 are all resized) with the data untouched, instead of backup → restore-to-a-bigger-one → redeploy. Grow-only; the volume must be detached ([docs/volumes.md](docs/volumes.md#growing-a-volume)).
 - **v0.9.0: guest metrics scrape.** Point the daemon at a Prometheus endpoint **inside** a guest — `app create db --metrics-port 9187` (a `postgres_exporter`, `redis_exporter`, or the app's own metrics) — and it scrapes it and folds the series into the daemon's own `/metrics` + OTLP, labeled by `app`/`instance`. DB-agnostic, capped so a guest can't flood it, and **scale-to-zero aware**: a slept app is never scraped and a scrape never wakes it (`crucible_guest_scrape_up` → 0 while asleep). See a database's own `pg_stat_*` next to the daemon's metrics ([docs/observability.md](docs/observability.md#guest-metrics--scrape-an-apps-metrics)).

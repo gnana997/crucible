@@ -118,6 +118,18 @@ func (c *Client) BackupVolume(ctx context.Context, name string) (api.Backup, err
 	return decodeInto[api.Backup](resp)
 }
 
+// BackupVolumeIncremental records only the blocks changed since the backup
+// parentID (POST /volumes/{name}/backups?parent=<id>) — a small delta in a chain
+// rooted at a base full. RestoreBackup on the tip reassembles the whole chain.
+// Errors 400 if the parent is of a different volume, 404 if it is gone.
+func (c *Client) BackupVolumeIncremental(ctx context.Context, name, parentID string) (api.Backup, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/volumes/"+url.PathEscape(name)+"/backups?parent="+url.QueryEscape(parentID), nil)
+	if err != nil {
+		return api.Backup{}, err
+	}
+	return decodeInto[api.Backup](resp)
+}
+
 // ListBackups returns volume backups (GET /backups, or GET
 // /volumes/{name}/backups when volumeName is non-empty).
 func (c *Client) ListBackups(ctx context.Context, volumeName string) (Page[api.Backup], error) {
@@ -181,6 +193,11 @@ type ImportOptions struct {
 	SourceVolume string
 	Consistency  string
 	Raw          bool // the stream is uncompressed (default: gzip)
+	// Kind "incremental" imports a delta stream; Parent is its parent backup's id
+	// ON THIS HOST (import a chain base-first, mapping each returned id). Empty =
+	// a full whole-image import.
+	Kind   string
+	Parent string
 }
 
 // ImportBackup streams a backup's bytes onto the host (POST /backups/import) and
@@ -195,6 +212,12 @@ func (c *Client) ImportBackup(ctx context.Context, opt ImportOptions, r io.Reade
 	}
 	if opt.Raw {
 		q.Set("compress", "none")
+	}
+	if opt.Kind != "" {
+		q.Set("kind", opt.Kind)
+	}
+	if opt.Parent != "" {
+		q.Set("parent", opt.Parent)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/backups/import?"+q.Encode(), r)
 	if err != nil {

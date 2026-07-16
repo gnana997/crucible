@@ -107,6 +107,8 @@ func toAPIBackup(b volume.BackupRecord) api.Backup {
 		Consistency:  b.Consistency,
 		HostID:       b.HostID,
 		Encrypted:    b.Encrypted,
+		Kind:         b.Kind,
+		ParentID:     b.ParentID,
 	}
 }
 
@@ -254,6 +256,15 @@ func (s *Server) handleBackupVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
+	// ?parent=<id> takes an incremental (only blocks changed since that backup);
+	// absent takes a full whole-image backup.
+	parent := r.URL.Query().Get("parent")
+	backupFn := func() (volume.BackupRecord, error) {
+		if parent != "" {
+			return s.cfg.Volumes.BackupIncremental(name, parent)
+		}
+		return s.cfg.Volumes.Backup(name)
+	}
 	q, holder, err := s.volumeQuiescent(name)
 	if err != nil {
 		writeError(w, volumeErrStatus(err), err)
@@ -261,11 +272,11 @@ func (s *Server) handleBackupVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	var rec volume.BackupRecord
 	if q {
-		rec, err = s.cfg.Volumes.Backup(name)
+		rec, err = backupFn()
 	} else {
 		err = s.withFrozen(r.Context(), name, holder, func() error {
 			var e error
-			rec, e = s.cfg.Volumes.Backup(name)
+			rec, e = backupFn()
 			return e
 		})
 	}
@@ -419,15 +430,26 @@ func (s *Server) handleExportBackup(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = f.Close() }()
 
 	gzipped := r.URL.Query().Get("compress") != "none"
+	// An incremental streams its .delta (only changed blocks); a full its .img.
+	ext := ".img"
+	if rec.Kind == "incremental" {
+		ext = ".delta"
+	}
 	w.Header().Set("X-Crucible-Backup-Size", strconv.FormatInt(size, 10))
 	w.Header().Set("X-Crucible-Backup-Consistency", rec.Consistency)
+	if rec.Kind != "" {
+		w.Header().Set("X-Crucible-Backup-Kind", rec.Kind)
+	}
+	if rec.ParentID != "" {
+		w.Header().Set("X-Crucible-Backup-Parent", rec.ParentID)
+	}
 	if gzipped {
 		w.Header().Set("Content-Type", "application/gzip")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.img.gz"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+id+ext+`.gz"`)
 	} else {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
-		w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.img"`)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+id+ext+`"`)
 	}
 	// Headers (and 200) are committed on the first write; a mid-stream failure
 	// can only be signalled by truncating the body (the caller verifies the size),
@@ -466,6 +488,11 @@ func (s *Server) handleImportBackup(w http.ResponseWriter, r *http.Request) {
 		SourceVolume: source,
 		Consistency:  r.URL.Query().Get("consistency"),
 		Compressed:   r.URL.Query().Get("compress") != "none",
+		// For an incremental, the caller passes kind=incremental and the parent's
+		// id ON THIS HOST (the caller imports base-first and maps ids to the new
+		// ones it gets back). Absent = a full.
+		Kind:     r.URL.Query().Get("kind"),
+		ParentID: r.URL.Query().Get("parent"),
 	}
 	rec, err := s.cfg.Volumes.ImportBackup(meta, r.Body)
 	if err != nil {
@@ -479,14 +506,16 @@ func volumeErrStatus(err error) int {
 	switch {
 	case errors.Is(err, volume.ErrNotFound), errors.Is(err, volume.ErrBackupNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, volume.ErrExists), errors.Is(err, volume.ErrInUse):
+	case errors.Is(err, volume.ErrExists), errors.Is(err, volume.ErrInUse),
+		errors.Is(err, volume.ErrBackupChainBroken), errors.Is(err, volume.ErrBackupHasChildren):
 		return http.StatusConflict
 	case errors.Is(err, volume.ErrInvalidName),
 		errors.Is(err, volume.ErrNotEncrypted),
 		errors.Is(err, volume.ErrKeyNotFound),
 		errors.Is(err, volume.ErrEncryptionDisabled),
 		errors.Is(err, volume.ErrEncryptedCloneUnsupported),
-		errors.Is(err, volume.ErrNotLarger):
+		errors.Is(err, volume.ErrNotLarger),
+		errors.Is(err, volume.ErrParentVolumeMismatch):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

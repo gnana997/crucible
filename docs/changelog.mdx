@@ -10,6 +10,15 @@ Releases land here, newest first. The full, detailed changelog lives in
 [CHANGELOG.md](https://github.com/gnana997/crucible/blob/main/CHANGELOG.md); this
 page highlights each release.
 
+<Update label="v0.9.3" title="Incremental backups">
+
+Back up only what changed — a base full plus a chain of small deltas.
+
+- **`crucible volume backup db --incremental`** (or `--parent <id>`) records only the blocks changed since a parent backup. **`volume restore --from <tip>`** reassembles the whole chain — base + every delta — and verifies the reconstructed image block-for-block, so a corrupt or missing link is caught. See [backups](backups#incremental-backups).
+- **Encryption-transparent.** A delta hashes each 1 MiB block and ships only the ones that differ; on an encrypted volume those blocks are the LUKS ciphertext, so nothing decrypts. `backup ls` shows `KIND`/`PARENT`; a parent can't be deleted while a child depends on it; incrementals export/import off-host like fulls.
+
+</Update>
+
 <Update label="v0.9.2" title="Cold app stop / start">
 
 A desired-state stop/start, and the recipe to grow a running app's volume.

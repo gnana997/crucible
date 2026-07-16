@@ -81,6 +81,10 @@ type growVolReq struct {
 	volNameParam
 	api.GrowVolumeRequest
 }
+type backupVolReq struct {
+	volNameParam
+	Parent string `query:"parent" description:"Take an incremental backup against this backup id; empty takes a full whole-image backup."`
+}
 type regHostParam struct {
 	Host string `path:"host" description:"Registry host, e.g. ghcr.io or index.docker.io."`
 }
@@ -184,7 +188,7 @@ func buildReflector() *openapi3.Reflector {
 	spec := r.SpecEns()
 	spec.Info.
 		WithTitle("crucible").
-		WithVersion("0.9.2").
+		WithVersion("0.9.3").
 		WithDescription("REST API for the crucible daemon, a Firecracker microVM sandbox runtime. " +
 			"The daemon is the contract every SDK mirrors. Auth is a bearer token " +
 			"(`Authorization: Bearer <key>`); `/healthz` is always exempt, and a loopback daemon " +
@@ -480,9 +484,10 @@ func buildReflector() *openapi3.Reflector {
 		struct{}{}, nil, http.StatusNoContent, http.StatusBadRequest, http.StatusNotImplemented)
 
 	jsonOp(http.MethodPost, "/volumes/{name}/backups", "backupVolume", "volumes", "Back up a volume",
-		"Takes a consistent point-in-time backup of the volume, restorable to a new volume. "+
-			"409 when the volume is attached to a running sandbox (sleep it first).",
-		volNameParam{}, api.Backup{}, http.StatusCreated,
+		"Takes a consistent point-in-time backup of the volume, restorable to a new volume. A full "+
+			"whole-image copy by default; with ?parent=<id> an incremental of only the blocks changed "+
+			"since that backup. 409 when the volume is attached to a running sandbox (sleep it first).",
+		backupVolReq{}, api.Backup{}, http.StatusCreated,
 		http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented)
 	jsonOp(http.MethodGet, "/volumes/{name}/backups", "listVolumeBackups", "volumes", "List a volume's backups",
 		"", volNameParam{}, api.BackupListResponse{}, http.StatusOK, http.StatusNotImplemented)

@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.3] — 2026-07-16
+
+Incremental volume backups. A backup no longer has to be a full whole-image copy
+every time — an incremental ships only the blocks that changed since a parent,
+so frequent backups stay cheap.
+
+### Added
+
+- **`crucible volume backup <name> --incremental`** (or `--parent <id>`) records
+  only the blocks changed since a parent backup, as a delta in a chain rooted at a
+  base full. **`volume restore --from <tip> --to <name>`** reassembles the whole
+  chain (base + every delta) automatically and verifies the reconstructed image
+  block-for-block against the tip's manifest, so a corrupt or missing link is
+  caught. `POST /volumes/{name}/backups?parent=<id>`, SDK `BackupVolumeIncremental`.
+- **Block-level, encryption-transparent.** With no changed-block tracking in the
+  stack, a delta is computed by hashing each 1 MiB block of the image and shipping
+  only those differing from the parent's hash manifest. On an encrypted volume the
+  blocks are the LUKS ciphertext (AES-XTS is per-block), so nothing decrypts.
+- **`backup ls`** shows each backup's `KIND` (full / incremental) and `PARENT`;
+  deleting a backup that an incremental still depends on is refused. Incrementals
+  **export/import** off-host like fulls (`--parent <local-id>` on import; import a
+  chain base-first). Cadence and retention stay a control-plane concern.
+- Verified by `scripts/smoke_incremental_backup.sh` (full → incremental → tip
+  restore with base + delta data intact, plaintext and encrypted; the delta is far
+  smaller than the full; parent-delete guard; off-host chain round-trip).
+
 ## [0.9.2] — 2026-07-16
 
 Cold `app stop` / `app start`, and the recipe to grow a running app's volume.

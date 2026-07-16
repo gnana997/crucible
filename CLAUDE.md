@@ -16,7 +16,7 @@ fits together), [fork](docs/fork.md) (the snapshot/fork primitive), [api](docs/a
 [ROADMAP](docs/ROADMAP.md) for what's next. Contribution setup is in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Status:** v0.9.2 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
+**Status:** v0.9.3 — durable apps you deploy, reach, update, pull privately, serve over **automatic HTTPS** (proxy-terminated TLS + ACME certs on generated and custom domains, with per-domain cert status), inject **encrypted secret bundles** (envFrom, `.env`), meter with **durable per-app usage metrics that survive a restart** (compute/memory/storage/requests + egress bytes), stream **app lifecycle events** (`GET /events`), scale to zero (HTTP via the proxy **and** TCP via a wake-on-connect forwarder → self-hosted serverless postgres that snapshot-wakes in ~170 ms, no cold boot), wire together (app→app by name), scale out (N load-balanced autoscaling replicas), observe (per-app metrics + OTLP + pprof + packet capture), and give durable storage (persistent volumes for stateful sandboxes/apps — `--volume`, fsync-honest, single-writer) with point-in-time backups (`volume backup`/`restore`/`clone`, consistency-aware incl. live fsfreeze). The core runtime
 is feature-complete (runtime, CLI, native rootfs profiles, `/metrics`, cgroup
 quotas, install/systemd), plus OCI image boot (`crucible run <image>` / `build`),
 an interactive shell + TUI, `--disk` sizing, top-level `stop`/`rm`, durable logs,
@@ -198,8 +198,14 @@ pins a slept guest's device size). **v0.9.2** adds cold **`app stop`/`app start`
 `sleep`/`wake`, which snapshot and hold the guard — `start` boots fresh and re-attaches
 at the new size; `POST /apps/{name}/stop|start`, SDK `StopApp`/`StartApp`, MCP
 `app_stop`/`app_start`), making `app stop → volume grow → app start` the recipe to grow
-a running app's volume. Incremental backups are next. See the ROADMAP for what's after
-(incremental backups, wildcard/DNS-01, fleet).
+a running app's volume. **v0.9.3** adds **incremental backups**: `volume backup
+<name> --incremental` (or `--parent <id>`) ships only the 1 MiB blocks changed since
+a parent as a delta in a chain rooted at a base full; `volume restore --from <tip>`
+reassembles base + every delta and verifies the result block-for-block against the
+tip's manifest (`internal/volume/incremental.go`: fixed-block hash manifest + delta;
+`BackupRecord.Kind/ParentID/BlockSize`; encryption-transparent — the blocks are LUKS
+ciphertext; parent-delete guarded; export/import carry `kind`/`parent`). See the
+ROADMAP for what's after (storage autoscaling, wildcard/DNS-01, fleet).
 
 ## Working style
 

@@ -791,7 +791,7 @@ export interface paths {
         put?: never;
         /**
          * Back up a volume
-         * @description Takes a consistent point-in-time backup of the volume, restorable to a new volume. 409 when the volume is attached to a running sandbox (sleep it first).
+         * @description Takes a consistent point-in-time backup of the volume, restorable to a new volume. A full whole-image copy by default; with ?parent=<id> an incremental of only the blocks changed since that backup. 409 when the volume is attached to a running sandbox (sleep it first).
          */
         post: operations["backupVolume"];
         delete?: never;
@@ -1027,6 +1027,8 @@ export interface components {
             encrypted?: boolean;
             host_id?: string;
             id?: string;
+            kind?: string;
+            parent_id?: string;
             /** Format: int64 */
             size_bytes?: number;
             source_volume?: string;
@@ -3771,7 +3773,10 @@ export interface operations {
     };
     backupVolume: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Take an incremental backup against this backup id; empty takes a full whole-image backup. */
+                parent?: string;
+            };
             header?: never;
             path: {
                 /** @description Volume name ([a-z0-9][a-z0-9-]*). */
