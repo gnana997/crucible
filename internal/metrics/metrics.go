@@ -205,11 +205,23 @@ func (m *Metrics) Gatherer() prometheus.Gatherer {
 	return m.reg
 }
 
+// Register adds an extra collector to the metrics registry — used to fold in
+// dynamically-scraped guest series (see internal/guestscrape). Errors if the
+// collector is invalid; a nil *Metrics is a no-op.
+func (m *Metrics) Register(c prometheus.Collector) error {
+	if m == nil {
+		return nil
+	}
+	return m.reg.Register(c)
+}
+
 // Handler returns the /metrics HTTP handler. On a nil *Metrics it returns
 // a 404 handler so the route can be registered unconditionally.
 func (m *Metrics) Handler() http.Handler {
 	if m == nil {
 		return http.NotFoundHandler()
 	}
-	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
+	// ContinueOnError so a single malformed guest-scraped family can't 500 the
+	// whole endpoint — it's logged and skipped, the daemon's own metrics still serve.
+	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError})
 }
