@@ -20,6 +20,9 @@ func kek32(t *testing.T) []byte {
 	return k
 }
 
+// keyring wraps a single key as a one-entry keyring under id "k1".
+func keyring(kek []byte) map[string][]byte { return map[string][]byte{"k1": kek} }
+
 // These tests exercise the Manager's encryption surface WITHOUT root/cryptsetup:
 // the disabled-path guards, error contracts, record persistence, and the LUKS
 // backfill guard. The real format→open→write→read round trip is in the
@@ -38,8 +41,24 @@ func TestCreateEncryptedWithoutKeyDisabled(t *testing.T) {
 
 func TestEnableEncryptionRejectsBadKey(t *testing.T) {
 	m := newMgr(t, t.TempDir())
-	if err := m.EnableEncryption(make([]byte, 16), "k1", false); err == nil {
+	if err := m.EnableEncryption(keyring(make([]byte, 16)), "k1", false); err == nil {
 		t.Fatal("EnableEncryption must reject a 16-byte key")
+	}
+}
+
+// The keyring validations run before the cryptsetup probe, so they're testable
+// without root/cryptsetup.
+func TestEnableEncryptionKeyringValidation(t *testing.T) {
+	m := newMgr(t, t.TempDir())
+	good := kek32(t)
+	if err := m.EnableEncryption(map[string][]byte{}, "default", false); err == nil {
+		t.Fatal("an empty keyring must error")
+	}
+	if err := m.EnableEncryption(map[string][]byte{"k1": good}, "default", false); err == nil {
+		t.Fatal("a default key id absent from the keyring must error")
+	}
+	if err := m.EnableEncryption(map[string][]byte{"k1": good, "k2": make([]byte, 16)}, "k1", false); err == nil {
+		t.Fatal("a wrong-size key anywhere in the keyring must error")
 	}
 }
 
@@ -63,7 +82,7 @@ func TestOpenDeviceContracts(t *testing.T) {
 		t.Fatalf("OpenDevice with no key = %v, want ErrEncryptionDisabled", err)
 	}
 	// With encryption enabled but a plaintext volume, OpenDevice rejects.
-	if err := m.EnableEncryption(kek32(t), "k1", false); err != nil {
+	if err := m.EnableEncryption(keyring(kek32(t)), "k1", false); err != nil {
 		t.Skipf("EnableEncryption unavailable here (cryptsetup missing?): %v", err)
 	}
 	if _, err := m.Create("plain", testSize, CreateOpts{}); err != nil {

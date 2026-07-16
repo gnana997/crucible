@@ -58,6 +58,9 @@ var (
 	// ErrEncryptedCloneUnsupported means Clone was asked to copy an encrypted
 	// volume, which requires a fresh key (a full re-encrypt) not yet implemented.
 	ErrEncryptedCloneUnsupported = errors.New("volume: cloning an encrypted volume is not yet supported (restore a backup instead)")
+	// ErrKeyNotFound means a volume's (or a requested) encryption key id is not in
+	// the configured keyring — e.g. the key was retired while a volume still used it.
+	ErrKeyNotFound = errors.New("volume: encryption key id not found in the keyring")
 )
 
 // Info is a volume record annotated with its live attachment.
@@ -77,37 +80,56 @@ type Manager struct {
 	st            *store
 
 	// Encryption (per-volume LUKS). crypt is nil unless EnableEncryption was
-	// called; kek is the 32-byte master key that wraps per-volume DEKs.
+	// called. keys is the keyring — {keyID → 32-byte KEK}; each volume record's
+	// KeyID selects which KEK wraps its per-volume DEK. defaultKeyID is the key
+	// new volumes are wrapped under unless a CreateOpts overrides it.
 	crypt          *cryptdev.Engine
-	kek            []byte
-	keyID          string
+	keys           map[string][]byte
+	defaultKeyID   string
 	defaultEncrypt bool
 
 	mu       sync.Mutex
 	attached map[string]string // volume name -> sandbox id holding the single-writer claim
 }
 
-// EnableEncryption turns on per-volume LUKS encryption. kek is the 32-byte daemon
-// master key (from secretstore.LoadMasterKey), keyID names it for future rotation,
-// and defaultEncrypt makes new volumes encrypted unless a CreateOpts overrides.
-// Call once at startup, before serving requests. Errors if cryptsetup is missing
-// or the key is the wrong size — encryption fails loud, never silently off.
-func (m *Manager) EnableEncryption(kek []byte, keyID string, defaultEncrypt bool) error {
-	if len(kek) != cryptdev.KEKSize {
-		return fmt.Errorf("volume: master key must be %d bytes, got %d", cryptdev.KEKSize, len(kek))
+// EnableEncryption turns on per-volume LUKS encryption with a keyring of one or
+// more master keys (each 32 bytes), keyed by id. defaultKeyID (which must be in
+// the keyring) is the key new volumes are wrapped under, and defaultEncrypt makes
+// new volumes encrypted unless a CreateOpts overrides. Call once at startup,
+// before serving requests. Errors if cryptsetup is missing, a key is the wrong
+// size, or defaultKeyID is absent — encryption fails loud, never silently off.
+func (m *Manager) EnableEncryption(keyring map[string][]byte, defaultKeyID string, defaultEncrypt bool) error {
+	if len(keyring) == 0 {
+		return errors.New("volume: keyring is empty")
+	}
+	if _, ok := keyring[defaultKeyID]; !ok {
+		return fmt.Errorf("volume: default key %q is not in the keyring", defaultKeyID)
+	}
+	keys := make(map[string][]byte, len(keyring))
+	for id, kek := range keyring {
+		if len(kek) != cryptdev.KEKSize {
+			return fmt.Errorf("volume: key %q must be %d bytes, got %d", id, cryptdev.KEKSize, len(kek))
+		}
+		keys[id] = append([]byte(nil), kek...)
 	}
 	if err := cryptdev.Available(); err != nil {
 		return err
 	}
 	m.crypt = cryptdev.New()
-	m.kek = append([]byte(nil), kek...)
-	m.keyID = keyID
+	m.keys = keys
+	m.defaultKeyID = defaultKeyID
 	m.defaultEncrypt = defaultEncrypt
 	// A crashed daemon can leave decrypted mapper nodes open with no live sandbox
 	// holding them. Nothing is attached yet at startup, so close any of ours now —
 	// a leaked open device would block a fresh attach of the same volume.
 	m.reapOrphanDevices()
 	return nil
+}
+
+// kekFor returns the keyring KEK for keyID.
+func (m *Manager) kekFor(keyID string) ([]byte, bool) {
+	kek, ok := m.keys[keyID]
+	return kek, ok
 }
 
 // reapOrphanDevices closes any crucible-owned mapper devices found open. Called
@@ -139,9 +161,12 @@ func (m *Manager) reapOrphanDevices() {
 func (m *Manager) EncryptionEnabled() bool { return m.crypt != nil }
 
 // CreateOpts carries per-call overrides for Create. A nil Encrypt uses the
-// manager's default (--volume-encrypt); a non-nil Encrypt forces the choice.
+// manager's default (--volume-encrypt); a non-nil Encrypt forces the choice. An
+// empty KeyID wraps the volume under the manager's default key; a non-empty KeyID
+// selects another key from the keyring.
 type CreateOpts struct {
 	Encrypt *bool
+	KeyID   string
 }
 
 // mapperName is the device-mapper name for a live volume's decrypted node.
@@ -265,6 +290,10 @@ func (m *Manager) Create(name string, sizeBytes int64, opts CreateOpts) (Record,
 	if encrypt && m.crypt == nil {
 		return Record{}, ErrEncryptionDisabled
 	}
+	wrapKeyID := m.defaultKeyID
+	if opts.KeyID != "" {
+		wrapKeyID = opts.KeyID
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok, err := m.st.get(name); err != nil {
@@ -275,18 +304,22 @@ func (m *Manager) Create(name string, sizeBytes int64, opts CreateOpts) (Record,
 	path := filepath.Join(m.dir, name+".img")
 	rec := Record{Name: name, SizeBytes: sizeBytes, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
 	if encrypt {
+		kek, ok := m.kekFor(wrapKeyID)
+		if !ok {
+			return Record{}, fmt.Errorf("%w: %q", ErrKeyNotFound, wrapKeyID)
+		}
 		dek, err := cryptdev.NewDEK()
 		if err != nil {
 			return Record{}, err
 		}
-		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		wrapped, err := cryptdev.WrapKey(kek, dek, []byte(name))
 		if err != nil {
 			return Record{}, err
 		}
 		if err := m.provisionEncrypted(context.Background(), path, sizeBytes, dek, name); err != nil {
 			return Record{}, err
 		}
-		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, wrapKeyID
 	} else if err := m.provision(path, sizeBytes); err != nil {
 		return Record{}, err
 	}
@@ -377,12 +410,17 @@ func (m *Manager) CloseDevice(name string) error {
 	return m.crypt.Close(context.Background(), mapperName(name))
 }
 
-// dekFor unwraps a record's per-volume key with the master KEK.
+// dekFor unwraps a record's per-volume key with the keyring KEK named by its
+// KeyID. ErrKeyNotFound if that key was retired while the volume still used it.
 func (m *Manager) dekFor(rec Record) ([]byte, error) {
 	if len(rec.WrappedKey) == 0 {
 		return nil, fmt.Errorf("volume: %s has no wrapped key", rec.Name)
 	}
-	return cryptdev.UnwrapKey(m.kek, rec.WrappedKey, []byte(rec.Name))
+	kek, ok := m.kekFor(rec.KeyID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q (volume %s)", ErrKeyNotFound, rec.KeyID, rec.Name)
+	}
+	return cryptdev.UnwrapKey(kek, rec.WrappedKey, []byte(rec.Name))
 }
 
 // Attach claims the named volume for sandboxID and ensures its backing file
@@ -447,18 +485,22 @@ func (m *Manager) autoCreateLocked(name, path string) (Record, error) {
 	size := m.defaultSize
 	rec := Record{Name: name, SizeBytes: size, CreatedAt: time.Now().UTC(), Formatted: true, HostID: m.hostID}
 	if m.defaultEncrypt && m.crypt != nil {
+		kek, ok := m.kekFor(m.defaultKeyID)
+		if !ok {
+			return Record{}, fmt.Errorf("%w: %q", ErrKeyNotFound, m.defaultKeyID)
+		}
 		dek, err := cryptdev.NewDEK()
 		if err != nil {
 			return Record{}, err
 		}
-		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		wrapped, err := cryptdev.WrapKey(kek, dek, []byte(name))
 		if err != nil {
 			return Record{}, err
 		}
 		if err := m.provisionEncrypted(context.Background(), path, size, dek, name); err != nil {
 			return Record{}, err
 		}
-		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.defaultKeyID
 	} else if err := m.provision(path, size); err != nil {
 		return Record{}, err
 	}
@@ -831,7 +873,7 @@ func (m *Manager) RestoreTo(backupID, newName string) (Record, error) {
 	}
 	var enc *rewrapSrc
 	if brec.Encrypted {
-		enc = &rewrapSrc{sourceName: brec.SourceVolume, wrappedKey: brec.WrappedKey}
+		enc = &rewrapSrc{sourceName: brec.SourceVolume, wrappedKey: brec.WrappedKey, keyID: brec.KeyID}
 	}
 	return m.materialize(newName, brec.Path, brec.SizeBytes, enc)
 }
@@ -874,10 +916,13 @@ func (m *Manager) Clone(src, dst string) (Record, error) {
 }
 
 // rewrapSrc carries an encrypted source's key material so materialize can re-wrap
-// it under the new volume's name (the AAD). nil for a plaintext source.
+// it under the new volume's name (the AAD). keyID names the keyring key that both
+// wrapped the source and will wrap the copy (restore keeps the source's key).
+// nil for a plaintext source.
 type rewrapSrc struct {
 	sourceName string
 	wrappedKey []byte
+	keyID      string
 }
 
 // materialize copies srcPath into a new volume named name (its backing file +
@@ -897,17 +942,22 @@ func (m *Manager) materialize(name, srcPath string, sizeBytes int64, enc *rewrap
 			_ = os.Remove(dstPath)
 			return Record{}, ErrEncryptionDisabled
 		}
-		dek, err := cryptdev.UnwrapKey(m.kek, enc.wrappedKey, []byte(enc.sourceName))
+		kek, ok := m.kekFor(enc.keyID)
+		if !ok {
+			_ = os.Remove(dstPath)
+			return Record{}, fmt.Errorf("%w: %q (source %s)", ErrKeyNotFound, enc.keyID, enc.sourceName)
+		}
+		dek, err := cryptdev.UnwrapKey(kek, enc.wrappedKey, []byte(enc.sourceName))
 		if err != nil {
 			_ = os.Remove(dstPath)
 			return Record{}, fmt.Errorf("volume: unwrap source key: %w", err)
 		}
-		wrapped, err := cryptdev.WrapKey(m.kek, dek, []byte(name))
+		wrapped, err := cryptdev.WrapKey(kek, dek, []byte(name))
 		if err != nil {
 			_ = os.Remove(dstPath)
 			return Record{}, err
 		}
-		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, m.keyID
+		rec.Encrypted, rec.WrappedKey, rec.KeyID = true, wrapped, enc.keyID
 	} else if err := os.Chown(dstPath, m.uid, m.gid); err != nil {
 		_ = os.Remove(dstPath)
 		return Record{}, fmt.Errorf("volume: chown %s: %w", dstPath, err)

@@ -70,6 +70,10 @@ func GenerateKey() ([]byte, error) {
 	return k, nil
 }
 
+// DecodeKey decodes a base64 AES-256 key (32 bytes). Exported for callers that
+// assemble a keyring of additional keys (e.g. per-volume encryption keys).
+func DecodeKey(s string) ([]byte, error) { return decodeKey(s) }
+
 func decodeKey(s string) ([]byte, error) {
 	k, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
 	if err != nil {

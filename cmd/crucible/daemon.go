@@ -152,9 +152,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		volumeDir  = fs.String("volume-dir", "", "directory for persistent volume backing files; enables --volume when set (must be on the same filesystem as --chroot-base so volumes hardlink into the jail)")
 		volumeSize = fs.Int64("volume-default-size", 2<<30, "size in bytes a volume's backing file is created at on first use (2 GiB default; per-volume sizing lands in a later release)")
 
-		volumeEncrypt = fs.Bool("volume-encrypt", false, "encrypt new volumes at rest with per-volume LUKS keys (needs a master key via --volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY); existing volumes are unaffected")
-		volumeKeyFile = fs.String("volume-encrypt-key-file", "", "file holding the base64 AES-256 master key that wraps per-volume encryption keys; generated 0600 on first use if absent, overridden by CRUCIBLE_VOLUME_KEY. Enables encrypted volumes + `volume shred`.")
-		backupDir     = fs.String("backup-dir", "", "directory for volume backups (default <volume-dir>/backups); point at another disk/mount for off-host durability. Backups reflink (O(1)) only when this shares the volume-dir filesystem, else a full copy")
+		volumeEncrypt    = fs.Bool("volume-encrypt", false, "encrypt new volumes at rest with per-volume LUKS keys (needs a master key via --volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY); existing volumes are unaffected")
+		volumeKeyFile    = fs.String("volume-encrypt-key-file", "", "file holding the base64 AES-256 master key (id `default`) that wraps per-volume encryption keys; generated 0600 on first use if absent, overridden by CRUCIBLE_VOLUME_KEY. Enables encrypted volumes + `volume shred`.")
+		volumeKeyDir     = fs.String("volume-key-dir", "", "optional directory of additional base64 AES-256 keys as <id>.key files (id = filename); also read from CRUCIBLE_VOLUME_KEY_<ID> env vars. Lets volumes use more than one key and supports key rotation")
+		volumeDefaultKey = fs.String("volume-default-key", "default", "keyring id that wraps NEW encrypted volumes (a per-volume override is possible at create)")
+		backupDir        = fs.String("backup-dir", "", "directory for volume backups (default <volume-dir>/backups); point at another disk/mount for off-host durability. Backups reflink (O(1)) only when this shares the volume-dir filesystem, else a full copy")
 		// cgroupQuotas sizes host-side cgroup v2 limits (cpu.max/memory.max/
 		// pids.max) for each sandbox's VMM from its vCPU/memory request.
 		// Only takes effect under jailer mode; the direct-exec runner has
@@ -521,21 +523,24 @@ Required flags:
 		defer func() { _ = volMgr.Close() }()
 		logger.Info("volumes enabled", "dir", *volumeDir, "default_size_bytes", *volumeSize, "host_id", hostID)
 
-		// Per-volume encryption at rest (opt-in). EnableEncryption also reaps any
-		// mapper devices a crashed daemon left open, so it must run here — at
-		// startup, before the HTTP listener opens and any volume is attached.
-		if key, generated, kerr := secretstore.LoadMasterKeyFrom("CRUCIBLE_VOLUME_KEY", *volumeKeyFile); kerr != nil {
-			_, _ = fmt.Fprintf(stderr, "error: volume encryption key: %v\n", kerr)
+		// Per-volume encryption at rest (opt-in). Assemble the keyring (the default
+		// key + any additional keys) and EnableEncryption — which also reaps mapper
+		// devices a crashed daemon left open, so it must run here at startup, before
+		// the HTTP listener opens and any volume is attached.
+		ring, generated, kerr := buildVolumeKeyring(*volumeKeyFile, *volumeKeyDir)
+		if kerr != nil {
+			_, _ = fmt.Fprintf(stderr, "error: volume encryption keyring: %v\n", kerr)
 			return 2
-		} else if key != nil {
+		}
+		if len(ring) > 0 {
 			if generated {
 				logger.Warn("generated a new volume encryption master key — BACK IT UP; losing it loses every encrypted volume", "file", *volumeKeyFile)
 			}
-			if eerr := volMgr.EnableEncryption(key, "default", *volumeEncrypt); eerr != nil {
+			if eerr := volMgr.EnableEncryption(ring, *volumeDefaultKey, *volumeEncrypt); eerr != nil {
 				_, _ = fmt.Fprintf(stderr, "error: enable volume encryption: %v\n", eerr)
 				return 2
 			}
-			logger.Info("volume encryption enabled", "default_encrypt", *volumeEncrypt)
+			logger.Info("volume encryption enabled", "keys", len(ring), "default_key", *volumeDefaultKey, "default_encrypt", *volumeEncrypt)
 			// Volume encryption protects the data volume, but a slept app's memory
 			// snapshot (which can hold cached rows) is written under --work-base — in
 			// the clear unless that sits on an encrypted filesystem. Advise when we
@@ -544,7 +549,7 @@ Required flags:
 				logger.Warn("volume encryption is on but --work-base is on unencrypted storage: a slept app's memory snapshot (cached rows, buffers) is written to disk in the clear. Put --work-base on a dm-crypt/LUKS filesystem for full encryption at rest — see docs/encryption.md", "work_base", *workBase)
 			}
 		} else if *volumeEncrypt {
-			_, _ = fmt.Fprintf(stderr, "error: --volume-encrypt requires a master key (--volume-encrypt-key-file or CRUCIBLE_VOLUME_KEY)\n")
+			_, _ = fmt.Fprintf(stderr, "error: --volume-encrypt requires a master key (--volume-encrypt-key-file, CRUCIBLE_VOLUME_KEY, or --volume-key-dir)\n")
 			return 2
 		}
 	}
@@ -1006,6 +1011,64 @@ Required flags:
 	logger.Info("crucible stopped")
 	_ = stdout // reserved for future non-log output
 	return 0
+}
+
+// buildVolumeKeyring assembles the per-volume encryption keyring: the default key
+// (id "default", from CRUCIBLE_VOLUME_KEY or defaultKeyFile — generated on first
+// use), plus any additional keys from CRUCIBLE_VOLUME_KEY_<ID> env vars and
+// <id>.key files under keyDir. Returns the keyring, whether the default key was
+// freshly generated, and any decode error. An empty keyring means encryption is
+// off. Key material is never logged.
+func buildVolumeKeyring(defaultKeyFile, keyDir string) (map[string][]byte, bool, error) {
+	ring := map[string][]byte{}
+	generated := false
+	if key, gen, err := secretstore.LoadMasterKeyFrom("CRUCIBLE_VOLUME_KEY", defaultKeyFile); err != nil {
+		return nil, false, err
+	} else if key != nil {
+		ring["default"] = key
+		generated = gen
+	}
+	const envPrefix = "CRUCIBLE_VOLUME_KEY_"
+	for _, kv := range os.Environ() {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		name, val := kv[:eq], kv[eq+1:]
+		if !strings.HasPrefix(name, envPrefix) || val == "" {
+			continue
+		}
+		id := name[len(envPrefix):]
+		if id == "" {
+			continue
+		}
+		key, err := secretstore.DecodeKey(val)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", name, err)
+		}
+		ring[id] = key
+	}
+	if keyDir != "" {
+		ents, err := os.ReadDir(keyDir)
+		if err != nil {
+			return nil, false, fmt.Errorf("--volume-key-dir: %w", err)
+		}
+		for _, e := range ents {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".key") {
+				continue
+			}
+			b, err := os.ReadFile(filepath.Join(keyDir, e.Name()))
+			if err != nil {
+				return nil, false, fmt.Errorf("read key %s: %w", e.Name(), err)
+			}
+			key, err := secretstore.DecodeKey(string(b))
+			if err != nil {
+				return nil, false, fmt.Errorf("key %s: %w", e.Name(), err)
+			}
+			ring[strings.TrimSuffix(e.Name(), ".key")] = key
+		}
+	}
+	return ring, generated, nil
 }
 
 // buildImageStore constructs the OCI image store: resolve the agent to

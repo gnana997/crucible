@@ -4,6 +4,7 @@ package volume
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestEncryptedVolumeRoundTrip(t *testing.T) {
 
 	dir := t.TempDir()
 	m := newMgr(t, dir)
-	if err := m.EnableEncryption(kek32(t), "k1", false); err != nil {
+	if err := m.EnableEncryption(keyring(kek32(t)), "k1", false); err != nil {
 		t.Fatalf("EnableEncryption: %v", err)
 	}
 
@@ -132,7 +133,7 @@ func TestAttachOpensAndReleaseClosesDevice(t *testing.T) {
 	requireCryptRoot(t)
 
 	m := newMgr(t, t.TempDir())
-	if err := m.EnableEncryption(kek32(t), "k1", false); err != nil {
+	if err := m.EnableEncryption(keyring(kek32(t)), "k1", false); err != nil {
 		t.Fatalf("EnableEncryption: %v", err)
 	}
 	yes := true
@@ -177,4 +178,60 @@ func TestAttachOpensAndReleaseClosesDevice(t *testing.T) {
 		t.Fatalf("plaintext Attach = (%q, encrypted=%v), want the .img file", p2, enc2)
 	}
 	m.Release("plain")
+}
+
+// TestKeyringMultiKeyAndRetire proves the keyring: volumes wrap under different
+// keys (default + a per-create override), each opens under its own key, and
+// retiring a key makes only the volumes that used it unopenable — with a clear
+// ErrKeyNotFound, not a silent failure.
+func TestKeyringMultiKeyAndRetire(t *testing.T) {
+	requireCryptRoot(t)
+
+	dir := t.TempDir()
+	k1, k2 := kek32(t), kek32(t)
+	m := newMgr(t, dir)
+	if err := m.EnableEncryption(map[string][]byte{"k1": k1, "k2": k2}, "k1", false); err != nil {
+		t.Fatalf("EnableEncryption: %v", err)
+	}
+	yes := true
+	ra, err := m.Create("a", 64<<20, CreateOpts{Encrypt: &yes}) // default key (k1)
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	if ra.KeyID != "k1" {
+		t.Fatalf("volume a KeyID = %q, want k1", ra.KeyID)
+	}
+	rb, err := m.Create("b", 64<<20, CreateOpts{Encrypt: &yes, KeyID: "k2"}) // explicit key
+	if err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	if rb.KeyID != "k2" {
+		t.Fatalf("volume b KeyID = %q, want k2", rb.KeyID)
+	}
+	for _, v := range []string{"a", "b"} {
+		if _, err := m.OpenDevice(v); err != nil {
+			t.Fatalf("open %s: %v", v, err)
+		}
+		if err := m.CloseDevice(v); err != nil {
+			t.Fatalf("close %s: %v", v, err)
+		}
+	}
+	_ = m.Close()
+
+	// Reopen the store with k2 RETIRED (only k1 in the ring).
+	m2, err := NewManager(dir, testSize, "testhost", os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = m2.Close() }()
+	if err := m2.EnableEncryption(map[string][]byte{"k1": k1}, "k1", false); err != nil {
+		t.Fatalf("EnableEncryption (retired k2): %v", err)
+	}
+	if _, err := m2.OpenDevice("a"); err != nil {
+		t.Fatalf("a should still open under k1: %v", err)
+	}
+	_ = m2.CloseDevice("a")
+	if _, err := m2.OpenDevice("b"); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("b under a retired key = %v, want ErrKeyNotFound", err)
+	}
 }
