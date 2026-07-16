@@ -158,6 +158,11 @@ class InstanceStatus(BaseModel):
     instance_id: str | None = None
 
 
+class InternalPort(BaseModel):
+    port: int | None = None
+    proto: str | None = None
+
+
 class LogRecord(BaseModel):
     source: str | None = None
     stream: str | None = None
@@ -383,6 +388,7 @@ class CreateAppRequest(BaseModel):
     health: HealthCheck | None = None
     http_redirect: bool | None = None
     image: ImageRef | None = None
+    internal_ports: list[InternalPort] | None = None
     memory_mib: int | None = None
     metrics_path: str | None = None
     metrics_port: int | None = None
@@ -453,6 +459,7 @@ class UpdateAppReq(BaseModel):
     health: HealthCheck | None = None
     http_redirect: bool | None = None
     image: ImageRef | None = None
+    internal_ports: list[InternalPort] | None = None
     memory_mib: int | None = None
     metrics_path: str | None = None
     metrics_port: int | None = None
@@ -510,6 +517,8 @@ class AppResponse(BaseModel):
     http_redirect: bool | None = None
     id: str | None = None
     image: ImageRef | None = None
+    internal_ports: list[InternalPort] | None = None
+    internal_vip: str | None = None
     memory_mib: int | None = None
     metrics_path: str | None = None
     metrics_port: int | None = None

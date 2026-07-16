@@ -76,6 +76,12 @@ type ManagerConfig struct {
 	// internal lookup is NXDOMAIN. The daemon wires it to the app can_call check.
 	InternalAuthz func(callerIP, targetApp string) bool
 
+	// InternalVIPForApp, when set (v0.9.5 --internal-l4), resolves an in-zone query
+	// to the target app's own per-app VIP instead of the shared anycast, so
+	// <app>.internal carries raw TCP. Passed straight to the DNS proxy; the daemon
+	// wires it to the internal-L4 reconciler's VIP lookup. Nil ⇒ legacy anycast.
+	InternalVIPForApp func(app string) (netip.Addr, bool)
+
 	// Logger receives Manager lifecycle events. Nil means
 	// slog.Default.
 	Logger *slog.Logger
@@ -223,10 +229,11 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 		// App→app service discovery: answer <app>.<InternalZone> with the anycast
 		// VIP so a guest resolves peers to the ingress proxy (which routes + wakes).
 		// Empty zone leaves this off.
-		InternalZone:  cfg.InternalZone,
-		InternalVIP:   cfg.DNSAnycast,
-		InternalAuthz: cfg.InternalAuthz,
-		Logger:        log,
+		InternalZone:      cfg.InternalZone,
+		InternalVIP:       cfg.DNSAnycast,
+		InternalVIPForApp: cfg.InternalVIPForApp,
+		InternalAuthz:     cfg.InternalAuthz,
+		Logger:            log,
 	})
 	if err != nil {
 		_ = TeardownBaseTable(context.Background())

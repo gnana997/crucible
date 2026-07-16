@@ -210,6 +210,11 @@ func (l *l4Listener) accept() {
 func (m *l4Manager) handleTCP(app string, client net.Conn) {
 	defer func() { _ = client.Close() }()
 	p := m.p
+	l4conn := func(outcome string) {
+		if p.onL4Conn != nil {
+			p.onL4Conn(outcome)
+		}
+	}
 
 	callerIP := client.RemoteAddr().String()
 	if h, _, err := net.SplitHostPort(callerIP); err == nil {
@@ -218,11 +223,13 @@ func (m *l4Manager) handleTCP(app string, client net.Conn) {
 	// Fail closed: no authorizer, or an unauthorized/unknown caller, never even wakes
 	// the callee.
 	if p.authz == nil {
+		l4conn("denied")
 		return
 	}
 	callerApp, ok := p.authz.AuthorizeCall(callerIP, app)
 	if !ok {
 		p.log.Debug("ingress: L4 internal call denied", "caller_ip", callerIP, "caller", callerApp, "target", app)
+		l4conn("denied")
 		return
 	}
 	if p.onInternal != nil {
@@ -234,6 +241,7 @@ func (m *l4Manager) handleTCP(app string, client net.Conn) {
 	cancel()
 	if err != nil {
 		p.log.Debug("ingress: L4 no route", "app", app, "err", err)
+		l4conn("no_route")
 		return
 	}
 	tg, release := p.balancer.Pick(set)
@@ -242,6 +250,7 @@ func (m *l4Manager) handleTCP(app string, client net.Conn) {
 	if err != nil {
 		p.balancer.Fail(tg.InstanceID)
 		p.log.Warn("ingress: L4 upstream dial", "app", app, "err", err)
+		l4conn("dial_error")
 		return
 	}
 	defer func() { _ = up.Close() }()
@@ -249,7 +258,34 @@ func (m *l4Manager) handleTCP(app string, client net.Conn) {
 		p.activity.begin(app)
 		defer p.activity.end(app)
 	}
-	pipe(client, up)
+	l4conn("spliced")
+	// Count total bytes both directions: reads from the client are client→guest,
+	// writes to the client are guest→client, so tallying the client side captures
+	// both. Reported once on close (not per packet).
+	cc := &countingConn{Conn: client}
+	if p.onL4Bytes != nil {
+		defer func() { p.onL4Bytes(cc.n.Load()) }()
+	}
+	pipe(cc, up)
+}
+
+// countingConn tallies bytes read + written on a wrapped conn (an atomic so the two
+// pipe copy goroutines can update it concurrently). Reported once at close.
+type countingConn struct {
+	net.Conn
+	n atomic.Int64
+}
+
+func (c *countingConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+func (c *countingConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.n.Add(int64(n))
+	return n, err
 }
 
 // resolveSetWaking resolves an app's endpoint set by name, waking a slept app

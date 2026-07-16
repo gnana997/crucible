@@ -967,6 +967,8 @@ export interface components {
             http_redirect?: boolean | null;
             id?: string;
             image?: components["schemas"]["ImageRef"];
+            internal_ports?: components["schemas"]["InternalPort"][];
+            internal_vip?: string;
             memory_mib?: number;
             metrics_path?: string;
             metrics_port?: number;
@@ -1080,6 +1082,7 @@ export interface components {
             health?: components["schemas"]["HealthCheck"];
             http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
+            internal_ports?: components["schemas"]["InternalPort"][];
             memory_mib?: number;
             metrics_path?: string;
             metrics_port?: number;
@@ -1201,6 +1204,10 @@ export interface components {
             generation?: number;
             health?: string;
             instance_id?: string;
+        };
+        InternalPort: {
+            port?: number;
+            proto?: string;
         };
         ListResponse: {
             sandboxes?: components["schemas"]["SandboxResponse"][] | null;
@@ -1340,6 +1347,7 @@ export interface components {
             health?: components["schemas"]["HealthCheck"];
             http_redirect?: boolean | null;
             image?: components["schemas"]["ImageRef"];
+            internal_ports?: components["schemas"]["InternalPort"][];
             memory_mib?: number;
             metrics_path?: string;
             metrics_port?: number;

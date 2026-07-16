@@ -989,6 +989,31 @@ func TestValidateSpecCanCall(t *testing.T) {
 	}
 }
 
+func TestValidateSpecInternalPorts(t *testing.T) {
+	base := nginxSpec("web", wire.RestartAlways)
+
+	// Valid: default proto (tcp), explicit tcp, and http.
+	base.InternalPorts = []api.InternalPort{{Port: 5432}, {Port: 6379, Proto: "tcp"}, {Port: 80, Proto: "http"}}
+	if err := validateSpec(base); err != nil {
+		t.Errorf("valid internal_ports should pass: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		ports []api.InternalPort
+	}{
+		{"port too low", []api.InternalPort{{Port: 0}}},
+		{"port too high", []api.InternalPort{{Port: 70000}}},
+		{"unknown proto", []api.InternalPort{{Port: 5432, Proto: "udp"}}},
+		{"duplicate port", []api.InternalPort{{Port: 5432}, {Port: 5432, Proto: "http"}}},
+	} {
+		base.InternalPorts = tc.ports
+		if err := validateSpec(base); err == nil {
+			t.Errorf("%s: expected validation error", tc.name)
+		}
+	}
+}
+
 // crashInstance removes one instance without going through Destroy (a single
 // replica's VM dying underneath the daemon).
 func (f *fakeInstantiator) crashInstance(id string) {

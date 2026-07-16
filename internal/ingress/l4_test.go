@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -166,6 +167,62 @@ func TestL4HTTPPortRoutesThroughL7(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 || string(body) != "hello-http" {
 		t.Fatalf("L4 http route: status=%d body=%q, want 200 hello-http", resp.StatusCode, body)
+	}
+}
+
+func TestL4MetricsHooks(t *testing.T) {
+	host, port, closeBackend := startEchoBackend(t)
+	t.Cleanup(closeBackend)
+	apps := fakeApps{apps: map[string]api.AppResponse{"db": runningApp("db", port, "sbx_db")}}
+	inst := fakeInstances{ips: map[string]string{"sbx_db": host}}
+
+	var mu sync.Mutex
+	outcomes := map[string]int{}
+	var bytesTotal int64
+	p := New(Config{
+		Resolver:      NewResolver(apps, inst, "", "internal", 0),
+		InternalAuthz: authzFunc(func(ip, target string) (string, bool) { return "c", target == "db" }),
+		Logger:        quietLog(),
+		OnL4Conn:      func(o string) { mu.Lock(); outcomes[o]++; mu.Unlock() },
+		OnL4Bytes:     func(n int64) { mu.Lock(); bytesTotal += n; mu.Unlock() },
+	})
+	defer p.Stop(context.Background())
+
+	// "db" is authorized; "cache" is bound but the authorizer denies it — a
+	// connection to it records the "denied" outcome (the security signal).
+	dbPort := freePort(t)
+	if err := p.AddInternalApp("db", loopbackVIP, []L4Port{{Port: dbPort}}); err != nil {
+		t.Fatalf("AddInternalApp db: %v", err)
+	}
+	cachePort := freePort(t)
+	if err := p.AddInternalApp("cache", loopbackVIP, []L4Port{{Port: cachePort}}); err != nil {
+		t.Fatalf("AddInternalApp cache: %v", err)
+	}
+
+	// Denied connection: closed, and recorded as "denied".
+	if c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", cachePort), 2*time.Second); err == nil {
+		_, _ = c.Write([]byte("x"))
+		_ = c.Close()
+	}
+
+	// A spliced roundtrip: expect outcome "spliced" and bytes counted (both directions).
+	if got := l4Roundtrip(t, fmt.Sprintf("127.0.0.1:%d", dbPort), "hello"); got != "hello" {
+		t.Fatalf("splice: got %q", got)
+	}
+
+	// Wait for the deferred bytes report (fires on conn close).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		spliced, denied, b := outcomes["spliced"], outcomes["denied"], bytesTotal
+		mu.Unlock()
+		if spliced >= 1 && denied >= 1 && b >= int64(len("hello")*2) { // echoed both ways
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics not recorded: outcomes=%v bytes=%d (want spliced>=1, denied>=1, bytes>=10)", outcomes, b)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

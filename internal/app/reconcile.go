@@ -114,6 +114,14 @@ type PortReconciler interface {
 	ReconcilePorts(specs []api.AppSpec)
 }
 
+// InternalReconciler keeps per-app internal-zone VIP exposure in sync with the apps
+// that declare InternalPorts (v0.9.5 app→app L4). Called on each reconcile pass with
+// the current desired-running specs; the implementation assigns/frees VIPs and
+// binds/unbinds their listeners, diff-based. Satisfied by *ingress.InternalL4Set.
+type InternalReconciler interface {
+	Reconcile(specs []api.AppSpec)
+}
+
 // observed is an app's runtime (never persisted) state, rebuilt from
 // scratch on Start: an empty observed map plus persisted desired state is
 // what drives re-creation after a daemon restart.
@@ -256,6 +264,14 @@ type Manager struct {
 	// desired-running specs. Nil disables app-scoped publishing.
 	ports PortReconciler
 
+	// internal, when set, keeps per-app internal-zone VIP exposure in sync (v0.9.5
+	// app→app L4). Called alongside `ports` each reconcile pass. Nil disables it.
+	internal InternalReconciler
+
+	// internalVIP, when set, returns an app's assigned internal VIP as a string
+	// ("" when unassigned) — reported in AppResponse.InternalVIP. Nil ⇒ never set.
+	internalVIP func(app string) string
+
 	// onDomainAdd, when set, is called (best-effort) with a newly attached custom
 	// domain so the TLS layer can pre-warm its certificate. Nil disables pre-warm.
 	onDomainAdd func(domain string)
@@ -365,6 +381,13 @@ func (m *Manager) SetActivitySource(a ActivitySource) { m.activity = a }
 // SetPortReconciler wires the app-scoped host-port publisher (the L4 waking
 // forwarders). Call before Start; nil leaves app-scoped publishing disabled.
 func (m *Manager) SetPortReconciler(p PortReconciler) { m.ports = p }
+
+// SetInternalReconciler wires the per-app internal-VIP reconciler (v0.9.5 app→app L4)
+// and the VIP lookup it exposes for AppResponse.InternalVIP. Call once at wiring time.
+func (m *Manager) SetInternalReconciler(r InternalReconciler, vipLookup func(app string) string) {
+	m.internal = r
+	m.internalVIP = vipLookup
+}
 
 // SetVolumeSizer wires the per-volume backing-size source so the usage ledger
 // can sample an app's storage. Call before Start; nil leaves storage at 0.
@@ -1411,14 +1434,20 @@ func (m *Manager) reconcile(ctx context.Context) {
 	// waking forwarders front a scale-to-zero app's published port and must exist
 	// while it is asleep (DesiredRunning stays true when slept) and vanish when it
 	// is deleted or stopped. Diff-based, so an unchanged set is a cheap no-op.
-	if m.ports != nil {
+	if m.ports != nil || m.internal != nil {
 		specs := make([]api.AppSpec, 0, len(recs))
 		for _, r := range recs {
 			if r.DesiredRunning {
 				specs = append(specs, r.Spec)
 			}
 		}
-		m.ports.ReconcilePorts(specs)
+		if m.ports != nil {
+			m.ports.ReconcilePorts(specs)
+		}
+		// Per-app internal VIP exposure (app→app L4): same desired-running set.
+		if m.internal != nil {
+			m.internal.Reconcile(specs)
+		}
 	}
 
 	// 4. Emit a lifecycle event for any app whose phase converged to something new
@@ -2224,6 +2253,9 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 		CreatedAt:    rec.CreatedAt,
 		UpdatedAt:    rec.UpdatedAt,
 	}
+	if m.internalVIP != nil {
+		resp.InternalVIP = m.internalVIP(rec.Spec.Name)
+	}
 	m.obsMu.Lock()
 	ob := m.obs[rec.ID]
 	extras := m.extras[rec.ID]
@@ -2335,6 +2367,21 @@ func validateSpec(spec api.AppSpec) error {
 		if target == spec.Name {
 			return fmt.Errorf("app: can_call may not list the app itself (%q)", target)
 		}
+	}
+	seenInternal := map[int]bool{}
+	for _, ip := range spec.InternalPorts {
+		if ip.Port < 1 || ip.Port > 65535 {
+			return fmt.Errorf("app: internal_ports port %d out of range (1-65535)", ip.Port)
+		}
+		switch ip.Proto {
+		case "", "tcp", "http":
+		default:
+			return fmt.Errorf("app: internal_ports port %d has unknown proto %q (want \"tcp\" or \"http\")", ip.Port, ip.Proto)
+		}
+		if seenInternal[ip.Port] {
+			return fmt.Errorf("app: internal_ports lists port %d more than once", ip.Port)
+		}
+		seenInternal[ip.Port] = true
 	}
 	return nil
 }

@@ -269,8 +269,10 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// reachability is default-deny — an app reaches a peer only if its spec
 		// grants it (`app create --can-call <peer>`); ungranted calls get
 		// NXDOMAIN at DNS / 403 at the proxy.
-		internalNet  = fs.Bool("internal-networking", false, "EXPERIMENTAL: let apps reach each other by name (<app>.internal) through the ingress proxy VIP. Requires --network-egress-iface + --app-db + the proxy. Default-deny: a peer is reachable only via `app create --can-call <peer>`.")
-		internalPort = fs.Int("internal-proxy-port", 80, "TCP port the app→app (<app>.internal) ingress VIP listens on, bound to the DNS anycast; guests reach peers at http://<app>.internal[:port]/")
+		internalNet     = fs.Bool("internal-networking", false, "EXPERIMENTAL: let apps reach each other by name (<app>.internal) through the ingress proxy VIP. Requires --network-egress-iface + --app-db + the proxy. Default-deny: a peer is reachable only via `app create --can-call <peer>`.")
+		internalPort    = fs.Int("internal-proxy-port", 80, "TCP port the app→app (<app>.internal) ingress VIP listens on, bound to the DNS anycast; guests reach peers at http://<app>.internal[:port]/")
+		internalL4      = fs.Bool("internal-l4", false, "EXPERIMENTAL: per-app-VIP L4 app→app networking — a peer reaches an app's raw TCP ports at <app>.internal:PORT (postgres/redis/any protocol; TLS passes through). Requires --internal-networking. Apps expose ports via `app create --internal-port`.")
+		internalVIPCIDR = fs.String("internal-vip-cidr", network.DefaultInternalVIPCIDR.String(), "IPv4 CIDR for per-app internal VIPs (must not overlap --network-subnet-pool); used with --internal-l4")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprint(stderr, `Usage: crucible daemon [flags]
@@ -452,6 +454,16 @@ Required flags:
 	var appMgr *app.Manager
 	var internalAuth *internalAuthorizer
 	var netMgr *network.Manager
+	// internalL4Set is built after the proxy (its Bind hook is proxy.AddInternalApp),
+	// but the DNS config's per-app VIP lookup (below) closes over it — nil-checked so
+	// it fails closed until the proxy is up. Mirrors the appMgr/internalAuth pattern.
+	var internalL4Set *ingress.InternalL4Set
+	var vipPool *network.VIPPool
+	// --internal-l4 rides on --internal-networking (same zone, authorizer, can_call).
+	if *internalL4 && !*internalNet {
+		_, _ = fmt.Fprintln(stderr, "error: --internal-l4 requires --internal-networking")
+		return 2
+	}
 	if *netEgressIface != "" && *jailerBin != "" {
 		subnetPool, perr := netip.ParsePrefix(*netSubnetPool)
 		if perr != nil {
@@ -467,6 +479,33 @@ Required flags:
 			internalProxyPort = *internalPort
 			internalZone = internalNetworkZone
 		}
+		// Per-app-VIP L4 (v0.9.5): build the VIP pool + the DNS per-app lookup, and
+		// arm the nft L4 accept rule. Gated the same way as the anycast zone.
+		internalL4On := *internalL4 && (*proxyListen != "" || *proxyTLSListen != "")
+		var vipForApp func(app string) (netip.Addr, bool)
+		if internalL4On {
+			vipCIDR, cerr := netip.ParsePrefix(*internalVIPCIDR)
+			if cerr != nil {
+				_, _ = fmt.Fprintf(stderr, "error: --internal-vip-cidr: %v\n", cerr)
+				return 2
+			}
+			if verr := network.ValidateVIPCIDR(vipCIDR, subnetPool); verr != nil {
+				_, _ = fmt.Fprintf(stderr, "error: %v\n", verr)
+				return 2
+			}
+			vp, verr := network.NewVIPPool(vipCIDR)
+			if verr != nil {
+				_, _ = fmt.Fprintf(stderr, "error: --internal-vip-cidr: %v\n", verr)
+				return 2
+			}
+			vipPool = vp
+			vipForApp = func(app string) (netip.Addr, bool) {
+				if internalL4Set == nil {
+					return netip.Addr{}, false // proxy not up yet → fail closed
+				}
+				return internalL4Set.VIPFor(app)
+			}
+		}
 		nmgr, nerr := network.Start(context.Background(), network.ManagerConfig{
 			SubnetPool:        subnetPool,
 			DNSAnycast:        network.DefaultDNSAnycast,
@@ -474,6 +513,8 @@ Required flags:
 			DNSUpstream:       *dnsUpstream,
 			InternalProxyPort: internalProxyPort,
 			InternalZone:      internalZone,
+			InternalL4:        internalL4On,
+			InternalVIPForApp: vipForApp,
 			// App→app DNS authorization (default-deny), via the same source-IP-keyed
 			// authorizer the ingress proxy uses. nil (proxy not up) / unknown source
 			// / missing grant → deny (NXDOMAIN at the DNS layer).
@@ -983,6 +1024,8 @@ Required flags:
 				Activity:       activityTracker, // feed the idle monitor
 				OnWake:         mx.ObserveWakeLatency,
 				OnInternal:     mx.IncInternalRequest,
+				OnL4Conn:       mx.IncL4Conn,  // app→app L4 connection outcomes (incl. denied)
+				OnL4Bytes:      mx.AddL4Bytes, // app→app L4 bytes spliced
 				OnRequest: func(app, code string, latency time.Duration, _ bool) {
 					mx.ObserveAppRequest(app, code, latency)
 					appMgr.RecordRequest(app, code) // durable per-app request count
@@ -993,6 +1036,24 @@ Required flags:
 				return 1
 			}
 			logger.Info("ingress proxy enabled", "http", *proxyListen, "tls", *proxyTLSListen, "domain", *proxyDomain, "internal", internalListen)
+
+			// Per-app-VIP L4 app→app (v0.9.5): with the VIP pool built (internalL4 on)
+			// and the internal zone active, wire the reconciler that assigns a VIP per
+			// app declaring InternalPorts and binds VIP:port — VIP on the dummy iface
+			// (network.AddInternalVIP), nft accept (network.AddL4Ports), proxy listener
+			// (proxy.AddInternalApp). Its VIP lookup also feeds the DNS answer + AppResponse.
+			if vipPool != nil && internalListen != "" {
+				internalL4Set = ingress.NewInternalL4Set(vipPool, ingress.InternalL4Hooks{
+					AddVIP:     func(v netip.Addr) error { return network.AddInternalVIP(context.Background(), v) },
+					RemoveVIP:  func(v netip.Addr) error { return network.RemoveInternalVIP(context.Background(), v) },
+					OpenPorts:  func(v netip.Addr, ports []int) error { return network.AddL4Ports(context.Background(), v, ports) },
+					ClosePorts: func(v netip.Addr, ports []int) error { return network.RemoveL4Ports(context.Background(), v, ports) },
+					Bind:       proxy.AddInternalApp,
+					Unbind:     proxy.RemoveInternalApp,
+				}, logger)
+				appMgr.SetInternalReconciler(internalL4Set, internalL4Set.VIPForString)
+				logger.Info("app→app L4 networking enabled", "vip_cidr", *internalVIPCIDR)
+			}
 		}
 	}
 

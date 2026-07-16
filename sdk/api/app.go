@@ -115,11 +115,34 @@ type AppSpec struct {
 	// the daemon's --internal-networking. Each entry is an app name (DNS label).
 	CanCall []string `json:"can_call,omitempty"`
 
+	// InternalPorts are the TCP ports this app EXPOSES to authorized peers on the
+	// internal zone (a peer reaches them at <app>.internal:Port), each with a
+	// protocol handler (see InternalPort). Empty means the app exposes nothing
+	// app→app at L4. Requires the daemon's --internal-l4; a caller still needs
+	// --can-call to this app. Where CanCall is the outbound grant, InternalPorts is
+	// the inbound surface. (v0.9.5)
+	InternalPorts []InternalPort `json:"internal_ports,omitempty"`
+
 	// SecretEnvFrom names encrypted secret bundles whose every key is injected as
 	// an environment variable at boot (envFrom). The bundles' values live only in
 	// the daemon's encrypted secret store — never here — so this carries only the
 	// bundle names, safe in `app get` and backups.
 	SecretEnvFrom []string `json:"secret_env_from,omitempty"`
+}
+
+// InternalPort is one TCP port an app exposes to authorized peers on the internal
+// zone (v0.9.5 app→app L4). Proto selects how the ingress proxy handles it:
+//
+//   - "tcp" (default): a blind byte splice — any protocol, and TLS passes through
+//     untouched, so a client speaks the service's native wire protocol end to end
+//     (what a database endpoint needs).
+//   - "http": the connection is routed per-request through the L7 proxy, keeping
+//     load-balancing across replicas and status-class metrics.
+//
+// The port is reached at <app>.internal:Port by a peer granted --can-call.
+type InternalPort struct {
+	Port  int    `json:"port"`
+	Proto string `json:"proto,omitempty"` // "tcp" (default) | "http"
 }
 
 // SleepPolicy configures an app's scale-to-zero behavior.
@@ -202,6 +225,13 @@ type AppResponse struct {
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// InternalVIP is the app's stable per-app virtual IP on the internal zone,
+	// assigned by the daemon when --internal-l4 is on and the app declares
+	// InternalPorts. Peers reach it as <app>.internal (which resolves to this
+	// address). Empty when L4 app→app is off or the app exposes no internal ports.
+	// (v0.9.5)
+	InternalVIP string `json:"internal_vip,omitempty"`
 
 	// Status is the observed state, populated by the reconciler. Nil/zero
 	// before the reconciler has acted.

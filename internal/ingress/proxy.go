@@ -75,6 +75,14 @@ type Config struct {
 	// the internal-request metric).
 	OnInternal func()
 
+	// OnL4Conn, when set, is called once per app→app L4 (per-app VIP) connection
+	// with its outcome ("spliced", "denied", "no_route", "dial_error"). (v0.9.5)
+	OnL4Conn func(outcome string)
+
+	// OnL4Bytes, when set, is called once per L4 connection at close with the total
+	// bytes spliced both directions. (v0.9.5)
+	OnL4Bytes func(n int64)
+
 	// OnRequest, when set, is called once per routed request to a KNOWN app with
 	// the resolved app name, HTTP status class ("2xx"…"5xx"), latency, and whether
 	// it arrived on the internal (app→app) listener. Requests for unknown apps
@@ -124,6 +132,8 @@ type Proxy struct {
 	activity    *ActivityTracker // nil when activity tracking disabled
 	onWake      func(time.Duration)
 	onInternal  func()
+	onL4Conn    func(outcome string)
+	onL4Bytes   func(n int64)
 	onRequest   func(app, code string, latency time.Duration, internal bool)
 	l4          *l4Manager // per-app-VIP L4 app→app (v0.9.5); nil until New sets it
 	wg          sync.WaitGroup
@@ -152,6 +162,8 @@ func New(cfg Config) *Proxy {
 	p.activity = cfg.Activity
 	p.onWake = cfg.OnWake
 	p.onInternal = cfg.OnInternal
+	p.onL4Conn = cfg.OnL4Conn
+	p.onL4Bytes = cfg.OnL4Bytes
 	p.onRequest = cfg.OnRequest
 	p.l4 = newL4Manager(p)
 	p.rp = &httputil.ReverseProxy{

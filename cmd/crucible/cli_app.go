@@ -333,6 +333,7 @@ type appSpecOpts struct {
 	maxScale, targetConcurrency, metricsPort      int
 	metricsPath                                   string
 	netAllow, publish, env, netAllowCIDR, canCall []string
+	internalPorts                                 []string
 	volumes, secrets                              []string
 	secretsFrom                                   string
 	netFullEgress, publishAll, keepConnections    bool
@@ -366,6 +367,7 @@ func (a *appSpecOpts) register(cmd *cobra.Command) {
 	f.StringVar(&a.connIdleTimeout, "connection-idle-timeout", "", "for a scale-to-zero published (TCP) app: close a connection idle this long so pooled clients let it sleep (e.g. 30s; default = --idle-timeout)")
 	f.BoolVar(&a.keepConnections, "keep-connections", false, "for a scale-to-zero published (TCP) app: never reap idle connections — sleep only when the last client disconnects (pub/sub, LISTEN, streaming)")
 	f.StringArrayVar(&a.canCall, "can-call", nil, "app this app may reach at <app>.internal via the ingress proxy — app→app networking, default-deny (repeatable; needs the daemon's --internal-networking)")
+	f.StringArrayVar(&a.internalPorts, "internal-port", nil, "expose a TCP port to authorized peers at <app>.internal:PORT — format PORT[/tcp|/http] (tcp=raw byte splice incl. TLS passthrough, http=L7 per-request routing; repeatable; needs the daemon's --internal-l4)")
 	f.StringVar(&a.tlsMode, "tls-mode", "", "how the ingress proxy handles this app's HTTPS on :443: terminate (default, the proxy manages the cert) or passthrough (the guest owns its cert)")
 	f.BoolVar(&a.noHTTPSRedirect, "no-https-redirect", false, "serve plain HTTP on :80 for this app instead of 301-redirecting to HTTPS (only meaningful with TLS termination)")
 	f.StringArrayVar(&a.secrets, "secrets", nil, "inject every key of a secret bundle as an env var (envFrom; repeatable)")
@@ -431,6 +433,13 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 			return api.AppSpec{}, perr
 		}
 		spec.Publish = append(spec.Publish, pm)
+	}
+	for _, s := range a.internalPorts {
+		ip, perr := parseInternalPort(s)
+		if perr != nil {
+			return api.AppSpec{}, perr
+		}
+		spec.InternalPorts = append(spec.InternalPorts, ip)
 	}
 	for _, vspec := range a.volumes {
 		vm, verr := parseVolume(vspec)
@@ -587,6 +596,24 @@ func newAppListCmd(o *globalOpts) *cobra.Command {
 			return tw.Flush()
 		},
 	}
+}
+
+// parseInternalPort parses an --internal-port value: "PORT" or "PORT/tcp" / "PORT/http".
+// Proto defaults to tcp (a blind byte splice — the common case, incl. TLS passthrough).
+func parseInternalPort(s string) (api.InternalPort, error) {
+	portStr, proto, hasProto := strings.Cut(strings.TrimSpace(s), "/")
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil || port < 1 || port > 65535 {
+		return api.InternalPort{}, fmt.Errorf("invalid --internal-port %q (want PORT[/tcp|/http], 1-65535)", s)
+	}
+	proto = strings.ToLower(strings.TrimSpace(proto))
+	if !hasProto || proto == "" {
+		proto = "tcp"
+	}
+	if proto != "tcp" && proto != "http" {
+		return api.InternalPort{}, fmt.Errorf("invalid --internal-port %q: proto must be \"tcp\" or \"http\"", s)
+	}
+	return api.InternalPort{Port: port, Proto: proto}, nil
 }
 
 func newAppGetCmd(o *globalOpts) *cobra.Command {

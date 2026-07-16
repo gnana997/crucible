@@ -28,6 +28,11 @@ type Metrics struct {
 	wakeLatency             prometheus.Histogram
 	internalRequests        prometheus.Counter
 
+	// Per-app-VIP L4 app→app (v0.9.5): connection outcomes (incl. denied — a
+	// security signal) and total bytes spliced. Outcome cardinality is bounded.
+	l4Connections *prometheus.CounterVec
+	l4Bytes       prometheus.Counter
+
 	// Per-app request metrics (v0.5.4). Push-model with an `app` (and
 	// `code` status-class) label; cardinality is bounded to real apps by the
 	// proxy (unknown Host headers are never counted) and GC'd via SyncApps.
@@ -66,6 +71,14 @@ func New() *Metrics {
 			Name: "app_internal_requests_total",
 			Help: "Total authorized app→app (<app>.internal) requests routed by the ingress proxy.",
 		}),
+		l4Connections: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "app_internal_l4_connections_total",
+			Help: "App→app L4 (per-app VIP) connections by outcome (spliced, denied, no_route, dial_error).",
+		}, []string{"outcome"}),
+		l4Bytes: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "app_internal_l4_bytes_total",
+			Help: "Total bytes spliced across app→app L4 (per-app VIP) connections, both directions.",
+		}),
 		appRequests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "app_requests_total",
 			Help: "Requests the ingress proxy routed to an app, by HTTP status class.",
@@ -78,7 +91,8 @@ func New() *Metrics {
 		appSeen: map[string]struct{}{},
 	}
 	reg.MustRegister(m.sandboxesCreated, m.forkDuration, m.snapshotRestoreDuration,
-		m.wakeLatency, m.internalRequests, m.appRequests, m.appRequestDuration)
+		m.wakeLatency, m.internalRequests, m.appRequests, m.appRequestDuration,
+		m.l4Connections, m.l4Bytes)
 	return m
 }
 
@@ -157,6 +171,24 @@ func (m *Metrics) IncInternalRequest() {
 		return
 	}
 	m.internalRequests.Inc()
+}
+
+// IncL4Conn bumps app_internal_l4_connections_total for one L4 app→app connection's
+// outcome (spliced, denied, no_route, dial_error).
+func (m *Metrics) IncL4Conn(outcome string) {
+	if m == nil {
+		return
+	}
+	m.l4Connections.WithLabelValues(outcome).Inc()
+}
+
+// AddL4Bytes adds to app_internal_l4_bytes_total (both directions of one L4 splice,
+// reported once when the connection closes).
+func (m *Metrics) AddL4Bytes(n int64) {
+	if m == nil || n <= 0 {
+		return
+	}
+	m.l4Bytes.Add(float64(n))
 }
 
 // IncSandboxCreated bumps sandboxes_created_total. Call once per sandbox

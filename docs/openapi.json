@@ -3528,6 +3528,15 @@
           "image": {
             "$ref": "#/components/schemas/ImageRef"
           },
+          "internal_ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InternalPort"
+            }
+          },
+          "internal_vip": {
+            "type": "string"
+          },
           "memory_mib": {
             "type": "integer"
           },
@@ -3855,6 +3864,12 @@
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "internal_ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InternalPort"
+            }
           },
           "memory_mib": {
             "type": "integer"
@@ -4237,6 +4252,17 @@
             "type": "string"
           },
           "instance_id": {
+            "type": "string"
+          }
+        }
+      },
+      "InternalPort": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer"
+          },
+          "proto": {
             "type": "string"
           }
         }
@@ -4669,6 +4695,12 @@
           },
           "image": {
             "$ref": "#/components/schemas/ImageRef"
+          },
+          "internal_ports": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InternalPort"
+            }
           },
           "memory_mib": {
             "type": "integer"
