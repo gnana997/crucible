@@ -26,6 +26,11 @@ const (
 	nftPostroutingChain = "postrouting"
 	nftSandboxMap       = "sandbox_chains" // iifname verdict map
 	nftGuestSourcesSet  = "guest_sources"  // ifname . guest-IP pairs
+	// nftL4PortsSet holds the (per-app VIP . TCP port) pairs a guest may reach on
+	// the internal zone at L4 (v0.9.5). Populated per app as ports are declared, so
+	// a guest can ONLY reach a VIP on a port an app actually exposes — never an
+	// arbitrary host service that happens to bind 0.0.0.0 on that VIP.
+	nftL4PortsSet = "l4_vip_ports" // ipv4_addr . inet_service
 	// Egress accounting (persistent usage metrics): a second forward base chain
 	// at a LATER priority than the filter chain, so it only sees packets the
 	// filter accepted (actual external egress, not blocked attempts), and past
@@ -87,12 +92,19 @@ func sandboxAllowedSetName(sandboxID string) string {
 //
 // Rendered as a string so tests can assert it byte-for-byte, and
 // so callers can inspect or log what got applied.
-func BuildBaseScript(egressIface string, dnsAnycast netip.Addr, internalProxyPort int) string {
+func BuildBaseScript(egressIface string, dnsAnycast netip.Addr, internalProxyPort int, internalL4 bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "table inet %s {\n", NftTableName)
 	fmt.Fprintf(&b, "\tmap %s {\n", nftSandboxMap)
 	fmt.Fprintf(&b, "\t\ttype ifname : verdict\n")
 	fmt.Fprintf(&b, "\t}\n")
+	// L4 app→app (v0.9.5): the (per-app VIP . TCP port) pairs a guest may reach.
+	// Empty at boot; populated per app. Only emitted when internal L4 is enabled.
+	if internalL4 {
+		fmt.Fprintf(&b, "\tset %s {\n", nftL4PortsSet)
+		fmt.Fprintf(&b, "\t\ttype ipv4_addr . inet_service\n")
+		fmt.Fprintf(&b, "\t}\n")
+	}
 	// guest_sources pairs each sandbox's host-side veth with its
 	// guest IP. The input chain's DNS accept matches against it,
 	// which is what makes the DNS proxy's source-IP policy lookup
@@ -136,6 +148,16 @@ func BuildBaseScript(egressIface string, dnsAnycast netip.Addr, internalProxyPor
 	if internalProxyPort > 0 {
 		fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr %s tcp dport %d accept\n",
 			nftGuestSourcesSet, dnsAnycast, internalProxyPort)
+	}
+	// L4 app→app (v0.9.5): accept guest→(per-app VIP):(declared port) — matched
+	// against the (VIP . port) set so ONLY exposed ports are reachable (never an
+	// arbitrary host service on 0.0.0.0:port via that VIP). Same kernel-attested
+	// (iifname . saddr) source gate as the DNS/anycast rules, so a guest cannot
+	// spoof another app's source IP to borrow its can_call grant; per-app call
+	// authorization is still enforced at the proxy. A peer's /30 stays dropped.
+	if internalL4 {
+		fmt.Fprintf(&b, "\t\tiifname . ip saddr @%s ip daddr . tcp dport @%s accept\n",
+			nftGuestSourcesSet, nftL4PortsSet)
 	}
 	fmt.Fprintf(&b, "\t\tiifname %q drop\n", vethHostPrefix+"*")
 	fmt.Fprintf(&b, "\t}\n")
@@ -305,7 +327,7 @@ func parseEgressCounters(jsonStr string) map[string]uint64 {
 // tearing down any previous instance, guaranteeing a clean state
 // on startup. Operators who want to preserve state across daemon
 // restarts shouldn't; every restart is a fresh world.
-func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr, internalProxyPort int) error {
+func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.Addr, internalProxyPort int, internalL4 bool) error {
 	// Flush any prior state, ignoring "no such table" errors.
 	if err := runCmd(ctx, "nft", "flush", "table", "inet", NftTableName); err != nil {
 		if !isNoSuchObject(ctx, err) {
@@ -317,7 +339,7 @@ func EnsureBaseTable(ctx context.Context, egressIface string, dnsAnycast netip.A
 			return fmt.Errorf("delete existing table: %w", err)
 		}
 	}
-	script := BuildBaseScript(egressIface, dnsAnycast, internalProxyPort)
+	script := BuildBaseScript(egressIface, dnsAnycast, internalProxyPort, internalL4)
 	if err := runCmdStdin(ctx, script, "nft", "-f", "-"); err != nil {
 		return fmt.Errorf("install base table: %w", err)
 	}
@@ -406,6 +428,40 @@ func InstallSandbox(ctx context.Context, sandboxID, hostIface string, guestIP, a
 	}
 	script := BuildSandboxScript(sandboxID, hostIface, guestIP, anycast, fullEgress, cidrs)
 	return runCmdStdin(ctx, script, "nft", "-f", "-")
+}
+
+// AddL4Ports opens guest→VIP access for the given TCP ports by adding (vip . port)
+// elements to the L4 set. Called as an app's per-app VIP is bound (v0.9.5). The base
+// table must have been installed with internalL4=true. A no-op for an empty port list.
+func AddL4Ports(ctx context.Context, vip netip.Addr, ports []int) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	return runCmdStdin(ctx, buildL4PortsElementScript("add", vip, ports), "nft", "-f", "-")
+}
+
+// RemoveL4Ports closes guest→VIP access for the given ports (app teardown/rebind).
+// Idempotent: a missing element (already removed, or the set is gone) is success.
+func RemoveL4Ports(ctx context.Context, vip netip.Addr, ports []int) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	err := runCmdStdin(ctx, buildL4PortsElementScript("delete", vip, ports), "nft", "-f", "-")
+	if err != nil && isNoSuchObject(ctx, err) {
+		return nil
+	}
+	return err
+}
+
+// buildL4PortsElementScript renders an add/delete of (vip . port) elements for the L4
+// set. Pure (no I/O) so it is unit-testable without nft.
+func buildL4PortsElementScript(op string, vip netip.Addr, ports []int) string {
+	elems := make([]string, 0, len(ports))
+	for _, p := range ports {
+		elems = append(elems, fmt.Sprintf("%s . %d", vip, p))
+	}
+	return fmt.Sprintf("%s element inet %s %s { %s }\n",
+		op, NftTableName, nftL4PortsSet, strings.Join(elems, ", "))
 }
 
 // RemoveSandbox applies BuildSandboxTeardownScript. Idempotent —

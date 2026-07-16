@@ -61,6 +61,11 @@ type ManagerConfig struct {
 	// the anycast VIP. 0 disables app→app networking (v0.5.1).
 	InternalProxyPort int
 
+	// InternalL4, when true, installs the per-app-VIP L4 accept rule + (VIP . port)
+	// set in the base table so guests can reach an app's own VIP on its declared TCP
+	// ports (v0.9.5). Ports are opened per app via AddL4Ports as they are declared.
+	InternalL4 bool
+
 	// InternalZone is the app→app DNS suffix (e.g. "internal"). Answered with the
 	// DNS anycast (the ingress VIP) when set together with InternalProxyPort.
 	InternalZone string
@@ -195,7 +200,7 @@ func Start(ctx context.Context, cfg ManagerConfig) (*Manager, error) {
 	}
 
 	// 3. nftables base table.
-	if err := EnsureBaseTable(ctx, cfg.EgressIface, cfg.DNSAnycast, cfg.InternalProxyPort); err != nil {
+	if err := EnsureBaseTable(ctx, cfg.EgressIface, cfg.DNSAnycast, cfg.InternalProxyPort, cfg.InternalL4); err != nil {
 		_ = removeCrucibleDNSIface(context.Background())
 		return nil, fmt.Errorf("network: nft base table: %w", err)
 	}

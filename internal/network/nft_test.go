@@ -38,7 +38,7 @@ func TestCheckNftSandboxIDRejectsInjection(t *testing.T) {
 }
 
 func TestBuildBaseScriptContainsExpectedChains(t *testing.T) {
-	got := BuildBaseScript("eth0", netip.MustParseAddr("10.20.255.254"), 0)
+	got := BuildBaseScript("eth0", netip.MustParseAddr("10.20.255.254"), 0, false)
 	mustContainAll(t, got, []string{
 		"table inet crucible {",
 		"map sandbox_chains {",
@@ -84,7 +84,7 @@ func TestBuildBaseScriptInternalProxyRule(t *testing.T) {
 	anycast := netip.MustParseAddr("10.20.255.254")
 	// With a port, the input chain opens guest→anycast:port TCP, gated by the
 	// same (iifname . saddr) attestation as the DNS rule.
-	with := BuildBaseScript("eth0", anycast, 80)
+	with := BuildBaseScript("eth0", anycast, 80, false)
 	wantRule := "ip saddr @" + nftGuestSourcesSet + " ip daddr 10.20.255.254 tcp dport 80 accept"
 	if !strings.Contains(with, wantRule) {
 		t.Errorf("port 80: missing internal-proxy accept rule %q in:\n%s", wantRule, with)
@@ -94,8 +94,50 @@ func TestBuildBaseScriptInternalProxyRule(t *testing.T) {
 		t.Errorf("internal-proxy accept(%d) must precede vh-* drop(%d)", ruleIdx, dropIdx)
 	}
 	// Port 0 disables app→app: no TCP rule at all.
-	if without := BuildBaseScript("eth0", anycast, 0); strings.Contains(without, "tcp dport") {
+	if without := BuildBaseScript("eth0", anycast, 0, false); strings.Contains(without, "tcp dport") {
 		t.Errorf("port 0: internal-proxy rule should be absent:\n%s", without)
+	}
+}
+
+func TestBuildBaseScriptL4Rule(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+
+	// internalL4=true: the (VIP . port) set + the input accept rule appear, gated by
+	// the same (iifname . saddr) attestation, and the rule matches the set (so only
+	// declared ports are reachable — never a blanket VIP accept).
+	with := BuildBaseScript("eth0", anycast, 80, true)
+	mustContainAll(t, with, []string{
+		"set l4_vip_ports {",
+		"type ipv4_addr . inet_service",
+		"iifname . ip saddr @guest_sources ip daddr . tcp dport @l4_vip_ports accept",
+	})
+	// The L4 accept must precede the input chain's vh-* catch-all drop.
+	ruleIdx := strings.Index(with, "tcp dport @l4_vip_ports accept")
+	dropIdx := strings.Index(with, `"vh-*" drop`)
+	if ruleIdx < 0 || dropIdx < 0 || ruleIdx > dropIdx {
+		t.Errorf("L4 accept(%d) must precede vh-* drop(%d)", ruleIdx, dropIdx)
+	}
+
+	// internalL4=false: neither the set nor the rule is present.
+	without := BuildBaseScript("eth0", anycast, 80, false)
+	if strings.Contains(without, "l4_vip_ports") {
+		t.Errorf("internalL4=false: L4 set/rule should be absent:\n%s", without)
+	}
+}
+
+func TestBuildL4PortsElementScript(t *testing.T) {
+	vip := netip.MustParseAddr("10.21.0.7")
+	// Single port.
+	got := buildL4PortsElementScript("add", vip, []int{5432})
+	want := "add element inet crucible l4_vip_ports { 10.21.0.7 . 5432 }\n"
+	if got != want {
+		t.Errorf("add single: got %q, want %q", got, want)
+	}
+	// Multiple ports are comma-joined in one element statement.
+	got = buildL4PortsElementScript("delete", vip, []int{5432, 6432})
+	want = "delete element inet crucible l4_vip_ports { 10.21.0.7 . 5432, 10.21.0.7 . 6432 }\n"
+	if got != want {
+		t.Errorf("delete multi: got %q, want %q", got, want)
 	}
 }
 
@@ -126,7 +168,7 @@ func TestEgressAccountingObjects(t *testing.T) {
 
 	// Base: the egress dispatch map + a forward base chain at priority 10 (AFTER
 	// the filter chain at 0, so only accepted egress is counted).
-	base := BuildBaseScript("eth0", anycast, 0)
+	base := BuildBaseScript("eth0", anycast, 0, false)
 	mustContainAll(t, base, []string{
 		"map egress_chains {",
 		"chain egress_acct {",
