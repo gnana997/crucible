@@ -100,10 +100,19 @@ type Config struct {
 	// or 404s and (in a later slice) enforces per-app call authorization.
 	InternalZone string
 
-	// InternalVIP is the A address returned for InternalZone queries — the DNS
-	// anycast, which the ingress proxy also listens on. Ignored when InternalZone
-	// is empty or InternalVIP is invalid.
+	// InternalVIP is the A address returned for InternalZone queries in LEGACY mode
+	// — the shared DNS anycast, which the ingress L7 proxy also listens on. Used
+	// only when InternalVIPForApp is nil. Ignored when InternalZone is empty or
+	// InternalVIP is invalid.
 	InternalVIP netip.Addr
+
+	// InternalVIPForApp, when set, resolves an in-zone query to the target app's
+	// OWN per-app VIP (v0.9.5 L4 mode) instead of the shared anycast — so
+	// <app>.internal routes by destination IP and can carry raw TCP. It takes
+	// precedence over InternalVIP. Returning ok=false (the app has no VIP: unknown,
+	// or L4 not enabled for it) yields NXDOMAIN — same fail-closed, no-inventory-leak
+	// behavior as an unauthorized lookup. Consulted only AFTER InternalAuthz passes.
+	InternalVIPForApp func(app string) (netip.Addr, bool)
 
 	// InternalAuthz authorizes an internal-zone lookup: given the querying guest's
 	// source IP and the target app, may the caller reach it? When InternalZone is
@@ -585,7 +594,12 @@ const internalRecordTTL = 30
 // empty NOERROR (NODATA) so a dual-stack resolver falls back to the A record on
 // the IPv4-only guest fabric.
 func (p *Proxy) internalAnswer(req *dns.Msg, callerIP string) *dns.Msg {
-	if p.cfg.InternalZone == "" || !p.cfg.InternalVIP.IsValid() || len(req.Question) != 1 {
+	// Need a way to resolve an in-zone name: a per-app VIP lookup (v0.9.5 L4 mode)
+	// or the shared anycast VIP (legacy). Neither wired → not ours.
+	if p.cfg.InternalZone == "" || len(req.Question) != 1 {
+		return nil
+	}
+	if p.cfg.InternalVIPForApp == nil && !p.cfg.InternalVIP.IsValid() {
 		return nil
 	}
 	q := req.Question[0]
@@ -602,10 +616,21 @@ func (p *Proxy) internalAnswer(req *dns.Msg, callerIP string) *dns.Msg {
 	// can't even discover an app it may not call.
 	target := strings.TrimSuffix(strings.TrimSuffix(qn, zone), ".")
 	if p.cfg.InternalAuthz == nil || !p.cfg.InternalAuthz(callerIP, target) {
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeNameError)
-		m.Authoritative = true
-		return m
+		return internalNameError(req)
+	}
+	// Resolve the address: per-app VIP (L4) takes precedence over the shared anycast.
+	// An authorized app with no VIP is NXDOMAIN (unknown or L4-not-enabled) — same
+	// fail-closed, no-leak behavior as an unauthorized lookup.
+	vip := p.cfg.InternalVIP
+	if p.cfg.InternalVIPForApp != nil {
+		v, ok := p.cfg.InternalVIPForApp(target)
+		if !ok {
+			return internalNameError(req)
+		}
+		vip = v
+	}
+	if !vip.IsValid() {
+		return nil
 	}
 	m := new(dns.Msg)
 	m.SetReply(req)
@@ -613,9 +638,19 @@ func (p *Proxy) internalAnswer(req *dns.Msg, callerIP string) *dns.Msg {
 	if q.Qtype == dns.TypeA {
 		m.Answer = append(m.Answer, &dns.A{
 			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: internalRecordTTL},
-			A:   net.IP(p.cfg.InternalVIP.AsSlice()),
+			A:   net.IP(vip.AsSlice()),
 		})
 	}
+	return m
+}
+
+// internalNameError builds an authoritative NXDOMAIN reply for an in-zone query the
+// caller may not resolve (unauthorized, or an app with no VIP) — fail-closed with no
+// inventory leak.
+func internalNameError(req *dns.Msg) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeNameError)
+	m.Authoritative = true
 	return m
 }
 

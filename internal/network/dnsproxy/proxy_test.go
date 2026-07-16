@@ -863,3 +863,62 @@ func TestInternalAnswer(t *testing.T) {
 		}
 	}
 }
+
+// TestInternalAnswerPerAppVIP covers v0.9.5 L4 mode: InternalVIPForApp resolves each
+// app to its OWN VIP (routing by dest IP), taking precedence over the shared anycast.
+func TestInternalAnswerPerAppVIP(t *testing.T) {
+	allow := func(sandboxID, target string) bool { return target == "backend" || target == "db" }
+	vips := map[string]netip.Addr{
+		"backend": netip.MustParseAddr("10.21.0.7"),
+		"db":      netip.MustParseAddr("10.21.0.9"),
+		// "backend" and "db" are authorized; "ghost" is authorized-but-has-no-VIP below.
+	}
+	lookup := func(app string) (netip.Addr, bool) { v, ok := vips[app]; return v, ok }
+	// Anycast is ALSO set to prove the per-app lookup takes precedence over it.
+	p := &Proxy{cfg: Config{
+		InternalZone:      "internal",
+		InternalVIP:       netip.MustParseAddr("10.20.255.254"),
+		InternalVIPForApp: lookup,
+		InternalAuthz:     allow,
+	}}
+
+	// Each authorized app resolves to its own VIP, not the shared anycast.
+	for app, want := range vips {
+		req := new(dns.Msg)
+		req.SetQuestion(app+".internal.", dns.TypeA)
+		m := p.internalAnswer(req, "sbx_1")
+		if m == nil || len(m.Answer) != 1 {
+			t.Fatalf("%s: want 1 answer, got %+v", app, m)
+		}
+		a, ok := m.Answer[0].(*dns.A)
+		if !ok || a.A.String() != want.String() {
+			t.Errorf("%s: A record = %v, want per-app VIP %s (not the anycast)", app, m.Answer[0], want)
+		}
+	}
+
+	// Authorized target with NO VIP (unknown / L4-not-enabled) → NXDOMAIN, no leak.
+	allowGhost := func(sandboxID, target string) bool { return true }
+	pg := &Proxy{cfg: Config{InternalZone: "internal", InternalVIPForApp: lookup, InternalAuthz: allowGhost}}
+	req := new(dns.Msg)
+	req.SetQuestion("ghost.internal.", dns.TypeA)
+	if m := pg.internalAnswer(req, "sbx_1"); m == nil || m.Rcode != dns.RcodeNameError || len(m.Answer) != 0 {
+		t.Errorf("no-VIP app: want NXDOMAIN, got %+v", m)
+	}
+
+	// Unauthorized target is denied BEFORE the VIP lookup runs (default-deny).
+	reqDeny := new(dns.Msg)
+	reqDeny.SetQuestion("db.internal.", dns.TypeA)
+	pDeny := &Proxy{cfg: Config{InternalZone: "internal", InternalVIPForApp: lookup,
+		InternalAuthz: func(_, target string) bool { return target != "db" }}}
+	if m := pDeny.internalAnswer(reqDeny, "sbx_1"); m == nil || m.Rcode != dns.RcodeNameError {
+		t.Errorf("unauthorized under L4: want NXDOMAIN, got %+v", m)
+	}
+
+	// L4 mode with the anycast unset still works (pure-L4 daemon, no legacy VIP).
+	pPure := &Proxy{cfg: Config{InternalZone: "internal", InternalVIPForApp: lookup, InternalAuthz: allow}}
+	reqA := new(dns.Msg)
+	reqA.SetQuestion("backend.internal.", dns.TypeA)
+	if m := pPure.internalAnswer(reqA, "sbx_1"); m == nil || len(m.Answer) != 1 {
+		t.Errorf("pure-L4 (no anycast): want 1 answer, got %+v", m)
+	}
+}
