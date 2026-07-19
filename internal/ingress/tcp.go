@@ -18,6 +18,15 @@ import (
 // connection's TCP stack ACKs the probes and stays up.
 const keepAlivePeriod = 60 * time.Second
 
+// guestReadyTimeout bounds how long the waking forwarder HOLDS a client while it
+// retries the dial to a just-woken guest whose service is still ramping. "App
+// running" (health = TCP-accept) does not guarantee the service will accept a
+// BURST the instant it wakes: under lazy-paging its accept() stalls and a
+// concurrent burst overflows the guest's listen backlog, so a single dial can
+// fail. The client's connect is held — never reset — until the guest accepts or
+// this budget elapses (only then does a genuinely-down guest close the client).
+const guestReadyTimeout = 20 * time.Second
+
 // WakingForwarder is the L4 analogue of the ingress proxy: a raw TCP listener
 // that fronts one app's published port and, on each connection, resolves the
 // app's current instance, WAKES it if asleep (holding the connection until it is
@@ -152,10 +161,28 @@ func (f *WakingForwarder) handle(client net.Conn) {
 		return
 	}
 
-	backend, err := net.DialTimeout("tcp", net.JoinHostPort(target.GuestIP, strconv.Itoa(f.guestPort)), dialTimeout)
-	if err != nil {
-		f.log.Debug("dial guest failed", "guest_ip", target.GuestIP, "err", err)
-		return
+	// Hold the client through the guest's post-wake ramp: retry the dial with short
+	// backoff so a BURST landing on a just-woken app is held until the service
+	// accepts, never reset. No client bytes are read before this (the startup
+	// packet stays buffered in the socket), so nothing is lost by waiting. Only
+	// after guestReadyTimeout do we give up (genuinely-down guest → close).
+	guestAddr := net.JoinHostPort(target.GuestIP, strconv.Itoa(f.guestPort))
+	var backend net.Conn
+	deadline := time.Now().Add(guestReadyTimeout)
+	for {
+		backend, err = net.DialTimeout("tcp", guestAddr, dialTimeout)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			f.log.Debug("dial guest failed (ready budget elapsed)", "guest_ip", target.GuestIP, "err", err)
+			return
+		}
+		select {
+		case <-f.closing:
+			return
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	defer func() { _ = backend.Close() }()
 

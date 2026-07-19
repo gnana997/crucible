@@ -307,3 +307,65 @@ func TestWakingForwarderKeepConnectionsNoReap(t *testing.T) {
 		t.Fatalf("inflight=%d after idle with reaping off, want 1 (connection kept)", inflight)
 	}
 }
+
+// TestWakingForwarderHoldsClientThroughNotReadyGuest is the regression for the
+// cold-wake burst RST: a running app whose guest service isn't accepting yet
+// (post-wake lazy-paging ramp / backlog overflow) must HOLD the client and retry
+// the dial, then forward once the service is up — never reset the client.
+func TestWakingForwarderHoldsClientThroughNotReadyGuest(t *testing.T) {
+	// Grab a free port and leave it CLOSED so the first dials are refused.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, ps, _ := net.SplitHostPort(probe.Addr().String())
+	port, _ := strconv.Atoi(ps)
+	_ = probe.Close() // port now free → dials refuse until we bring the guest up
+
+	apps := &wakingApps{instance: "sbx_1", port: port, phase: "running"} // running: no wake, straight to dial
+	inst := fakeInstances{ips: map[string]string{"sbx_1": host}}
+	resolver := NewResolver(apps, inst, "", "", 0)
+	waker := &blockingWaker{apps: apps, release: make(chan struct{})}
+	f, err := NewWakingForwarder(WakingForwarderConfig{
+		HostAddr: "127.0.0.1:0", AppName: "pg", GuestPort: port,
+		Resolver: resolver, Waker: waker,
+	})
+	if err != nil {
+		t.Fatalf("NewWakingForwarder: %v", err)
+	}
+	defer f.Close()
+
+	// Client connects while the guest is NOT accepting — must be held, not reset.
+	got := make(chan string, 1)
+	go func() { got <- roundtrip(t, f, "burst") }()
+	select {
+	case <-got:
+		t.Fatal("forwarded before the guest was ready (should have been held)")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// Bring the guest up on the same port; the retry-dial must now succeed.
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, ps))
+	if err != nil {
+		t.Fatalf("bring guest up: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			go func(c net.Conn) { defer func() { _ = c.Close() }(); _, _ = io.Copy(c, c) }(c)
+		}
+	}()
+
+	select {
+	case echo := <-got:
+		if echo != "burst" {
+			t.Fatalf("echo = %q, want %q", echo, "burst")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client not held through the not-ready guest — reset or never forwarded")
+	}
+}

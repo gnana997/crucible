@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.6] — 2026-07-20
+
+Wake-on-TCP burst reliability. A burst of connections arriving at a scale-to-zero app
+the instant it wakes could be **reset** instead of served: the waking forwarder held
+each client through the *wake*, but then dialed the guest only once — and a guest
+service that is still coming up right after wake can refuse a concurrent burst for a
+brief window. Because no client bytes are read first, the forwarder's close became a
+TCP **RST** ("connection reset by peer"). The forwarder now holds the client and
+retries the dial until the guest accepts, so a wake is experienced as *latency*, never
+a reset. Daemon-only fix; the Go SDK is unchanged (lockstep tag).
+
+### Fixed
+
+- **Wake-on-TCP holds a connection burst through the guest's post-wake ramp.** The
+  app-scoped waking forwarder (`--internal-l4` VIPs and published scale-to-zero ports)
+  now retries the guest dial with short backoff for up to 20s instead of closing the
+  client on the first failure. "App running" (health = TCP-accept) does not guarantee
+  the guest service will accept a *burst* the instant it wakes: while it warms up, its
+  `accept()` can stall and a concurrent burst overflows the guest listen backlog, so a
+  single dial could fail — and, since no client bytes are read yet, the resulting close
+  sent a RST. The client is now held (its buffered first bytes are preserved, nothing
+  lost) until the guest accepts or the budget elapses; a genuinely-down guest still
+  closes after the budget, as before. Regression test covers a not-yet-ready guest that
+  comes up mid-hold.
+
 ## [0.9.5] — 2026-07-17
 
 App→app networking for any TCP protocol. The existing `<app>.internal` path routed
