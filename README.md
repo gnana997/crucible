@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.9.5](https://img.shields.io/badge/status-v0.9.5-orange)
+![Status: v0.9.7](https://img.shields.io/badge/status-v0.9.7-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
@@ -110,8 +110,10 @@ Measured on one 24-core box, 512 MiB sandboxes. The `--work-base` filesystem is 
 
 ## Roadmap
 
-crucible is at **v0.9.5**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
+crucible is at **v0.9.7**. One highlight per release line below, the full shipped-vs-planned history and capability matrix live in **[docs/ROADMAP.md](docs/ROADMAP.md)**.
 
+- **v0.9.7: a wake ends when the *service* is ready, not when the VM is up.** After a snapshot-wake the VMM resumes long before a stateful guest finishes starting, and a burst landing in that window meets a protocol-level rejection (postgres: *"the database system is starting up"*) that an L4 forwarder cannot retry — so it reached the client as a reset. `wake` now holds on the app's readiness probe and releases the whole waiting herd together, only once the service answers; a no-op for apps with no health check. Also **`--usage-retention`**, which reclaims a *deleted* app's retained usage record so the usage store stops growing with apps-ever-created — off by default, and a live app's counters are never touched ([docs/apps.md](docs/apps.md#scale-to-zero)).
+- **v0.9.6: wake-on-TCP holds a connection burst.** A burst arriving the instant a scale-to-zero app woke could be reset rather than served — the forwarder held each client through the *wake* but dialed the guest only once. It now retries the dial until the guest accepts, so a wake is experienced as latency, never a reset ([docs/apps.md](docs/apps.md#scale-to-zero)).
 - **v0.9.5: app→app networking for any TCP protocol.** With the daemon's `--internal-l4`, an app that declares `--internal-port 5432` gets its own per-app VIP, and a granted peer reaches it at `<app>.internal:5432` over a blind byte splice — any protocol, TLS straight through, so a client speaks postgres/redis/… natively (`psql sslmode=verify-full`) end to end. Default-deny (`--can-call`), wake-on-connect, peer isolation, declared-ports-only, fair-share-capped ([docs/apps.md](docs/apps.md#raw-tcp-for-any-protocol)).
 - **v0.9.4: hardening.** Fuzzing the incremental-backup parsers fixed two ways a crafted backup could crash the daemon on restore; the Go toolchain is bumped to 1.25.12, clearing 29 standard-library advisories (`govulncheck` clean).
 - **v0.9.3: incremental backups.** `crucible volume backup db --incremental` ships only the blocks changed since the last backup, as a delta in a chain rooted at a base full; restoring the tip reassembles base + deltas and verifies the result block-for-block. Works on encrypted volumes too (the blocks are LUKS ciphertext), and exports off-host like a full ([docs/backups.md](docs/backups.md#incremental-backups)).

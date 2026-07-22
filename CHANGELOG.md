@@ -6,6 +6,45 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [0.9.7] — 2026-07-23
+
+Wake correctness and usage-store hygiene. A woken app is now released to clients only
+once its **readiness probe** passes, closing the window where the VMM was back but the
+guest service was still starting — the failure mode an L4 forwarder cannot retry around,
+because a protocol-level rejection is not a dial failure. Separately, a deleted app's
+retained usage record can now be **reclaimed on a retention policy**, so the usage store
+stops growing with apps-ever-created. Daemon-only; the Go SDK is unchanged (lockstep tag).
+
+### Added
+
+- **`--usage-retention` reclaims a deleted app's final usage record.** A deleted app's
+  usage counters are deliberately retained so a reader can still collect them, but until
+  now that retention was permanent: every app that ever existed left a record in the app
+  store's `usage` bucket forever, so the store grew with apps-ever-created rather than
+  apps-alive — and every `GET /usage` carried the whole history. The flag bounds it
+  (`--usage-retention 720h`); the existing usage tick sweeps at most hourly and logs what
+  it reclaims. **Defaults to `0` — retain forever, exactly today's behaviour** — so an
+  upgrade never starts deleting records an operator was relying on; opt in when a reader
+  is known to collect finalized records within the window.
+
+  Records for **live** apps are never reclaimed at any age: an app's usage record *is*
+  its running counter, so removing one would silently reset that app's lifetime totals
+  rather than free anything. New `Store.PruneUsage(cutoff)` and
+  `Manager.SetUsageRetention`.
+
+### Fixed
+
+- **Wake holds clients until the guest service is query-ready, not merely up.** After a
+  snapshot-wake the VMM resumes long before a stateful guest finishes starting (postgres
+  recovery, for example), and a burst arriving in that window is answered with a
+  protocol-level rejection — *"the database system is starting up"* — which an L4
+  forwarder cannot retry, so it surfaces to the client as a reset. `Wake` now blocks on
+  the app's configured readiness probe before flipping the phase, so the waking
+  forwarder's wait (which already coalesces the whole client herd) releases everyone
+  together, only once the service answers. Bounded by a max wait so a wake can never hang,
+  and a **no-op for an app with no health check** — for those, VMM-up remains readiness,
+  exactly as before.
+
 ## [0.9.6] — 2026-07-20
 
 Wake-on-TCP burst reliability. A burst of connections arriving at a scale-to-zero app
