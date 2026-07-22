@@ -264,7 +264,11 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 		// memory, requests, storage) that survive a daemon restart. This is the
 		// accrual/flush cadence; it also bounds loss on an unclean crash.
 		usageInterval = fs.Duration("usage-interval", 60*time.Second, "cadence for accruing/persisting per-app usage metrics so they survive a daemon restart")
-		eventsBuffer  = fs.Int("events-buffer", 1024, "size of the in-memory app lifecycle event ring served by GET /events")
+		// A deleted app's usage record is retained so a reader can still collect its final
+		// counters; this bounds how long, so the store does not grow with apps-ever-created.
+		// Live apps are never affected. 0 keeps every finalized record forever.
+		usageRetention = fs.Duration("usage-retention", 0, "how long to keep a DELETED app's final usage record before reclaiming it (0 = keep forever). Live apps' records are never reclaimed. Set comfortably longer than the interval at which anything collects finalized records")
+		eventsBuffer   = fs.Int("events-buffer", 1024, "size of the in-memory app lifecycle event ring served by GET /events")
 		// App→app service networking (v0.5.1, experimental). Off by default:
 		// reachability is default-deny — an app reaches a peer only if its spec
 		// grants it (`app create --can-call <peer>`); ungranted calls get
@@ -820,6 +824,7 @@ Required flags:
 			// counters once per usage tick (real sandbox-id keyed).
 			appMgr.SetEgressSource(mgr.EgressByteMap)
 			appMgr.SetUsageInterval(*usageInterval)
+			appMgr.SetUsageRetention(*usageRetention)
 			// Push app lifecycle events over OTLP too (no-op unless OTLP is on);
 			// GET /events serves them regardless.
 			tele.StartEventExport(context.Background(), appMgr.Events())

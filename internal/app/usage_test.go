@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -208,5 +209,105 @@ func TestUsageFinalizeRetains(t *testing.T) {
 	}
 	if _, ok := led.accum["app_a"]; ok {
 		t.Error("accum not dropped after finalize")
+	}
+}
+
+// The reclamation sweep rides the usage tick. These drive the Manager wiring rather than
+// the store: the store logic is covered in store_test.go, but a correct PruneUsage that is
+// never called (or called with the wrong cutoff) would look identical from there.
+func TestUsageRetentionSweep(t *testing.T) {
+	m, s := newMgr(t, nil)
+	clk := &fakeClock{t: time.Now()}
+	m.now = clk.now
+
+	seed := func() {
+		fin := clk.now().Add(-48 * time.Hour)
+		if err := s.PutUsage("gone", Usage{AppID: "gone", FinalizedAt: &fin}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutUsage("live", Usage{AppID: "live"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("disabled by default: retain forever", func(t *testing.T) {
+		seed()
+		clk.advance(2 * usagePruneEvery)
+		m.pruneUsageIfDue()
+		got, _ := s.ListUsage()
+		if len(got) != 2 {
+			t.Errorf("records = %d, want 2 — retention 0 must reclaim nothing", len(got))
+		}
+	})
+
+	t.Run("sweeps once enabled", func(t *testing.T) {
+		m.SetUsageRetention(24 * time.Hour)
+		clk.advance(2 * usagePruneEvery)
+		m.pruneUsageIfDue()
+
+		got, _ := s.ListUsage()
+		if _, ok := got["gone"]; ok {
+			t.Error("finalized record past retention was not reclaimed")
+		}
+		if _, ok := got["live"]; !ok {
+			t.Error("live record was reclaimed — the sweep must never touch a running counter")
+		}
+	})
+
+	t.Run("throttled between sweeps", func(t *testing.T) {
+		fin := clk.now().Add(-48 * time.Hour)
+		if err := s.PutUsage("gone2", Usage{AppID: "gone2", FinalizedAt: &fin}); err != nil {
+			t.Fatal(err)
+		}
+		clk.advance(usagePruneEvery / 2) // not yet due
+		m.pruneUsageIfDue()
+		if got, _ := s.ListUsage(); len(got) != 2 {
+			t.Errorf("records = %d, want 2 — sweep ran before it was due", len(got))
+		}
+		clk.advance(usagePruneEvery) // now due
+		m.pruneUsageIfDue()
+		if got, _ := s.ListUsage(); len(got) != 1 {
+			t.Errorf("records = %d, want 1 (live only)", len(got))
+		}
+	})
+}
+
+// Drives the real usageLoop: a correct sweep that the tick never invokes would pass every
+// other test in this file. Retention is enabled and the first tick is always due, so the
+// finalized record must disappear without any clock manipulation.
+func TestUsageLoopInvokesRetentionSweep(t *testing.T) {
+	m, s := newMgr(t, nil)
+	m.SetUsageInterval(10 * time.Millisecond)
+	m.SetUsageRetention(time.Nanosecond)
+
+	fin := time.Now().Add(-time.Hour)
+	if err := s.PutUsage("gone", Usage{AppID: "gone", FinalizedAt: &fin}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutUsage("live", Usage{AppID: "live"}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.wg.Add(1)
+	go m.usageLoop(ctx)
+	defer func() { cancel(); m.wg.Wait() }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got, err := s.ListUsage()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, still := got["gone"]; !still {
+			if _, ok := got["live"]; !ok {
+				t.Fatal("the live record was reclaimed by the loop")
+			}
+			return // swept by the tick, live record intact
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("usageLoop never invoked the retention sweep")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -228,3 +228,52 @@ func (s *Store) DeleteUsage(id string) error {
 		return tx.Bucket(usageBucket).Delete([]byte(id))
 	})
 }
+
+// PruneUsage deletes FINALIZED usage records whose FinalizedAt is before cutoff and
+// reports how many were removed. A deleted app's record is retained so a reader can
+// still collect its final counters (see Delete); this is what eventually reclaims them,
+// so the bucket does not grow without bound under high app churn.
+//
+// Records for LIVE apps are never touched, at any age: an app's usage record IS its
+// running counter, so removing it would silently reset the app's lifetime totals rather
+// than free anything. FinalizedAt == nil means "still live" — that check is the whole
+// safety property of this function.
+//
+// Safe to call concurrently with reads, idempotent, and a no-op on an empty bucket.
+func (s *Store) PruneUsage(cutoff time.Time) (int, error) {
+	// Collect first, delete second: bbolt keys are only valid for the life of the
+	// transaction that yielded them, and mutating a bucket while ranging it is
+	// undefined. Copy each key out before leaving the View.
+	var stale [][]byte
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(usageBucket).ForEach(func(k, v []byte) error {
+			var u Usage
+			if err := json.Unmarshal(v, &u); err != nil {
+				// A record we cannot parse is not one we can judge finalized, so leave
+				// it: a janitor must not abort the whole sweep over a single bad row.
+				return nil
+			}
+			if u.FinalizedAt != nil && u.FinalizedAt.Before(cutoff) {
+				stale = append(stale, append([]byte(nil), k...))
+			}
+			return nil
+		})
+	}); err != nil {
+		return 0, err
+	}
+	if len(stale) == 0 {
+		return 0, nil
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(usageBucket)
+		for _, k := range stale {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return len(stale), nil
+}

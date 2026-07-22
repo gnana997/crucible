@@ -139,3 +139,91 @@ func TestPersistsAcrossReopen(t *testing.T) {
 		t.Fatalf("after reopen: %+v found=%v err=%v", got, found, err)
 	}
 }
+
+// PruneUsage reclaims a deleted app's retained counters so the bucket does not grow with
+// apps-ever-created. Its safety property is the negative case: a LIVE app's record is its
+// running counter, so pruning one would silently reset that app's lifetime totals.
+func TestPruneUsage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "apps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	now := time.Now()
+	old := now.Add(-90 * 24 * time.Hour)
+	recent := now.Add(-1 * time.Hour)
+
+	put := func(id string, finalized *time.Time) {
+		t.Helper()
+		if err := s.PutUsage(id, Usage{AppID: id, FinalizedAt: finalized}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("live-old", nil)        // live, ancient — must survive
+	put("live-new", nil)        // live, fresh   — must survive
+	put("done-old", &old)       // finalized, past cutoff — reclaim
+	put("done-recent", &recent) // finalized, inside cutoff — keep
+
+	cutoff := now.Add(-30 * 24 * time.Hour)
+	n, err := s.PruneUsage(cutoff)
+	if err != nil {
+		t.Fatalf("PruneUsage: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("reclaimed %d, want 1", n)
+	}
+
+	got, err := s.ListUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"live-old", "live-new", "done-recent"} {
+		if _, ok := got[id]; !ok {
+			t.Errorf("%s was reclaimed and must not have been", id)
+		}
+	}
+	if _, ok := got["done-old"]; ok {
+		t.Error("done-old past the cutoff was not reclaimed")
+	}
+
+	// Idempotent: a second sweep finds nothing new.
+	if n, err := s.PruneUsage(cutoff); err != nil || n != 0 {
+		t.Errorf("second prune = %d, %v; want 0, nil", n, err)
+	}
+}
+
+// A live record must survive any cutoff, including one in the future — age is never the
+// deciding factor, FinalizedAt is.
+func TestPruneUsageNeverTouchesLiveRecords(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "apps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	if err := s.PutUsage("live", Usage{AppID: "live"}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.PruneUsage(time.Now().Add(100 * 365 * 24 * time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("reclaimed %d live records; must never reclaim a live app's counter", n)
+	}
+	if got, _ := s.ListUsage(); len(got) != 1 {
+		t.Errorf("live record lost: %v", got)
+	}
+}
+
+func TestPruneUsageEmptyBucket(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "apps.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if n, err := s.PruneUsage(time.Now()); err != nil || n != 0 {
+		t.Errorf("empty bucket prune = %d, %v; want 0, nil", n, err)
+	}
+}

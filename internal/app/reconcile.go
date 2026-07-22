@@ -219,6 +219,7 @@ const (
 	defaultReconcileInterval = 3 * time.Second
 	defaultIdleInterval      = 5 * time.Second  // idle-monitor scan cadence
 	defaultUsageInterval     = 60 * time.Second // persistent-usage-metrics accrual/flush cadence
+	usagePruneEvery          = time.Hour        // how often the accrual tick sweeps finalized records
 	baseBackoff              = 1 * time.Second
 	maxBackoff               = 60 * time.Second
 	crashLoopWindow          = 60 * time.Second
@@ -281,6 +282,15 @@ type Manager struct {
 	// periodic tick (usageInterval).
 	usage         *usageLedger
 	usageInterval time.Duration
+
+	// usageRetention bounds how long a FINALIZED usage record is kept before the usage
+	// tick reclaims it. A deleted app's counters are retained so a reader can still
+	// collect them; without a bound the bucket grows with apps-ever-created rather than
+	// apps-alive. 0 disables reclamation (retain forever).
+	usageRetention time.Duration
+	// lastUsagePrune throttles the sweep: the accrual tick is frequent, a full bucket
+	// scan need not be.
+	lastUsagePrune time.Time
 	// volSize, when set, returns a volume's allocated backing bytes by name — the
 	// per-app storage sampled into the usage ledger. Nil ⇒ storage stays 0.
 	volSize func(name string) int64
@@ -398,6 +408,16 @@ func (m *Manager) SetVolumeSizer(f func(name string) int64) { m.volSize = f }
 func (m *Manager) SetUsageInterval(d time.Duration) {
 	if d > 0 {
 		m.usageInterval = d
+	}
+}
+
+// SetUsageRetention bounds how long finalized usage records are kept before being
+// reclaimed (0 = retain forever, the default). Call before Start. Retention must
+// comfortably exceed the interval at which any reader collects finalized records, or a
+// record can be reclaimed before it has been read.
+func (m *Manager) SetUsageRetention(d time.Duration) {
+	if d >= 0 {
+		m.usageRetention = d
 	}
 }
 
@@ -1236,7 +1256,30 @@ func (m *Manager) usageLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			m.accrueAllUsage()
+			m.pruneUsageIfDue()
 		}
+	}
+}
+
+// pruneUsageIfDue reclaims finalized usage records past the retention window. It rides
+// the usage tick rather than owning a goroutine, and self-throttles to usagePruneEvery
+// because the accrual cadence is far faster than a full bucket scan needs to be.
+func (m *Manager) pruneUsageIfDue() {
+	if m.usageRetention <= 0 {
+		return // retain forever
+	}
+	now := m.now()
+	if !m.lastUsagePrune.IsZero() && now.Sub(m.lastUsagePrune) < usagePruneEvery {
+		return
+	}
+	m.lastUsagePrune = now
+	n, err := m.store.PruneUsage(now.Add(-m.usageRetention))
+	if err != nil {
+		m.log.Warn("usage prune failed", "err", err)
+		return
+	}
+	if n > 0 {
+		m.log.Info("usage prune", "reclaimed", n, "retention", m.usageRetention)
 	}
 }
 
