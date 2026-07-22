@@ -799,6 +799,74 @@ func TestSleepMidDrainReapsDrainingInstance(t *testing.T) {
 	}
 }
 
+// TestWakeHoldsUntilReadinessProbePasses: waking an app with a configured health
+// check must not mark it "running" (routable) until its readiness probe passes,
+// so the L4 wake forwarder releases held clients only to a query-ready service —
+// never into the post-wake startup window (postgres "the database system is
+// starting up") where an L4 proxy can't retry a protocol-level rejection.
+func TestWakeHoldsUntilReadinessProbePasses(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	f.setProbe(HealthPassing)
+	rec := mustCreate(t, m, proxyHealthSpec("web"), true)
+	m.reconcile(ctx()) // boot
+	if err := m.Sleep(ctx(), "web"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+
+	// The guest DB is still starting after the VMM restores: its probe fails.
+	f.setProbe(HealthFailing)
+	done := make(chan error, 1)
+	go func() { done <- m.Wake(ctx(), "web") }()
+
+	// While the probe fails, Wake must HOLD: the app stays non-routable (not yet
+	// "running"), so the forwarder keeps the client's connect buffered.
+	time.Sleep(400 * time.Millisecond)
+	if resp, _ := m.Get(rec.ID); resp.Status != nil && resp.Status.Phase == "running" {
+		t.Fatalf("marked running before the readiness probe passed (phase=%q) — clients would be released into a starting DB", resp.Status.Phase)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wake returned before the probe passed (err=%v) — the readiness gate did not hold", err)
+	default:
+	}
+
+	// The DB finishes starting: the probe passes → the gate releases → running.
+	f.setProbe(HealthPassing)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Wake: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wake did not return after the readiness probe started passing")
+	}
+	if resp, _ := m.Get(rec.ID); resp.Status == nil || resp.Status.Phase != "running" {
+		t.Fatalf("phase after a ready wake = %+v, want running", resp.Status)
+	}
+}
+
+// TestWakeWithoutHealthCheckDoesNotGate: an app with no configured health check
+// keeps the fast wake path — awaitWakeReady is a no-op, so Wake returns promptly
+// even though the fake probe is failing (VMM-up is its readiness).
+func TestWakeWithoutHealthCheckDoesNotGate(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	f.setProbe(HealthPassing)
+	rec := mustCreate(t, m, proxySpec("web"), true) // no Health set
+	m.reconcile(ctx())
+	if err := m.Sleep(ctx(), "web"); err != nil {
+		t.Fatalf("Sleep: %v", err)
+	}
+	f.setProbe(HealthFailing) // would block the gate IF one applied
+	if err := m.Wake(ctx(), "web"); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if resp, _ := m.Get(rec.ID); resp.Status == nil || resp.Status.Phase != "running" {
+		t.Fatalf("no-health app did not wake to running: %+v", resp.Status)
+	}
+}
+
 // TestRollingUpdateNoHealthTCPGate: an app with no health check still rolls,
 // gating the flip on a TCP connect to its port.
 func TestRollingUpdateNoHealthTCPGate(t *testing.T) {

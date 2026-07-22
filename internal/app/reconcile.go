@@ -1117,26 +1117,40 @@ func (m *Manager) Wake(ctx context.Context, name string) error {
 		newInstanceID, werr = m.inst.Create(ctx, rec.ID, rec.Spec)
 	}
 
-	m.obsMu.Lock()
-	if o := m.obs[rec.ID]; o != nil {
-		if werr != nil {
+	if werr != nil {
+		m.obsMu.Lock()
+		if o := m.obs[rec.ID]; o != nil {
 			o.phase = "asleep" // revert: still slept, retryable
 			o.lastErr = werr.Error()
-		} else {
-			o.phase = "running"
-			o.instanceID = newInstanceID
-			o.generation = rec.Generation
-			o.health = "healthy" // fresh restore; a configured probe re-evaluates
-			o.lastWakeLatency = m.now().Sub(start)
-			o.lastErr = ""
 		}
-	}
-	m.obsMu.Unlock()
-
-	if werr != nil {
+		m.obsMu.Unlock()
 		m.log.Warn("app wake failed", "app", rec.ID, "name", name, "err", werr)
 		return fmt.Errorf("app: wake %q: %w", name, werr)
 	}
+	restoreLatency := m.now().Sub(start)
+
+	// "Running" must mean query-ready, not just VMM-up. The restore brought the
+	// VMM back, but the guest's service is (re)starting inside it — a burst landing
+	// the instant it resumes hits the service mid-startup (e.g. postgres "the
+	// database system is starting up") and is reset, since an L4 forwarder can't
+	// retry a protocol-level rejection. Hold the wake until the app's configured
+	// readiness probe passes: the phase is still "waking" here, so the forwarder's
+	// wake wait (coalescing the whole herd) blocks in this call and every queued
+	// client is released together, only once the DB is query-ready. No-op for an
+	// app with no configured health check (VMM-up is its readiness, as before).
+	m.awaitWakeReady(ctx, rec, newInstanceID)
+
+	m.obsMu.Lock()
+	if o := m.obs[rec.ID]; o != nil {
+		o.phase = "running"
+		o.instanceID = newInstanceID
+		o.generation = rec.Generation
+		o.health = "healthy" // gated on the readiness probe above; the periodic probe re-evaluates
+		o.lastWakeLatency = restoreLatency
+		o.lastErr = ""
+	}
+	m.obsMu.Unlock()
+
 	instanceID = newInstanceID
 	// Clear the persisted asleep marker now that the app is running again.
 	if cur, found, gerr := m.store.Get(rec.ID); gerr == nil && found && cur.AsleepSnapshotID != "" {
@@ -2077,6 +2091,47 @@ func (m *Manager) cancelRoll(ctx context.Context, ob *observed, reason string) {
 	m.obsMu.Unlock()
 	_ = m.inst.Destroy(ctx, incoming)
 	m.log.Info("app: rolling update cancelled", "instance", incoming, "reason", reason)
+}
+
+// wakeReadyProbeInterval and wakeReadyMaxWait bound the post-wake readiness gate
+// (awaitWakeReady): how often it re-probes a just-restored instance and how long
+// it holds before releasing clients regardless. The max must cover a stateful
+// service's post-wake startup (postgres recovery) yet never hang a wake forever.
+const (
+	wakeReadyProbeInterval = 150 * time.Millisecond
+	wakeReadyMaxWait       = 15 * time.Second
+)
+
+// awaitWakeReady holds until the woken app's configured readiness probe passes,
+// so the L4 wake forwarder releases held clients only to a query-ready service —
+// closing the post-wake window where the VMM is up but the guest DB is still
+// starting (which reset a burst that couldn't be retried at L4). It is a no-op
+// for an app with no configured health check: for those, VMM-up is readiness and
+// the wake stays as fast as before. On timeout it returns (best-effort release,
+// matching the prior optimistic behavior) rather than fail the wake; the periodic
+// probe then re-evaluates. The bound is attempt-counted, not clock-derived, so a
+// probe that never passes can't spin.
+func (m *Manager) awaitWakeReady(ctx context.Context, rec Record, instanceID string) {
+	hc := rec.Spec.Health
+	if hc == nil || hc.Type == "" {
+		return // no probe: alive-and-restored is ready (unchanged fast path)
+	}
+	attempts := int(wakeReadyMaxWait/wakeReadyProbeInterval) + 1
+	for i := 0; i < attempts; i++ {
+		if ctx.Err() != nil {
+			return
+		}
+		if m.inst.Probe(ctx, instanceID, *hc) == HealthPassing {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wakeReadyProbeInterval):
+		}
+	}
+	m.log.Warn("wake readiness probe did not pass within budget; releasing held clients anyway",
+		"app", rec.ID, "instance", instanceID)
 }
 
 // probeReady runs the incoming instance's readiness gate: its configured health
