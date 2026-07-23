@@ -50,6 +50,7 @@ type appOutput struct {
 	Name               string `json:"name"`
 	DesiredState       string `json:"desired_state"`
 	Generation         uint64 `json:"generation,omitempty"`
+	Redeployed         bool   `json:"redeployed,omitempty"`
 	Phase              string `json:"phase,omitempty"`
 	Health             string `json:"health,omitempty"`
 	Restarts           int    `json:"restarts,omitempty"`
@@ -63,7 +64,7 @@ type appListOutput struct {
 }
 
 func toAppOutput(a api.AppResponse) appOutput {
-	out := appOutput{ID: a.ID, Name: a.Name, DesiredState: a.DesiredState, Generation: a.Generation}
+	out := appOutput{ID: a.ID, Name: a.Name, DesiredState: a.DesiredState, Generation: a.Generation, Redeployed: a.Redeployed}
 	if a.Status != nil {
 		out.Phase, out.Health, out.Restarts = a.Status.Phase, a.Status.Health, a.Status.Restarts
 		out.InstanceID, out.LastError = a.Status.InstanceID, a.Status.LastError
@@ -201,9 +202,12 @@ func (h *handlers) createApp(ctx context.Context, _ *mcp.CallToolRequest, in cre
 	return nil, toAppOutput(resp), nil
 }
 
-// updateApp replaces an app's spec and redeploys it (destroy the old instance,
-// boot a fresh one from the new spec). The name is immutable and desired
-// running/stopped is retained (the "stopped" input field is ignored here).
+// updateApp replaces an app's spec. Diff-aware: an instance-defining change
+// (image, cpu/memory, volumes, env, entrypoint, …) redeploys the instance; a
+// host-side-only change (sleep policy, can_call, health, restart policy,
+// metrics scrape, …) is applied in place with no restart. The name is immutable
+// and desired running/stopped is retained (the "stopped" input field is
+// ignored here).
 func (h *handlers) updateApp(ctx context.Context, _ *mcp.CallToolRequest, in createAppInput) (*mcp.CallToolResult, appOutput, error) {
 	spec, err := h.appSpecFrom(in)
 	if err != nil {

@@ -528,10 +528,12 @@ class AppResponse(BaseModel):
     publish: list[PortMapping] | None = None
     publish_all: bool | None = None
     pull: str | None = None
+    redeployed: bool | None = None
     restart: WireRestartPolicy | None = None
     secret_env_from: list[str] | None = None
     service: WireServiceSpec | None = None
     sleep: SleepPolicy | None = None
+    spec_revision: conint(ge=0) | None = None
     status: AppStatus | None = None
     tls_mode: str | None = None
     updated_at: AwareDatetime | None = None

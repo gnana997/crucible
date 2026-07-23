@@ -1,0 +1,272 @@
+package app
+
+import (
+	"testing"
+
+	"github.com/gnana997/crucible/sdk/api"
+	"github.com/gnana997/crucible/sdk/wire"
+)
+
+func TestClassifyUpdate(t *testing.T) {
+	base := func() api.AppSpec { return nginxSpec("web", wire.RestartAlways) }
+	wakeSpec := func() api.AppSpec {
+		s := base()
+		s.Publish = []api.PortMapping{{HostPort: 18080, GuestPort: 80}}
+		s.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 60}
+		return s
+	}
+	cases := []struct {
+		name string
+		old  func() api.AppSpec
+		mut  func(*api.AppSpec)
+		want updateClass
+	}{
+		{"identical", base, func(s *api.AppSpec) {}, updateNoop},
+		{"image", base, func(s *api.AppSpec) { s.Image = &api.ImageRef{OCI: "redis:7"} }, updateRedeploy},
+		{"memory", base, func(s *api.AppSpec) { s.MemoryMiB = 512 }, updateRedeploy},
+		{"env", base, func(s *api.AppSpec) { s.Env = map[string]string{"A": "1"} }, updateRedeploy},
+		{"secret_env_from", base, func(s *api.AppSpec) { s.SecretEnvFrom = []string{"db"} }, updateRedeploy},
+		{"volumes", base, func(s *api.AppSpec) { s.Volumes = []api.VolumeMount{{Name: "data", Path: "/data"}} }, updateRedeploy},
+
+		{"sleep_policy", base, func(s *api.AppSpec) { s.Sleep = &api.SleepPolicy{MinScale: 1} }, updateInPlace},
+		{"can_call", base, func(s *api.AppSpec) { s.CanCall = []string{"peer"} }, updateInPlace},
+		{"restart", base, func(s *api.AppSpec) { s.Restart = wire.RestartPolicy{Policy: wire.RestartOnFailure} }, updateInPlace},
+		{"health", base, func(s *api.AppSpec) { s.Health = &api.HealthCheck{Type: "tcp", Port: 80} }, updateInPlace},
+		{"metrics_port", base, func(s *api.AppSpec) { s.MetricsPort = 9187 }, updateInPlace},
+
+		// The wake-on-TCP predicate decides at boot whether the instance binds
+		// its own published port; flipping it needs the rebuild.
+		{"wake_mode_flip_disable_sleep", wakeSpec, func(s *api.AppSpec) { s.Sleep = nil }, updateRedeploy},
+		{"wake_mode_flip_min_scale", wakeSpec, func(s *api.AppSpec) { s.Sleep.MinScale = 1 }, updateRedeploy},
+		{"wake_same_mode_idle_timeout", wakeSpec, func(s *api.AppSpec) { s.Sleep.IdleTimeoutSec = 1800 }, updateInPlace},
+		{"wake_same_mode_publish_change", wakeSpec, func(s *api.AppSpec) { s.Publish[0].HostPort = 19090 }, updateInPlace},
+
+		// Ordinary (non-wake) publish is bound per instance at sandbox create.
+		{"publish_change_non_wake", func() api.AppSpec {
+			s := base()
+			s.Publish = []api.PortMapping{{HostPort: 18080, GuestPort: 80}}
+			return s
+		}, func(s *api.AppSpec) { s.Publish[0].HostPort = 19090 }, updateRedeploy},
+
+		// NIC-need flips: the instance was built with no NIC to route to.
+		{"first_internal_port_nic_flip", base, func(s *api.AppSpec) {
+			s.InternalPorts = []api.InternalPort{{Port: 5432}}
+		}, updateRedeploy},
+		{"internal_ports_change_same_nic", func() api.AppSpec {
+			s := base()
+			s.InternalPorts = []api.InternalPort{{Port: 5432}}
+			return s
+		}, func(s *api.AppSpec) {
+			s.InternalPorts = append(s.InternalPorts, api.InternalPort{Port: 6432})
+		}, updateInPlace},
+		{"first_proxy_port_nic_flip", base, func(s *api.AppSpec) { s.Port = 8080 }, updateRedeploy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := tc.old()
+			next := tc.old()
+			tc.mut(&next)
+			if got := classifyUpdate(old, next); got != tc.want {
+				t.Errorf("classifyUpdate = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUpdateSleepOnlyChangeAppliesInPlace(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Port = 8080 // the scale-to-zero wake trigger
+	spec.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 300}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Port = 8080
+	upd.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 1800}
+	got, redeployed, err := m.Update("web", upd)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if redeployed {
+		t.Error("sleep-only change reported redeployed")
+	}
+	if got.Generation != rec.Generation {
+		t.Errorf("generation = %d, want %d (unchanged — no rebuild)", got.Generation, rec.Generation)
+	}
+	if got.SpecRevision != rec.SpecRevision+1 {
+		t.Errorf("spec_revision = %d, want %d", got.SpecRevision, rec.SpecRevision+1)
+	}
+	m.reconcile(ctx())
+	m.reconcile(ctx())
+	if cur := instanceOf(t, m, rec.ID); cur != old {
+		t.Errorf("instance churned: %s → %s", old, cur)
+	}
+	if f.createCount() != 1 {
+		t.Errorf("creates = %d, want 1 (no reboot)", f.createCount())
+	}
+	resp, _ := m.Get(rec.ID)
+	if resp.Sleep == nil || resp.Sleep.IdleTimeoutSec != 1800 {
+		t.Errorf("new sleep policy not persisted: %+v", resp.Sleep)
+	}
+}
+
+func TestUpdateIdenticalSpecIsNoop(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	rec := mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(ctx())
+
+	got, redeployed, err := m.Update("web", nginxSpec("web", wire.RestartAlways))
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if redeployed || got.Generation != rec.Generation || got.SpecRevision != rec.SpecRevision {
+		t.Errorf("identical spec: redeployed=%v gen=%d rev=%d, want no-op (%d/%d)",
+			redeployed, got.Generation, got.SpecRevision, rec.Generation, rec.SpecRevision)
+	}
+	m.reconcile(ctx())
+	if f.createCount() != 1 {
+		t.Errorf("creates = %d, want 1 (no-op must not reboot)", f.createCount())
+	}
+}
+
+func TestUpdateCanCallAppliesInPlace(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	rec := mustCreate(t, m, nginxSpec("web", wire.RestartAlways), true)
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.CanCall = []string{"peer"}
+	if _, redeployed, err := m.Update("web", upd); err != nil || redeployed {
+		t.Fatalf("Update: err=%v redeployed=%v, want in-place", err, redeployed)
+	}
+	if !m.CanCall("web", "peer") {
+		t.Error("added peer not authorized after in-place update")
+	}
+	upd.CanCall = nil
+	if _, redeployed, err := m.Update("web", upd); err != nil || redeployed {
+		t.Fatalf("Update (revoke): err=%v redeployed=%v, want in-place", err, redeployed)
+	}
+	if m.CanCall("web", "peer") {
+		t.Error("removed peer still authorized")
+	}
+	m.reconcile(ctx())
+	if cur := instanceOf(t, m, rec.ID); cur != old {
+		t.Errorf("instance churned: %s → %s", old, cur)
+	}
+}
+
+func TestUpdateWakeModeFlipRedeploys(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Publish = []api.PortMapping{{HostPort: 18080, GuestPort: 80}}
+	spec.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 60}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	// Disabling sleep flips who binds the host port (forwarder → instance):
+	// the running instance was built with its own bind suppressed.
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Publish = []api.PortMapping{{HostPort: 18080, GuestPort: 80}}
+	got, redeployed, err := m.Update("web", upd)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !redeployed || got.Generation != rec.Generation+1 {
+		t.Errorf("wake-mode flip: redeployed=%v gen=%d, want redeploy at gen %d",
+			redeployed, got.Generation, rec.Generation+1)
+	}
+	m.reconcile(ctx())
+	if cur := instanceOf(t, m, rec.ID); cur == old || cur == "" {
+		t.Errorf("instance not rebuilt: old=%s cur=%s", old, cur)
+	}
+}
+
+func TestUpdateHealthChangeRearmsProbe(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Health = &api.HealthCheck{Type: "tcp", Port: 80, IntervalSec: 30}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx()) // boot schedules the first probe on the old interval
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Health = &api.HealthCheck{Type: "tcp", Port: 80, IntervalSec: 5}
+	if _, redeployed, err := m.Update("web", upd); err != nil || redeployed {
+		t.Fatalf("Update: err=%v redeployed=%v, want in-place", err, redeployed)
+	}
+	m.obsMu.Lock()
+	next := m.obs[rec.ID].nextProbe
+	m.obsMu.Unlock()
+	if !next.IsZero() {
+		t.Errorf("nextProbe not re-armed after health change: %v", next)
+	}
+	if f.createCount() != 1 {
+		t.Errorf("creates = %d, want 1", f.createCount())
+	}
+}
+
+func TestUpdateHostSideWhileAsleepDoesNotWake(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Port = 8080
+	spec.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 300}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+
+	// Simulate a slept app, as the Sleep path leaves it.
+	m.obsMu.Lock()
+	m.obs[rec.ID].phase = "asleep"
+	m.obs[rec.ID].instanceID = ""
+	m.obsMu.Unlock()
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Port = 8080
+	upd.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 1800}
+	if _, redeployed, err := m.Update("web", upd); err != nil || redeployed {
+		t.Fatalf("Update: err=%v redeployed=%v, want in-place", err, redeployed)
+	}
+	m.reconcile(ctx())
+	m.reconcile(ctx())
+	if f.createCount() != 1 {
+		t.Errorf("asleep app booted by a host-side update: creates=%d, want 1", f.createCount())
+	}
+	m.obsMu.Lock()
+	phase := m.obs[rec.ID].phase
+	m.obsMu.Unlock()
+	if phase != "asleep" {
+		t.Errorf("phase = %q, want asleep (update must not wake)", phase)
+	}
+}
+
+func TestUpdateMixedChangeRedeploys(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Port = 8080
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+
+	// Host-side (sleep) and instance-defining (memory) together → the reboot
+	// applies both.
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Port = 8080
+	upd.Sleep = &api.SleepPolicy{MinScale: 0, IdleTimeoutSec: 300}
+	upd.MemoryMiB = 512
+	got, redeployed, err := m.Update("web", upd)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if !redeployed || got.Generation != rec.Generation+1 {
+		t.Errorf("mixed change: redeployed=%v gen=%d, want redeploy at gen %d",
+			redeployed, got.Generation, rec.Generation+1)
+	}
+}

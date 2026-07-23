@@ -597,7 +597,7 @@ func TestUpdateBumpsGenerationAndReplacesSpec(t *testing.T) {
 
 	updated := nginxSpec("web", wire.RestartOnFailure)
 	updated.MemoryMiB = 512
-	rec, err := m.Update("web", updated)
+	rec, _, err := m.Update("web", updated)
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
@@ -612,11 +612,11 @@ func TestUpdateBumpsGenerationAndReplacesSpec(t *testing.T) {
 	}
 
 	// Name is immutable.
-	if _, err := m.Update("web", nginxSpec("web2", wire.RestartAlways)); err == nil {
+	if _, _, err := m.Update("web", nginxSpec("web2", wire.RestartAlways)); err == nil {
 		t.Error("name change accepted; want an immutable-name error")
 	}
 	// Unknown app.
-	if _, err := m.Update("nope", nginxSpec("nope", wire.RestartAlways)); !errors.Is(err, ErrNotFound) {
+	if _, _, err := m.Update("nope", nginxSpec("nope", wire.RestartAlways)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("update unknown err = %v, want ErrNotFound", err)
 	}
 }
@@ -666,7 +666,7 @@ func TestRollingUpdateFlipsAndDrains(t *testing.T) {
 
 	updated := proxyHealthSpec("web")
 	updated.MemoryMiB = 512
-	if _, err := m.Update("web", updated); err != nil {
+	if _, _, err := m.Update("web", updated); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -720,7 +720,7 @@ func setupMidDrain(t *testing.T) (*Manager, *fakeInstantiator, *fakeClock, Recor
 
 	upd := proxyHealthSpec("web")
 	upd.MemoryMiB = 512
-	if _, err := m.Update("web", upd); err != nil {
+	if _, _, err := m.Update("web", upd); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	m.reconcile(ctx()) // startRoll: boot incoming
@@ -765,7 +765,7 @@ func TestSupersedingUpdateReapsPriorDrainingInstance(t *testing.T) {
 	clk.advance(2 * time.Second)
 	updB := proxyHealthSpec("web")
 	updB.MemoryMiB = 256
-	if _, err := m.Update("web", updB); err != nil {
+	if _, _, err := m.Update("web", updB); err != nil {
 		t.Fatalf("Update B: %v", err)
 	}
 	m.reconcile(ctx()) // startRoll B
@@ -882,7 +882,7 @@ func TestRollingUpdateNoHealthTCPGate(t *testing.T) {
 
 	upd := proxySpec("web")
 	upd.MemoryMiB = 256
-	if _, err := m.Update("web", upd); err != nil {
+	if _, _, err := m.Update("web", upd); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	m.reconcile(ctx()) // startRoll
@@ -906,7 +906,7 @@ func TestFailedUpdateKeepsOldServing(t *testing.T) {
 
 	upd := proxyHealthSpec("web")
 	upd.MemoryMiB = 512
-	if _, err := m.Update("web", upd); err != nil {
+	if _, _, err := m.Update("web", upd); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	f.setProbe(HealthFailing) // the incoming never passes its readiness gate
@@ -965,7 +965,7 @@ func TestNonProxyAppRedeployDestroyThenBoot(t *testing.T) {
 
 	upd := nginxSpec("web", wire.RestartAlways)
 	upd.MemoryMiB = 256
-	if _, err := m.Update("web", upd); err != nil {
+	if _, _, err := m.Update("web", upd); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	m.reconcile(ctx()) // canRoll=false → destroy old + boot new in one pass
@@ -1151,7 +1151,7 @@ func TestConvergeReplicas(t *testing.T) {
 	// Scale down to min_scale=1 → destroys the 2 extras.
 	spec2 := nginxSpec("web", wire.RestartAlways)
 	spec2.Sleep = &api.SleepPolicy{MinScale: 1}
-	if _, err := m.Update("web", spec2); err != nil {
+	if _, _, err := m.Update("web", spec2); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	m.reconcile(c)

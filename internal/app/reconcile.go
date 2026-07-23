@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -742,40 +743,91 @@ func (m *Manager) SetDesired(id string, running bool) error {
 	return nil
 }
 
-// Update replaces an app's spec and bumps its generation, which the reconciler
-// observes as a redeploy. For a proxy-fronted app (a Port, no fixed host
-// publish) the redeploy is a zero-downtime rolling update: a new instance is
-// booted and, once it passes its readiness gate, the route flips to it and the
-// old instance is drained then destroyed (a failed update keeps the old
-// instance serving). Other apps fall back to destroy-then-boot. The app's name
-// is immutable and desired running/stopped is retained (use SetDesired to
-// change that). Absent name is ErrNotFound.
-func (m *Manager) Update(name string, spec api.AppSpec) (Record, error) {
+// Update replaces an app's spec, diff-aware (see classifyUpdate): a change to
+// an instance-defining field bumps the generation, which the reconciler
+// observes as a redeploy; a change touching only host-side fields (sleep
+// policy, can_call, health, restart, metrics scrape, wake-fronted publish, …)
+// is applied in place — SpecRevision moves, Generation doesn't, and the
+// instance keeps running (or sleeping) untouched; an identical spec is a
+// no-op. The returned bool reports whether the instance is being redeployed.
+//
+// For a proxy-fronted app (a Port, no fixed host publish) the redeploy is a
+// zero-downtime rolling update: a new instance is booted and, once it passes
+// its readiness gate, the route flips to it and the old instance is drained
+// then destroyed (a failed update keeps the old instance serving). Other apps
+// fall back to destroy-then-boot. The app's name is immutable and desired
+// running/stopped is retained (use SetDesired to change that). Absent name is
+// ErrNotFound.
+func (m *Manager) Update(name string, spec api.AppSpec) (Record, bool, error) {
 	if spec.Name != name {
-		return Record{}, fmt.Errorf("app: name is immutable (%q cannot become %q)", name, spec.Name)
+		return Record{}, false, fmt.Errorf("app: name is immutable (%q cannot become %q)", name, spec.Name)
 	}
 	if err := validateSpec(spec); err != nil {
-		return Record{}, err
+		return Record{}, false, err
 	}
 	rec, found, err := m.store.GetByName(name)
 	if err != nil {
-		return Record{}, err
+		return Record{}, false, err
 	}
 	if !found {
-		return Record{}, ErrNotFound
+		return Record{}, false, ErrNotFound
 	}
 	// Domains are managed by AddDomain/RemoveDomain, not this full re-spec, so an
 	// `app update` that doesn't know about them can't wipe them.
 	spec.Domains = rec.Spec.Domains
+
+	switch classifyUpdate(rec.Spec, spec) {
+	case updateNoop:
+		// Identical spec: no reboot, no bump, no event.
+		return rec, false, nil
+	case updateInPlace:
+		// Only host-side fields changed — the daemon re-reads all of them from
+		// the record (idle evaluator, call authorization, health prober, restart
+		// policy, scrape targets) or re-asserts them from spec each reconcile
+		// pass (waking forwarders, internal VIPs). Persisting the record IS the
+		// apply; Generation stays put so the reconciler leaves the instance
+		// (running or asleep) untouched.
+		fields := changedHostFields(rec.Spec, spec)
+		healthChanged := !reflect.DeepEqual(rec.Spec.Health, spec.Health)
+		rec.Spec = spec
+		rec.SpecRevision++
+		rec.UpdatedAt = m.now().UTC()
+		if err := m.store.Put(rec); err != nil {
+			return Record{}, false, err
+		}
+		if healthChanged {
+			m.rearmProbe(rec.ID)
+		}
+		m.emit(appevents.TypeUpdated, rec.ID, rec.Spec.Name, "", map[string]any{
+			"redeploy": false, "fields": fields, "spec_revision": rec.SpecRevision,
+		})
+		m.Trigger()
+		return rec, false, nil
+	}
+
 	rec.Spec = spec
 	rec.Generation++
+	rec.SpecRevision++
 	rec.UpdatedAt = m.now().UTC()
 	if err := m.store.Put(rec); err != nil {
-		return Record{}, err
+		return Record{}, false, err
 	}
-	m.emit(appevents.TypeUpdated, rec.ID, rec.Spec.Name, "", map[string]any{"generation": rec.Generation})
+	m.emit(appevents.TypeUpdated, rec.ID, rec.Spec.Name, "", map[string]any{
+		"generation": rec.Generation, "redeploy": true,
+	})
 	m.Trigger()
-	return rec, nil
+	return rec, true, nil
+}
+
+// rearmProbe zeroes the app's next scheduled health probe so a changed probe
+// config takes effect on the next reconcile pass instead of after one more
+// probe on the old schedule.
+func (m *Manager) rearmProbe(appID string) {
+	m.obsMu.Lock()
+	if ob := m.obs[appID]; ob != nil {
+		ob.nextProbe = time.Time{}
+	}
+	m.obsMu.Unlock()
 }
 
 // Get returns the app's desired state plus observed status.
@@ -2348,6 +2400,7 @@ func (m *Manager) toResponse(rec Record) api.AppResponse {
 		AppSpec:      rec.Spec,
 		DesiredState: desired,
 		Generation:   rec.Generation,
+		SpecRevision: rec.SpecRevision,
 		CreatedAt:    rec.CreatedAt,
 		UpdatedAt:    rec.UpdatedAt,
 	}

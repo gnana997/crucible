@@ -84,7 +84,7 @@ func TestUpdatePreservesDomains(t *testing.T) {
 	// An `app update` that doesn't carry Domains must not wipe them.
 	spec := nginxSpec("web", wire.RestartAlways)
 	spec.MemoryMiB = 512 // some unrelated change
-	if _, err := m.Update("web", spec); err != nil {
+	if _, _, err := m.Update("web", spec); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if got, _ := m.ListDomains("web"); len(got) != 1 || got[0] != "shop.acme.com" {

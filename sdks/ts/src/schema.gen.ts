@@ -39,7 +39,7 @@ export interface paths {
         get: operations["getApp"];
         /**
          * Update an app
-         * @description Replaces the app's spec (name immutable) and redeploys its instance from the new spec — the daemon bumps the app's generation and the reconciler destroys the old instance and boots a fresh one. Desired running/stopped is retained.
+         * @description Replaces the app's spec (name immutable), diff-aware: a change to an instance-defining field (image, cpu/memory, volumes, env, entrypoint, ...) bumps the generation and redeploys the instance, while a change touching only host-side fields (sleep policy, can_call, health, restart policy, metrics scrape, ...) is applied in place with no restart, and an identical spec is a no-op. The response's `redeployed` reports which happened; `spec_revision` moves on every accepted change. Desired running/stopped is retained.
          */
         put: operations["updateApp"];
         post?: never;
@@ -978,10 +978,12 @@ export interface components {
             publish?: components["schemas"]["PortMapping"][];
             publish_all?: boolean;
             pull?: string;
+            redeployed?: boolean;
             restart?: components["schemas"]["WireRestartPolicy"];
             secret_env_from?: string[];
             service?: components["schemas"]["WireServiceSpec"];
             sleep?: components["schemas"]["SleepPolicy"];
+            spec_revision?: number;
             status?: components["schemas"]["AppStatus"];
             tls_mode?: string;
             /** Format: date-time */

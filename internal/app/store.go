@@ -29,9 +29,15 @@ type Record struct {
 	// alive, false when the app is stopped (spec retained, no instance).
 	DesiredRunning bool `json:"desired_running"`
 
-	// Generation increments on each spec update so the reconciler can
-	// detect a change that needs a redeploy.
+	// Generation increments on a spec update that requires rebuilding the
+	// instance; the reconciler redeploys when the running instance's
+	// generation lags it. An in-place update does NOT bump it.
 	Generation uint64 `json:"generation"`
+
+	// SpecRevision increments on every accepted spec change — including
+	// in-place ones that leave Generation (and the instance) untouched — so
+	// a reader can tell config moved without inferring a rebuild.
+	SpecRevision uint64 `json:"spec_revision,omitempty"`
 
 	// AsleepSnapshotID, when non-empty, means the app is asleep (scale-to-zero):
 	// its instance's VMM is stopped and this durable snapshot holds its warm

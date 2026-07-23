@@ -102,9 +102,11 @@ func (s *Server) checkSecretRefs(bundles []string) error {
 }
 
 // handleUpdateApp — PUT /apps/{name}. Body is a full AppSpec (name immutable).
-// Bumps the app's generation → the reconciler redeploys the instance from the
-// new spec (destroy-then-boot). Desired running/stopped is retained (use the
-// create/stopped path or a future desired-state route to change that).
+// Diff-aware: an instance-defining change bumps the generation → the reconciler
+// redeploys; a host-side-only change is applied in place with no restart; an
+// identical spec is a no-op. The response's `redeployed` says which happened.
+// Desired running/stopped is retained (use the create/stopped path or a future
+// desired-state route to change that).
 func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 	if !s.appsEnabled(w) {
 		return
@@ -127,7 +129,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	rec, err := s.cfg.AppManager.Update(name, spec)
+	rec, redeployed, err := s.cfg.AppManager.Update(name, spec)
 	if err != nil {
 		writeError(w, appErrStatus(err), err)
 		return
@@ -137,6 +139,7 @@ func (s *Server) handleUpdateApp(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	resp.Redeployed = redeployed
 	writeJSON(w, http.StatusOK, resp)
 }
 

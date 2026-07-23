@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
+## [Unreleased]
+
+### Changed
+
+- **`app update` restarts only when required.** The update path is now diff-aware:
+  a change touching only **host-side** fields — the sleep policy (`--idle-timeout`,
+  `--min-scale`, `--max-scale`, connection reaping), `--can-call` grants, health
+  checks, the instance restart policy, `--metrics-port`/`--metrics-path`, the proxy
+  `--port`/TLS mode, and a scale-to-zero published app's `-p` mappings — is applied
+  **in place**: no reboot, no dropped connections, same instance id, and a sleeping
+  app is never woken just to change a setting. Instance-defining changes (image,
+  vCPUs/memory, disk, volumes, env/secrets, entrypoint, egress policy, ordinary
+  published ports) redeploy exactly as before, as do changes that flip how the
+  instance was built (e.g. enabling/disabling scale-to-zero on an app that
+  publishes a host port, which moves the port bind between the instance and the
+  app-scoped waking forwarder). Re-submitting an identical spec is now a **no-op**
+  instead of a pointless reboot.
+
+  `generation` now counts only rebuild-class updates; a new monotonic
+  **`spec_revision`** counts every accepted change. The update response (API, CLI,
+  MCP `update_app`) carries **`redeployed`** so a caller can tell "applied
+  instantly" from "restarting", the CLI prints which happened, and the `updated`
+  lifecycle event carries `redeploy: true|false` plus the changed host-side field
+  names. Removing a `--can-call` grant denies **new** connections immediately;
+  connections already established keep flowing until they close or idle out.
+
 ## [0.9.7] — 2026-07-23
 
 Wake correctness and usage-store hygiene. A woken app is now released to clients only

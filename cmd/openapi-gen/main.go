@@ -275,9 +275,13 @@ func buildReflector() *openapi3.Reflector {
 		"Desired state plus observed status (instance id, phase, health, restarts).",
 		appNameParam{}, api.AppResponse{}, http.StatusOK, http.StatusNotFound, http.StatusNotImplemented)
 	jsonOp(http.MethodPut, "/apps/{name}", "updateApp", "apps", "Update an app",
-		"Replaces the app's spec (name immutable) and redeploys its instance from the "+
-			"new spec — the daemon bumps the app's generation and the reconciler destroys "+
-			"the old instance and boots a fresh one. Desired running/stopped is retained.",
+		"Replaces the app's spec (name immutable), diff-aware: a change to an "+
+			"instance-defining field (image, cpu/memory, volumes, env, entrypoint, ...) "+
+			"bumps the generation and redeploys the instance, while a change touching only "+
+			"host-side fields (sleep policy, can_call, health, restart policy, metrics "+
+			"scrape, ...) is applied in place with no restart, and an identical spec is a "+
+			"no-op. The response's `redeployed` reports which happened; `spec_revision` "+
+			"moves on every accepted change. Desired running/stopped is retained.",
 		updateAppReq{}, api.AppResponse{}, http.StatusOK,
 		http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusNotImplemented)
 	streamOp(http.MethodPost, "/apps/{name}/exec", "appExec", "apps", "Run a command in an app's current instance (streams frames)",

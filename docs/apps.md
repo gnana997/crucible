@@ -99,7 +99,7 @@ it has one (seeded as an `exec` check at first boot and persisted); pass
 | Command | What |
 |---|---|
 | `app create <name> --image <ref> [flags]` | create a durable app; prints its name |
-| `app update <name> [flags]` | replace the app's spec and redeploy; **zero-downtime** for a proxy-fronted app (see below); name immutable |
+| `app update <name> [flags]` | replace the app's spec; restarts **only when required** — a host-side-only change (sleep policy, `--can-call`, health, restart policy, metrics scrape, …) is applied **in place** with no restart, and a required redeploy is **zero-downtime** for a proxy-fronted app (see below); name immutable |
 | `app ls` | list apps with desired state, phase, health, restarts, instance |
 | `app get <name>` | full desired state + observed status (JSON) |
 | `app rm <name>` | delete the app and tear down its instance |
@@ -131,10 +131,36 @@ working across a self-heal or redeploy. `app logs -f` reattaches to the new
 instance when the app rolls (a `== reattached to <id> ==` marker). `app exec`
 takes `--cwd`/`--timeout`/`-e,--env`; `app shell` takes `--shell`.
 
+## Updating an app
+
+`app update` is **diff-aware** — it restarts the instance only when the change
+genuinely requires rebuilding it:
+
+- **Applied in place (no restart):** changes touching only host-side state the
+  daemon programs *around* the instance — the sleep policy (`--idle-timeout`,
+  `--min-scale`, `--max-scale`, connection reaping), `--can-call` grants, health
+  checks, the instance restart policy, `--metrics-port`/`--metrics-path`, the
+  proxy `--port`/TLS mode, and (for a scale-to-zero published app) the `-p`
+  mappings its waking forwarders bind. The instance — running **or asleep** —
+  is untouched: same instance id, same boot, no dropped connections, and a
+  sleeping app is never woken just to change a setting. The response (and the
+  `updated` lifecycle event) says `redeployed: false`.
+- **Redeploy:** changes to anything the instance is built from — image,
+  vCPUs/memory (Firecracker has no hot-plug), disk, volumes, env/secrets, the
+  entrypoint, the egress policy, or ordinary published ports — plus changes
+  that flip *how* the instance was built, e.g. enabling/disabling scale-to-zero
+  on an app that publishes a host port (that moves the port bind between the
+  instance and the app-scoped waking forwarder).
+- **No-op:** re-submitting an identical spec does nothing — no restart, no
+  generation bump, no event.
+
+`generation` counts only rebuild-class updates; `spec_revision` counts every
+accepted change, so a reader can tell config moved without inferring a rebuild.
+
 ## Zero-downtime update
 
 For a **proxy-fronted app** (an app with a `--port` and no fixed host publish),
-`app update` rolls the new spec out without dropping traffic:
+a redeploy-class `app update` rolls the new spec out without dropping traffic:
 
 1. Boot the new instance **without** flipping to it — the old instance keeps
    serving.

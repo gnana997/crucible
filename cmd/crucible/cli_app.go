@@ -545,8 +545,8 @@ func newAppUpdateCmd(o *globalOpts) *cobra.Command {
 	var opts appSpecOpts
 	cmd := &cobra.Command{
 		Use:   "update <name>",
-		Short: "Update a durable app's spec and redeploy it",
-		Long:  "Replace the app's spec (same flags as create) and redeploy its instance — the old instance is destroyed and a fresh one is booted from the new spec. The app's name is immutable; desired running/stopped is retained.",
+		Short: "Update a durable app's spec (restarts only when required)",
+		Long:  "Replace the app's spec (same flags as create). A change to an instance-defining field (image, cpu/memory, volumes, env, entrypoint, …) redeploys the instance; a change touching only host-side settings (sleep policy, can-call, health checks, restart policy, metrics scrape, …) is applied in place with no restart. The app's name is immutable; desired running/stopped is retained.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			spec, err := opts.build(cmd, o, args[0])
@@ -560,7 +560,11 @@ func newAppUpdateCmd(o *globalOpts) *cobra.Command {
 			if o.isJSON() {
 				return printJSON(cmd.OutOrStdout(), resp)
 			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), resp.Name)
+			if resp.Redeployed {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s (redeploying)\n", resp.Name)
+			} else {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s (applied in place, no restart)\n", resp.Name)
+			}
 			return nil
 		},
 	}

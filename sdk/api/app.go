@@ -219,9 +219,21 @@ type AppResponse struct {
 	// "stopped" (no instance, spec retained).
 	DesiredState string `json:"desired_state"`
 
-	// Generation increments on every spec update; the reconciler uses it
-	// to detect a spec change that needs a redeploy.
+	// Generation increments on a spec update that requires rebuilding the
+	// instance; the reconciler redeploys when the running instance lags it.
+	// An in-place update (host-side fields only) does not bump it.
 	Generation uint64 `json:"generation"`
+
+	// SpecRevision increments on every accepted spec change — including
+	// in-place ones that leave Generation (and the instance) untouched — so
+	// a reader can tell config moved without inferring a rebuild.
+	SpecRevision uint64 `json:"spec_revision,omitempty"`
+
+	// Redeployed is set on the response to an update: true when the change
+	// required rebuilding the instance (rolling update or destroy-then-boot),
+	// false when it was applied in place with no restart. Zero-valued
+	// elsewhere.
+	Redeployed bool `json:"redeployed,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

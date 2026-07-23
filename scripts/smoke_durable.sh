@@ -14,6 +14,7 @@
 #   08  -P auto-publishes the image's EXPOSEd port (v0.4.1)
 #   09  --health-cmd (exec) drives health from an in-guest command (v0.4.1)
 #   10  app update replaces the spec and redeploys the instance (v0.4.2)
+#   11  a host-side-only update applies in place — no restart, no generation bump
 #
 # The daemon-restart step is the whole point: v0.3 dropped every running
 # sandbox on restart; a v0.4 app comes back because its desired state lives
@@ -297,6 +298,38 @@ if wait_serving 8084; then
   [[ "$GEN" == "2" ]] && pass "generation bumped to 2 after update" || fail "generation = ${GEN:-?}, want 2"
 else
   fail "update app never served on :8084"
+fi
+
+# ---- 11 host-side-only update applies in place (no restart) -----------------
+# Changing only a host-side field (here the restart policy) must NOT redeploy:
+# same instance id, generation unchanged, and the response says so.
+echo "== 11 host-side-only app update applies in place (no restart)"
+INST3="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+if [[ "$INST3" == sbx_* ]]; then
+  # Full spec repeated; only --restart differs from case 10's spec.
+  OUT="$(cli app update upd --image "$IMAGE" -p 8084:80 --restart on-failure --memory 320 -e UPDATED=yes 2>&1)"
+  echo "$OUT" | grep -q "applied in place" \
+    && pass "update reported applied in place" \
+    || fail "update output missing 'applied in place': $OUT"
+  INST4="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+  [[ "$INST4" == "$INST3" ]] && pass "instance unchanged after in-place update ($INST3)" \
+    || fail "in-place update churned the instance ($INST3 → ${INST4:-none})"
+  GEN="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"generation":[0-9]*' | grep -o '[0-9]*' | head -1)"
+  [[ "$GEN" == "2" ]] && pass "generation unchanged (2) after in-place update" \
+    || fail "generation = ${GEN:-?}, want 2 (no bump for host-side change)"
+  REV="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"spec_revision":[0-9]*' | grep -o '[0-9]*' | head -1)"
+  [[ -n "$REV" && "$REV" -ge 1 ]] && pass "spec_revision advanced ($REV)" \
+    || fail "spec_revision missing/zero after in-place update"
+  curl -sf http://localhost:8084/ >/dev/null 2>&1 \
+    && pass "app still serves through the in-place update" \
+    || fail "app stopped serving after in-place update"
+  # Idempotency: re-submitting the same spec must not churn anything.
+  cli app update upd --image "$IMAGE" -p 8084:80 --restart on-failure --memory 320 -e UPDATED=yes >/dev/null 2>&1
+  INST5="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+  [[ "$INST5" == "$INST3" ]] && pass "identical re-submit is a no-op (instance $INST3)" \
+    || fail "identical re-submit churned the instance ($INST3 → ${INST5:-none})"
+else
+  fail "no instance found for in-place update case"
 fi
 cli app rm upd >/dev/null 2>&1
 
