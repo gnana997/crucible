@@ -15,6 +15,7 @@
 #   09  --health-cmd (exec) drives health from an in-guest command (v0.4.1)
 #   10  app update replaces the spec and redeploys the instance (v0.4.2)
 #   11  a host-side-only update applies in place — no restart, no generation bump
+#   12  a single-flag egress update reprograms the live nft chain in place
 #
 # The daemon-restart step is the whole point: v0.3 dropped every running
 # sandbox on restart; a v0.4 app comes back because its desired state lives
@@ -330,6 +331,34 @@ if [[ "$INST3" == sbx_* ]]; then
     || fail "identical re-submit churned the instance ($INST3 → ${INST5:-none})"
 else
   fail "no instance found for in-place update case"
+fi
+
+# ---- 12 egress-policy update applies in place (nft reprogrammed, no restart) -
+# A single-flag partial update: only --net-full-egress is passed; every other
+# field keeps its current value. The app's published port means its instance
+# already has a (deny-all) NIC, so the egress change reprograms the live nft
+# chain instead of redeploying.
+echo "== 12 egress-policy update applies in place (nft reprogrammed, no restart)"
+INST6="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+if [[ "$INST6" == sbx_* ]]; then
+  OUT="$(cli app update upd --net-full-egress 2>&1)"
+  echo "$OUT" | grep -q "applied in place" \
+    && pass "single-flag egress update reported applied in place" \
+    || fail "egress update output missing 'applied in place': $OUT"
+  INST7="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"instance_id":"sbx_[a-z0-9]*"' | grep -o 'sbx_[a-z0-9]*' | head -1)"
+  [[ "$INST7" == "$INST6" ]] && pass "instance unchanged after egress update ($INST6)" \
+    || fail "egress update churned the instance ($INST6 → ${INST7:-none})"
+  # The live chain now carries the full-egress accept (sanitized id: _ → -).
+  CHAIN="sandbox_${INST6//_/-}"
+  nft list chain inet crucible "$CHAIN" 2>/dev/null | grep -q "0.0.0.0/0 accept" \
+    && pass "nft chain $CHAIN reprogrammed to full egress" \
+    || fail "nft chain $CHAIN missing full-egress accept after in-place update"
+  # And the partial update kept the rest of the spec (memory from case 10).
+  MEM="$(api "$BASE_URL/apps/upd" 2>/dev/null | grep -o '"memory_mib":[0-9]*' | grep -o '[0-9]*' | head -1)"
+  [[ "$MEM" == "320" ]] && pass "partial update kept unrelated fields (memory_mib=320)" \
+    || fail "partial update lost unrelated fields (memory_mib=${MEM:-?}, want 320)"
+else
+  fail "no instance found for egress update case"
 fi
 cli app rm upd >/dev/null 2>&1
 

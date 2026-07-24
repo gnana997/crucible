@@ -39,7 +39,7 @@ export interface paths {
         get: operations["getApp"];
         /**
          * Update an app
-         * @description Replaces the app's spec (name immutable), diff-aware: a change to an instance-defining field (image, cpu/memory, volumes, env, entrypoint, ...) bumps the generation and redeploys the instance, while a change touching only host-side fields (sleep policy, can_call, health, restart policy, metrics scrape, ...) is applied in place with no restart, and an identical spec is a no-op. The response's `redeployed` reports which happened; `spec_revision` moves on every accepted change. Desired running/stopped is retained.
+         * @description Replaces the app's spec (name immutable), diff-aware: a change to an instance-defining field (image, cpu/memory, volumes, env, entrypoint, ...) bumps the generation and redeploys the instance, while a change touching only host-side fields (sleep policy, can_call, health, restart policy, metrics scrape, egress network policy, ...) is applied in place with no restart, and an identical spec is a no-op. The response's `redeployed` reports which happened; `spec_revision` moves on every accepted change. Desired running/stopped is retained.
          */
         put: operations["updateApp"];
         post?: never;

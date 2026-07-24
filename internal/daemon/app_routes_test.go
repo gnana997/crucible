@@ -65,6 +65,8 @@ func (f *fakeInst) DeleteSnapshot(context.Context, string) error         { retur
 func (f *fakeInst) Probe(context.Context, string, api.HealthCheck) app.Health {
 	return app.HealthPassing
 }
+func (f *fakeInst) ReprogramNetwork(context.Context, string, api.AppSpec) error { return nil }
+
 func (f *fakeInst) ImageHealth(context.Context, api.AppSpec) (*api.HealthCheck, error) {
 	return nil, nil
 }

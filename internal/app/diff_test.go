@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/gnana997/crucible/sdk/api"
@@ -60,6 +61,32 @@ func TestClassifyUpdate(t *testing.T) {
 			s.InternalPorts = append(s.InternalPorts, api.InternalPort{Port: 6432})
 		}, updateInPlace},
 		{"first_proxy_port_nic_flip", base, func(s *api.AppSpec) { s.Port = 8080 }, updateRedeploy},
+
+		// Egress policy reprograms in place on an instance that has a NIC;
+		// gaining or losing the NIC itself is a rebuild.
+		{"network_change_same_nic", func() api.AppSpec {
+			s := base()
+			s.Network = &api.NetworkRequest{Enabled: true, Allowlist: []string{"pypi.org"}}
+			return s
+		}, func(s *api.AppSpec) { s.Network.Allowlist = []string{"pypi.org", "files.pythonhosted.org"} }, updateInPlace},
+		{"network_added_no_nic", base, func(s *api.AppSpec) {
+			s.Network = &api.NetworkRequest{Enabled: true, FullEgress: true}
+		}, updateRedeploy},
+		{"network_removed_keeps_nic", func() api.AppSpec {
+			s := base()
+			s.Port = 8080
+			s.Network = &api.NetworkRequest{Enabled: true, Allowlist: []string{"pypi.org"}}
+			return s
+		}, func(s *api.AppSpec) { s.Network = nil }, updateInPlace},
+		// A published app already has a (deny-all) NIC — adding egress to it is
+		// a reprogram, not a rebuild.
+		{"network_added_with_publish_nic", func() api.AppSpec {
+			s := base()
+			s.Publish = []api.PortMapping{{HostPort: 18080, GuestPort: 80}}
+			return s
+		}, func(s *api.AppSpec) {
+			s.Network = &api.NetworkRequest{Enabled: true, FullEgress: true}
+		}, updateInPlace},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +271,67 @@ func TestUpdateHostSideWhileAsleepDoesNotWake(t *testing.T) {
 	m.obsMu.Unlock()
 	if phase != "asleep" {
 		t.Errorf("phase = %q, want asleep (update must not wake)", phase)
+	}
+}
+
+func TestUpdateNetworkChangeReprogramsInPlace(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Network = &api.NetworkRequest{Enabled: true, Allowlist: []string{"pypi.org"}}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+	old := instanceOf(t, m, rec.ID)
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Network = &api.NetworkRequest{Enabled: true, Allowlist: []string{"pypi.org", "files.pythonhosted.org"}}
+	got, redeployed, err := m.Update("web", upd)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if redeployed || got.Generation != rec.Generation {
+		t.Errorf("network change: redeployed=%v gen=%d, want in-place at gen %d",
+			redeployed, got.Generation, rec.Generation)
+	}
+	f.mu.Lock()
+	reprograms := append([]string(nil), f.reprograms...)
+	f.mu.Unlock()
+	if len(reprograms) != 1 || reprograms[0] != old {
+		t.Errorf("reprograms = %v, want exactly [%s]", reprograms, old)
+	}
+	if f.createCount() != 1 {
+		t.Errorf("creates = %d, want 1 (no reboot)", f.createCount())
+	}
+	resp, _ := m.Get(rec.ID)
+	if resp.Network == nil || len(resp.Network.Allowlist) != 2 {
+		t.Errorf("new network policy not persisted: %+v", resp.Network)
+	}
+}
+
+func TestUpdateNetworkReprogramFailureRejectsUpdate(t *testing.T) {
+	f := newFake()
+	m, _ := newMgr(t, f)
+	spec := nginxSpec("web", wire.RestartAlways)
+	spec.Network = &api.NetworkRequest{Enabled: true, Allowlist: []string{"pypi.org"}}
+	rec := mustCreate(t, m, spec, true)
+	m.reconcile(ctx())
+
+	f.mu.Lock()
+	f.reprogramErr = errors.New("nft exploded")
+	f.mu.Unlock()
+
+	upd := nginxSpec("web", wire.RestartAlways)
+	upd.Network = &api.NetworkRequest{Enabled: true, FullEgress: true}
+	if _, _, err := m.Update("web", upd); err == nil {
+		t.Fatal("Update succeeded despite reprogram failure")
+	}
+	// The stored spec (and generation) are untouched — no spec/policy mismatch.
+	resp, _ := m.Get(rec.ID)
+	if resp.Network == nil || resp.Network.FullEgress || len(resp.Network.Allowlist) != 1 {
+		t.Errorf("rejected update mutated the stored spec: %+v", resp.Network)
+	}
+	if resp.Generation != rec.Generation || resp.SpecRevision != rec.SpecRevision {
+		t.Errorf("gen/rev moved on a rejected update: %d/%d", resp.Generation, resp.SpecRevision)
 	}
 }
 

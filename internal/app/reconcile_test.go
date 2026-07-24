@@ -31,6 +31,9 @@ type fakeInstantiator struct {
 	snapshots   int              // count of SnapshotInstance calls (golden captures)
 	forks       int              // count of ForkInstance calls (warm extras)
 	wakeErr     error            // if set, Wake returns it (exercises the wake fallback)
+
+	reprograms   []string // instanceIDs whose egress was reprogrammed, in order
+	reprogramErr error    // if set, ReprogramNetwork returns it (exercises rollback)
 }
 
 func (f *fakeInstantiator) SnapshotInstance(_ context.Context, instanceID string) (string, error) {
@@ -58,6 +61,16 @@ func (f *fakeInstantiator) ForkInstance(_ context.Context, _ string) (string, er
 }
 
 func (f *fakeInstantiator) DeleteSnapshot(_ context.Context, _ string) error { return nil }
+
+func (f *fakeInstantiator) ReprogramNetwork(_ context.Context, instanceID string, _ api.AppSpec) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reprogramErr != nil {
+		return f.reprogramErr
+	}
+	f.reprograms = append(f.reprograms, instanceID)
+	return nil
+}
 
 func (f *fakeInstantiator) ImageHealth(_ context.Context, _ api.AppSpec) (*api.HealthCheck, error) {
 	f.mu.Lock()

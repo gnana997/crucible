@@ -64,6 +64,22 @@ func (a *networkAdapter) Setup(ctx context.Context, req sandbox.NetworkSetupRequ
 	}, nil
 }
 
+// Reprogram translates the sandbox-layer request into the network-layer
+// in-place egress swap. Same allowlist type assertion as Setup — any other
+// Matcher through this path is a wiring bug.
+func (a *networkAdapter) Reprogram(ctx context.Context, req sandbox.NetworkSetupRequest) error {
+	al, ok := req.Allowlist.(*network.Allowlist)
+	if !ok {
+		return fmt.Errorf("daemon: network adapter expected *network.Allowlist, got %T", req.Allowlist)
+	}
+	return a.m.Reprogram(ctx, network.SandboxSetup{
+		SandboxID:  req.SandboxID,
+		Allowlist:  al,
+		FullEgress: req.FullEgress,
+		CIDRs:      req.CIDRs,
+	})
+}
+
 // Teardown reverses Setup. Expects the Impl field to carry the
 // original *network.SandboxHandle; if it doesn't, the handle
 // was fabricated by a test that bypassed the adapter and we

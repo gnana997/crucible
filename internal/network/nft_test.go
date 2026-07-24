@@ -338,3 +338,53 @@ func mustContainAll(t *testing.T, s string, subs []string) {
 		}
 	}
 }
+
+func TestBuildSandboxReprogramScript(t *testing.T) {
+	anycast := netip.MustParseAddr("10.20.255.254")
+	cidr := netip.MustParsePrefix("203.0.113.0/24")
+	got := BuildSandboxReprogramScript("sbx-abc", anycast, false, []netip.Prefix{cidr})
+
+	// Structure: flush the chain, flush the resolved-IP set (revoking stale
+	// hostname grants), then re-emit the policy — all in one transactional
+	// script. The dispatch map, guest_sources pair, and egress accounting must
+	// NOT be touched.
+	flushChain := strings.Index(got, "flush chain inet crucible sandbox_sbx-abc\n")
+	flushSet := strings.Index(got, "flush set inet crucible sandbox_sbx-abc_allowed\n")
+	dnsIdx := strings.Index(got, "udp dport 53 accept")
+	cidrIdx := strings.Index(got, "ip daddr 203.0.113.0/24 accept")
+	if flushChain < 0 || flushSet < 0 || dnsIdx < 0 || cidrIdx < 0 {
+		t.Fatalf("reprogram script missing expected lines:\n%s", got)
+	}
+	if flushChain >= dnsIdx || flushSet >= dnsIdx {
+		t.Errorf("flushes must precede re-added rules:\n%s", got)
+	}
+	for _, forbidden := range []string{"add element", "delete element", "egress", "counter", "add chain", "add set"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("reprogram script must not touch %q objects:\n%s", forbidden, got)
+		}
+	}
+	// A CIDR accept requires the SSRF-guard drops, exactly as at create.
+	for _, p := range BlockedEgressPrefixes {
+		if !strings.Contains(got, "ip daddr "+p.String()+" drop") {
+			t.Errorf("reprogram script missing SSRF drop for %v", p)
+		}
+	}
+}
+
+func TestReprogramScriptMatchesCreatePolicy(t *testing.T) {
+	// The policy portion of a reprogram must be byte-identical to what create
+	// emits — one shared emitter, no drift.
+	anycast := netip.MustParseAddr("10.20.255.254")
+	guestIP := netip.MustParseAddr("10.20.0.2")
+	create := BuildSandboxScript("sbx-abc", "vh-sbx-abc", guestIP, anycast, true, nil)
+	reprogram := BuildSandboxReprogramScript("sbx-abc", anycast, true, nil)
+
+	i := strings.Index(reprogram, "add rule")
+	if i < 0 {
+		t.Fatalf("reprogram script has no rules:\n%s", reprogram)
+	}
+	policy := reprogram[i:]
+	if !strings.Contains(create, policy) {
+		t.Errorf("reprogram policy rules diverge from create's:\ncreate:\n%s\nreprogram policy:\n%s", create, policy)
+	}
+}

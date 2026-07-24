@@ -133,26 +133,42 @@ takes `--cwd`/`--timeout`/`-e,--env`; `app shell` takes `--shell`.
 
 ## Updating an app
 
-`app update` is **diff-aware** — it restarts the instance only when the change
-genuinely requires rebuilding it:
+`app update` takes the same flags as `create`, but applies **only the flags you
+pass** — every other field keeps its current value, so
+`crucible app update web --idle-timeout 30m` changes just the idle timeout. A
+list flag (`-e`, `-p`, `--volume`, `--can-call`, `--internal-port`) replaces
+that whole list; composite groups (sleep, health, egress) keep their unset
+subfields.
+
+The update itself is **diff-aware** — it restarts the instance only when the
+change genuinely requires rebuilding it:
 
 - **Applied in place (no restart):** changes touching only host-side state the
   daemon programs *around* the instance — the sleep policy (`--idle-timeout`,
   `--min-scale`, `--max-scale`, connection reaping), `--can-call` grants, health
   checks, the instance restart policy, `--metrics-port`/`--metrics-path`, the
-  proxy `--port`/TLS mode, and (for a scale-to-zero published app) the `-p`
-  mappings its waking forwarders bind. The instance — running **or asleep** —
-  is untouched: same instance id, same boot, no dropped connections, and a
-  sleeping app is never woken just to change a setting. The response (and the
-  `updated` lifecycle event) says `redeployed: false`.
+  proxy `--port`/TLS mode, (for a scale-to-zero published app) the `-p`
+  mappings its waking forwarders bind, and the **egress policy**
+  (`--net-allow`/`--net-allow-cidr`/`--net-full-egress`) — the daemon
+  atomically rewrites the instance's nftables rules and DNS allowlist in
+  place, revoking previously-resolved hostname grants. The instance — running
+  **or asleep** — is untouched: same instance id, same boot, no dropped
+  connections, and a sleeping app is never woken just to change a setting (a
+  wake re-asserts the current egress policy). The response (and the `updated`
+  lifecycle event) says `redeployed: false`.
 - **Redeploy:** changes to anything the instance is built from — image,
   vCPUs/memory (Firecracker has no hot-plug), disk, volumes, env/secrets, the
-  entrypoint, the egress policy, or ordinary published ports — plus changes
-  that flip *how* the instance was built, e.g. enabling/disabling scale-to-zero
-  on an app that publishes a host port (that moves the port bind between the
-  instance and the app-scoped waking forwarder).
+  entrypoint, or ordinary published ports — plus changes that flip *how* the
+  instance was built: enabling/disabling scale-to-zero on an app that
+  publishes a host port (that moves the port bind between the instance and the
+  app-scoped waking forwarder), or adding the first port/egress to an app
+  built with no NIC at all.
 - **No-op:** re-submitting an identical spec does nothing — no restart, no
   generation bump, no event.
+
+Note on egress semantics: like `--can-call` revocation, an egress change
+governs **new** connections — connections already established keep flowing
+until they close (the conntrack accept runs before the per-sandbox policy).
 
 `generation` counts only rebuild-class updates; `spec_revision` counts every
 accepted change, so a reader can tell config moved without inferring a rebuild.

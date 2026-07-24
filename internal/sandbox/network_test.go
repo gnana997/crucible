@@ -41,6 +41,8 @@ func (s *stubProvisioner) Setup(context.Context, NetworkSetupRequest) (*NetworkH
 	}, nil
 }
 
+func (s *stubProvisioner) Reprogram(context.Context, NetworkSetupRequest) error { return nil }
+
 func (s *stubProvisioner) Teardown(context.Context, *NetworkHandle) error {
 	s.teardowns++
 	return nil
@@ -149,6 +151,8 @@ func (r *recordingProvisioner) Setup(ctx context.Context, req NetworkSetupReques
 	*r.record = req
 	return r.inner.Setup(ctx, req)
 }
+
+func (r *recordingProvisioner) Reprogram(context.Context, NetworkSetupRequest) error { return nil }
 
 func (r *recordingProvisioner) Teardown(ctx context.Context, h *NetworkHandle) error {
 	return r.inner.Teardown(ctx, h)

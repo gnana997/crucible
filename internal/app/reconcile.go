@@ -97,6 +97,13 @@ type Instantiator interface {
 	// HEALTHCHECK, or nil if the image declares none (or NONE). Used to seed an
 	// app's health when it declares none of its own.
 	ImageHealth(ctx context.Context, spec api.AppSpec) (*api.HealthCheck, error)
+
+	// ReprogramNetwork swaps a live instance's egress policy in place from the
+	// spec's current Network (or the synthesized deny-all when the spec needs a
+	// NIC without one) — nft rules + DNS allowlist, no instance churn. Used by
+	// an in-place update; the instance must have a NIC (classification
+	// guarantees a NIC-need flip redeploys instead).
+	ReprogramNetwork(ctx context.Context, instanceID string, spec api.AppSpec) error
 }
 
 // ActivitySource reports per-app request activity for the idle monitor: the last
@@ -784,11 +791,18 @@ func (m *Manager) Update(name string, spec api.AppSpec) (Record, bool, error) {
 		// Only host-side fields changed — the daemon re-reads all of them from
 		// the record (idle evaluator, call authorization, health prober, restart
 		// policy, scrape targets) or re-asserts them from spec each reconcile
-		// pass (waking forwarders, internal VIPs). Persisting the record IS the
-		// apply; Generation stays put so the reconciler leaves the instance
-		// (running or asleep) untouched.
+		// pass (waking forwarders, internal VIPs). Egress is the exception: nft
+		// is programmed at boot, so a Network change actively reprograms every
+		// live instance BEFORE the record is persisted — a failure rejects the
+		// update with the prior spec (and policy) intact. Generation stays put
+		// so the reconciler leaves the instance (running or asleep) untouched.
 		fields := changedHostFields(rec.Spec, spec)
 		healthChanged := !reflect.DeepEqual(rec.Spec.Health, spec.Health)
+		if !reflect.DeepEqual(rec.Spec.Network, spec.Network) {
+			if err := m.reprogramNetwork(rec, spec); err != nil {
+				return Record{}, false, err
+			}
+		}
 		rec.Spec = spec
 		rec.SpecRevision++
 		rec.UpdatedAt = m.now().UTC()
@@ -817,6 +831,57 @@ func (m *Manager) Update(name string, spec api.AppSpec) (Record, bool, error) {
 	})
 	m.Trigger()
 	return rec, true, nil
+}
+
+// reprogramNetwork applies an egress-policy change to every live instance of
+// the app — the primary, a mid-roll incoming, and scaled-out extras — all or
+// none: on a failure the already-reprogrammed instances are rolled back to the
+// prior policy (best-effort, logged) and the update is rejected, so the fleet
+// never persists a spec its instances don't enforce. An asleep instance has no
+// live sandbox to reprogram — its wake re-asserts egress from the current spec.
+// The app's golden scale-out snapshot is invalidated so future extras fork
+// from an instance carrying the new policy (an in-place change doesn't bump
+// the generation the golden is keyed by).
+func (m *Manager) reprogramNetwork(rec Record, next api.AppSpec) error {
+	ctx := context.Background()
+	m.obsMu.Lock()
+	var ids []string
+	if ob := m.obs[rec.ID]; ob != nil {
+		for _, id := range []string{ob.instanceID, ob.incomingInstanceID} {
+			if id != "" {
+				ids = append(ids, id)
+			}
+		}
+	}
+	for _, r := range m.extras[rec.ID] {
+		ids = append(ids, r.id)
+	}
+	g := m.golden[rec.ID]
+	m.obsMu.Unlock()
+
+	var done []string
+	for _, id := range ids {
+		if !m.inst.Exists(id) {
+			continue
+		}
+		if err := m.inst.ReprogramNetwork(ctx, id, next); err != nil {
+			for _, prev := range done {
+				if rbErr := m.inst.ReprogramNetwork(ctx, prev, rec.Spec); rbErr != nil {
+					m.log.Error("app: egress rollback failed; instance holds the rejected policy",
+						"app", rec.ID, "name", rec.Spec.Name, "instance", prev, "err", rbErr)
+				}
+			}
+			return fmt.Errorf("app: reprogram egress on %s: %w", id, err)
+		}
+		done = append(done, id)
+	}
+	if g != nil {
+		_ = m.inst.DeleteSnapshot(ctx, g.snapshotID)
+		m.obsMu.Lock()
+		delete(m.golden, rec.ID)
+		m.obsMu.Unlock()
+	}
+	return nil
 }
 
 // rearmProbe zeroes the app's next scheduled health probe so a changed probe

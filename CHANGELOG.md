@@ -32,6 +32,30 @@ settles.
   names. Removing a `--can-call` grant denies **new** connections immediately;
   connections already established keep flowing until they close or idle out.
 
+- **The egress policy updates in place too.** Changing `--net-allow`/
+  `--net-allow-cidr`/`--net-full-egress` on an app whose instance has a NIC no
+  longer reboots it: the daemon rewrites the instance's per-sandbox nftables
+  rules in one transactional `nft -f` swap (shared rule emitter with the create
+  path, so the SSRF guard can never drift), **flushes the resolved-IP set** so
+  previously-granted hostname IPs are revoked, and re-registers the DNS-proxy
+  allowlist. Applied to every live instance of the app (primary, mid-roll
+  incoming, scaled-out replicas) all-or-nothing — a failure rolls back and
+  rejects the update with the prior spec intact. The golden scale-out snapshot
+  is invalidated so future replicas fork with the new policy, and a wake
+  re-asserts the current policy over what the sleep snapshot recorded. Like
+  `--can-call`, revocation governs new connections; established ones drain
+  naturally. Adding the *first* NIC (or removing the last) still redeploys.
+
+- **`app update` only changes what you pass.** The CLI now reads the app's
+  current spec and overlays just the flags given on the command line, instead of
+  rebuilding the whole spec from flag defaults — so a one-flag update
+  (`app update web --idle-timeout 30m`) no longer silently zeroes every unset
+  field (which reset instance-defining fields like `--memory` and forced the
+  very redeploy the change didn't need). A list flag (`-e`, `-p`, `--volume`,
+  `--can-call`, `--internal-port`) replaces that whole list; sleep/health/egress
+  groups keep their unset subfields. The HTTP API is unchanged (`PUT` of a full
+  spec); this is CLI-side read-modify-write.
+
 ## [0.9.7] — 2026-07-23
 
 Wake correctness and usage-store hygiene. A woken app is now released to clients only

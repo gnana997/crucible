@@ -315,6 +315,47 @@ func (a appInstantiator) SnapshotExists(snapshotID string) bool {
 // WakeFromSnapshot restores the durable sleep snapshot into a fresh instance
 // (post-restart wake), returning the new sandbox id. Publish mappings come from
 // the app spec, mirroring create.
+// ReprogramNetwork swaps a live instance's egress policy in place from the
+// app's current spec — the same config derivation as Create (an explicit
+// Network, or the synthesized deny-all for an instance that has a NIC only so
+// the proxy/forwarders can reach it). The instance keeps running; nothing
+// about its identity changes.
+func (a appInstantiator) ReprogramNetwork(ctx context.Context, instanceID string, spec api.AppSpec) error {
+	cfg, err := a.networkConfigFor(spec)
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		return fmt.Errorf("app instance %s: spec has no network to reprogram", instanceID)
+	}
+	return a.s.cfg.Manager.ReprogramNetwork(ctx, instanceID, cfg)
+}
+
+// networkConfigFor derives the sandbox-layer network config from an app spec,
+// mirroring the Create path: an explicit Network parses to its allowlist/
+// full-egress/CIDRs; a spec that needs a NIC without one (proxy Port,
+// wake-on-TCP publish, internal ports) gets the synthesized deny-all; nil when
+// the spec implies no NIC at all.
+func (a appInstantiator) networkConfigFor(spec api.AppSpec) (*sandbox.NetworkConfig, error) {
+	if spec.Network != nil {
+		np, _, err := validateNetwork(spec.Network)
+		if err != nil {
+			return nil, err
+		}
+		if np != nil {
+			return &sandbox.NetworkConfig{Allowlist: np.allowlist, FullEgress: np.fullEgress, CIDRs: np.cidrs}, nil
+		}
+	}
+	if spec.Port > 0 || ingress.WakesOnTCP(spec) || len(spec.InternalPorts) > 0 || len(spec.Publish) > 0 || spec.PublishAll {
+		denyAll, err := network.New(nil)
+		if err != nil {
+			return nil, err
+		}
+		return &sandbox.NetworkConfig{Allowlist: denyAll}, nil
+	}
+	return nil, nil
+}
+
 func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string, spec api.AppSpec) (string, error) {
 	// A wake-on-TCP app's host port is owned by the app-scoped forwarder, so the
 	// restored instance must not re-bind it (mirrors the suppression in Create).
@@ -337,6 +378,20 @@ func (a appInstantiator) WakeFromSnapshot(ctx context.Context, snapshotID string
 	sb, err := a.s.cfg.Manager.WakeFromSnapshot(ctx, snapshotID, publish, volumes)
 	if err != nil {
 		return "", err
+	}
+	// Re-assert the egress policy from the CURRENT spec: the snapshot carries
+	// the policy captured at snapshot time, and an in-place network update may
+	// have landed while the app was asleep. Idempotent when nothing changed; a
+	// failure fails the wake (the caller's cold-create fallback boots from the
+	// current spec, so egress is never left stale).
+	if cfg, cerr := a.networkConfigFor(spec); cerr == nil && cfg != nil {
+		if rerr := a.s.cfg.Manager.ReprogramNetwork(ctx, sb.ID, cfg); rerr != nil {
+			_ = a.s.cfg.Manager.Delete(context.WithoutCancel(ctx), sb.ID)
+			return "", fmt.Errorf("wake: re-assert egress policy: %w", rerr)
+		}
+	} else if cerr != nil {
+		_ = a.s.cfg.Manager.Delete(context.WithoutCancel(ctx), sb.ID)
+		return "", fmt.Errorf("wake: derive egress policy: %w", cerr)
 	}
 	return sb.ID, nil
 }

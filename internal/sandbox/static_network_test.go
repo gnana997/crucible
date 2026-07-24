@@ -109,6 +109,8 @@ func (staticNetProvisioner) Setup(context.Context, NetworkSetupRequest) (*Networ
 
 func (staticNetProvisioner) Teardown(context.Context, *NetworkHandle) error { return nil }
 
+func (staticNetProvisioner) Reprogram(context.Context, NetworkSetupRequest) error { return nil }
+
 func TestCreateStaticNetworkPushesConfig(t *testing.T) {
 	rec := &netConfigRecorder{}
 	template := filepath.Join(t.TempDir(), "rootfs.ext4")

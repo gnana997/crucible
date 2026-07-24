@@ -29,8 +29,10 @@ const (
 // bootSpec is the subset of AppSpec fixed at instance boot. A change to any of
 // these genuinely requires destroy-then-boot (or a rolling redeploy): rootfs,
 // vCPU/RAM (Firecracker has no hot-plug), block devices, guest env/entrypoint
-// (read only at startup), the egress nftables policy and per-instance published
-// ports (both programmed at sandbox create).
+// (read only at startup), and per-instance published ports (bound at sandbox
+// create). The egress Network policy is NOT here: it is reprogrammed on the
+// live instance in place (nft rules + DNS allowlist swap) — unless the change
+// flips NIC-existence, which the needsNIC check routes to a redeploy.
 type bootSpec struct {
 	Image         *api.ImageRef
 	Pull          string
@@ -40,7 +42,6 @@ type bootSpec struct {
 	Volumes       []api.VolumeMount
 	Env           map[string]string
 	PublishAll    bool
-	Network       *api.NetworkRequest
 	Service       *wire.ServiceSpec
 	SecretEnvFrom []string
 }
@@ -50,17 +51,19 @@ func bootSpecOf(s api.AppSpec) bootSpec {
 		Image: s.Image, Pull: s.Pull,
 		VCPUs: s.VCPUs, MemoryMiB: s.MemoryMiB, DiskBytes: s.DiskBytes,
 		Volumes: s.Volumes, Env: s.Env,
-		PublishAll: s.PublishAll, Network: s.Network,
-		Service: s.Service, SecretEnvFrom: s.SecretEnvFrom,
+		PublishAll: s.PublishAll,
+		Service:    s.Service, SecretEnvFrom: s.SecretEnvFrom,
 	}
 }
 
 // needsNIC mirrors the instantiator's NIC decision: with no egress policy, a
-// NIC is synthesized only when the proxy, the waking forwarders, or the
-// internal-L4 zone must reach the guest over its veth. A change that flips this
-// cannot be applied to a running instance — there is no NIC to (un)use.
+// deny-all NIC is synthesized whenever something must reach the guest over its
+// veth — the proxy (Port), published ports (incl. -P and the wake-on-TCP
+// forwarder, whose Sleep+Publish combination implies Publish), or the
+// internal-L4 zone. A change that flips this cannot be applied to a running
+// instance — there is no NIC to (un)use.
 func needsNIC(s api.AppSpec) bool {
-	return s.Network != nil || s.Port > 0 || ingress.WakesOnTCP(s) || len(s.InternalPorts) > 0
+	return s.Network != nil || s.Port > 0 || len(s.Publish) > 0 || s.PublishAll || len(s.InternalPorts) > 0
 }
 
 // classifyUpdate decides how a spec change is applied: not at all (identical),
@@ -110,6 +113,7 @@ func changedHostFields(old, next api.AppSpec) []string {
 	diff("health", !reflect.DeepEqual(old.Health, next.Health))
 	diff("restart", !reflect.DeepEqual(old.Restart, next.Restart))
 	diff("metrics_port", old.MetricsPort != next.MetricsPort || old.MetricsPath != next.MetricsPath)
+	diff("network", !reflect.DeepEqual(old.Network, next.Network))
 	diff("port", old.Port != next.Port)
 	diff("tls_mode", old.TLSMode != next.TLSMode)
 	diff("http_redirect", !reflect.DeepEqual(old.HTTPRedirect, next.HTTPRedirect))

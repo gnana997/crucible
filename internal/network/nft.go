@@ -207,34 +207,7 @@ func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast net
 		NftTableName, set)
 	// Chain.
 	fmt.Fprintf(&b, "add chain inet %s %s\n", NftTableName, chain)
-	// 1. DNS to the proxy anycast — always first, before any range drop, so the
-	//    resolver stays reachable even if the anycast sits in a blocked range.
-	fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s udp dport 53 accept\n",
-		NftTableName, chain, anycast)
-	// 2. Range-based egress (full-egress or an operator CIDR) must DROP the
-	//    non-public ranges first — the nft half of the SSRF guard. The
-	//    hostname-allowlist path never needs this (its set only holds vetted
-	//    public IPs), so we emit it only when a range accept follows.
-	if fullEgress || len(cidrs) > 0 {
-		for _, p := range BlockedEgressPrefixes {
-			fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s drop\n",
-				NftTableName, chain, p)
-		}
-	}
-	// 3. Hostname-allowlist path: the public IPs the DNS proxy vetted + poked
-	//    into the set. Unchanged from the default-deny behavior.
-	fmt.Fprintf(&b, "add rule inet %s %s ip daddr @%s accept\n",
-		NftTableName, chain, set)
-	// 4. Operator CIDRs — public portions only (private overlaps dropped above).
-	for _, p := range cidrs {
-		fmt.Fprintf(&b, "add rule inet %s %s ip daddr %s accept\n",
-			NftTableName, chain, p)
-	}
-	// 5. Full-egress: accept everything else (all IPv4 not dropped = public).
-	if fullEgress {
-		fmt.Fprintf(&b, "add rule inet %s %s ip daddr 0.0.0.0/0 accept\n",
-			NftTableName, chain)
-	}
+	appendSandboxPolicyRules(&b, chain, set, anycast, fullEgress, cidrs)
 	// Map entry: iifname → jump chain. Quote the iifname so it
 	// parses as an ifname literal.
 	fmt.Fprintf(&b, "add element inet %s %s { %q : jump %s }\n",
@@ -254,6 +227,80 @@ func BuildSandboxScript(sandboxID string, hostIface string, guestIP, anycast net
 	fmt.Fprintf(&b, "add element inet %s %s { %q : jump %s }\n",
 		NftTableName, nftEgressMap, hostIface, egChain)
 	return b.String()
+}
+
+// appendSandboxPolicyRules emits the per-sandbox egress policy rules into an
+// existing chain — the single source of the policy structure, shared by
+// BuildSandboxScript (create) and BuildSandboxReprogramScript (live update) so
+// the two can never drift. Rule order:
+//
+//  1. accept DNS to the anycast IP (port 53 UDP only) — always first, before
+//     any range drop, so the resolver stays reachable even if the anycast sits
+//     in a blocked range.
+//  2. range-based egress (full-egress or an operator CIDR) must DROP the
+//     non-public ranges first — the nft half of the SSRF guard. The
+//     hostname-allowlist path never needs this (its set only holds vetted
+//     public IPs), so it is emitted only when a range accept follows.
+//  3. hostname-allowlist path: accept the public IPs the DNS proxy vetted +
+//     poked into the set.
+//  4. operator CIDRs — public portions only (private overlaps dropped above).
+//  5. full-egress: accept everything else (all IPv4 not dropped = public).
+//  6. fall through → drop (implicitly: the forward chain's default policy).
+func appendSandboxPolicyRules(b *strings.Builder, chain, set string, anycast netip.Addr, fullEgress bool, cidrs []netip.Prefix) {
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr %s udp dport 53 accept\n",
+		NftTableName, chain, anycast)
+	if fullEgress || len(cidrs) > 0 {
+		for _, p := range BlockedEgressPrefixes {
+			fmt.Fprintf(b, "add rule inet %s %s ip daddr %s drop\n",
+				NftTableName, chain, p)
+		}
+	}
+	fmt.Fprintf(b, "add rule inet %s %s ip daddr @%s accept\n",
+		NftTableName, chain, set)
+	for _, p := range cidrs {
+		fmt.Fprintf(b, "add rule inet %s %s ip daddr %s accept\n",
+			NftTableName, chain, p)
+	}
+	if fullEgress {
+		fmt.Fprintf(b, "add rule inet %s %s ip daddr 0.0.0.0/0 accept\n",
+			NftTableName, chain)
+	}
+}
+
+// BuildSandboxReprogramScript replaces a live sandbox's egress policy rules in
+// place: flush the chain, flush the allowed-IPs set (revoking every
+// previously-resolved hostname grant — the DNS proxy repopulates it under the
+// new allowlist on the next resolution), and re-emit the policy rules with the
+// new full-egress/CIDR settings. The dispatch map entry, guest_sources pair,
+// and egress-accounting objects are untouched — only the policy changes.
+//
+// Applied via a single `nft -f` invocation, which is transactional: there is
+// no window where the chain is empty. Connections already established keep
+// flowing regardless (the forward chain's base `ct state established,related
+// accept` runs before the per-sandbox dispatch); the new policy governs new
+// connections.
+func BuildSandboxReprogramScript(sandboxID string, anycast netip.Addr, fullEgress bool, cidrs []netip.Prefix) string {
+	chain := sandboxChainName(sandboxID)
+	set := sandboxAllowedSetName(sandboxID)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "flush chain inet %s %s\n", NftTableName, chain)
+	fmt.Fprintf(&b, "flush set inet %s %s\n", NftTableName, set)
+	appendSandboxPolicyRules(&b, chain, set, anycast, fullEgress, cidrs)
+	return b.String()
+}
+
+// ReprogramSandbox applies BuildSandboxReprogramScript — an atomic in-place
+// swap of a running sandbox's egress policy. The chain and set must already
+// exist (InstallSandbox ran at create); a missing object is an error, not a
+// no-op, because it means the caller is reprogramming a sandbox that has no
+// network.
+func ReprogramSandbox(ctx context.Context, sandboxID string, anycast netip.Addr, fullEgress bool, cidrs []netip.Prefix) error {
+	if err := checkNftSandboxID(sandboxID); err != nil {
+		return err
+	}
+	script := BuildSandboxReprogramScript(sandboxID, anycast, fullEgress, cidrs)
+	return runCmdStdin(ctx, script, "nft", "-f", "-")
 }
 
 // BuildSandboxTeardownScript removes everything BuildSandboxScript

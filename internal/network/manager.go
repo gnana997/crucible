@@ -167,6 +167,46 @@ type SandboxSetup struct {
 	CIDRs []netip.Prefix
 }
 
+// Reprogram swaps a live sandbox's egress policy in place — no netns, veth,
+// DHCP, or lease churn, so the guest never notices. The nft policy rules are
+// replaced atomically (one `nft -f` transaction), the allowed-IPs set is
+// flushed (revoking previously-resolved hostname grants; the proxy repopulates
+// it under the new allowlist), and the DNS-proxy policy is re-registered.
+// Established connections keep flowing (the forward chain's base
+// established-accept runs before the per-sandbox dispatch); the new policy
+// governs new connections. The sandbox must have been Setup by this manager.
+func (m *Manager) Reprogram(ctx context.Context, req SandboxSetup) error {
+	if req.SandboxID == "" {
+		return errors.New("network: Reprogram: SandboxID required")
+	}
+	if req.Allowlist == nil {
+		return errors.New("network: Reprogram: Allowlist required")
+	}
+	m.mu.Lock()
+	h, ok := m.sandboxes[req.SandboxID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("network: Reprogram: unknown sandbox %q", req.SandboxID)
+	}
+	if err := ReprogramSandbox(ctx, req.SandboxID, m.cfg.DNSAnycast, req.FullEgress, req.CIDRs); err != nil {
+		return fmt.Errorf("network: nft reprogram: %w", err)
+	}
+	var matcher dnsproxy.Matcher = req.Allowlist
+	if req.FullEgress {
+		matcher = matchAllEgress{}
+	}
+	m.proxy.Register(h.Lease.GuestIP, &dnsproxy.Policy{
+		SandboxID: req.SandboxID,
+		Allowlist: matcher,
+	})
+	m.log.Info("sandbox egress reprogrammed",
+		"sandbox", req.SandboxID,
+		"full_egress", req.FullEgress,
+		"cidrs", len(req.CIDRs),
+	)
+	return nil
+}
+
 // matchAllEgress answers "yes" for every hostname — the DNS-proxy matcher used
 // under full-egress. Resolved records are still filtered to public-unicast
 // space by the proxy, so this is "any public host", not "raw internet".

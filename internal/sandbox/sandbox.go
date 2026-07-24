@@ -512,6 +512,10 @@ func (m *Manager) quotasFor(vcpus, memMiB int) runner.Quotas {
 type NetworkProvisioner interface {
 	Setup(ctx context.Context, req NetworkSetupRequest) (*NetworkHandle, error)
 	Teardown(ctx context.Context, h *NetworkHandle) error
+	// Reprogram swaps a live sandbox's egress policy (nft rules + DNS-proxy
+	// allowlist) in place — no netns/veth/lease churn. The sandbox must have
+	// been Setup by this provisioner.
+	Reprogram(ctx context.Context, req NetworkSetupRequest) error
 	// EgressByteMap returns per-sandbox cumulative external egress bytes, keyed by
 	// the SANITIZED sandbox id (the form used in nft object names). Persistent
 	// usage metrics; best-effort (nil on any read error).
@@ -1146,6 +1150,47 @@ func (m *Manager) ReadFile(ctx context.Context, id, path string, maxBytes int) (
 	return s.execClient.ReadFile(ctx, path, maxBytes)
 }
 
+// ReprogramNetwork swaps a running (or asleep-in-place) sandbox's egress
+// policy — nft rules + DNS allowlist — with no instance, netns, or lease
+// churn. The sandbox must already have a NIC: attaching or removing one needs
+// a rebuild, not a reprogram. The stored network handle is replaced (a fresh
+// copy, swapped in one pointer write) so a later snapshot — and any fork or
+// wake from it — carries the new policy.
+func (m *Manager) ReprogramNetwork(ctx context.Context, id string, cfg *NetworkConfig) error {
+	if cfg == nil || cfg.Allowlist == nil {
+		return errors.New("sandbox: ReprogramNetwork: NetworkConfig with Allowlist required")
+	}
+	if m.cfg.Network == nil {
+		return errors.New("sandbox: no network provisioner configured")
+	}
+	m.mu.RLock()
+	sb, ok := m.sandboxes[id]
+	m.mu.RUnlock()
+	if !ok {
+		return ErrNotFound
+	}
+	old := sb.Network
+	if old == nil {
+		return fmt.Errorf("sandbox: %s has no network attached", id)
+	}
+	if err := m.cfg.Network.Reprogram(ctx, NetworkSetupRequest{
+		SandboxID:  sanitizeNetworkID(id),
+		Allowlist:  cfg.Allowlist,
+		FullEgress: cfg.FullEgress,
+		CIDRs:      cfg.CIDRs,
+	}); err != nil {
+		return fmt.Errorf("sandbox: network reprogram %s: %w", id, err)
+	}
+	next := *old
+	next.Allowlist = cfg.Allowlist
+	next.FullEgress = cfg.FullEgress
+	next.CIDRs = cfg.CIDRs
+	m.mu.Lock()
+	sb.Network = &next
+	m.mu.Unlock()
+	return nil
+}
+
 // Get returns the sandbox with the given ID, or ErrNotFound.
 func (m *Manager) Get(id string) (*Sandbox, error) {
 	m.mu.RLock()
@@ -1459,12 +1504,15 @@ func (m *Manager) Snapshot(ctx context.Context, sandboxID string) (*Snapshot, er
 	// Record the source's network intent so forks reconstruct a
 	// matching config. Matchers are immutable, so sharing the
 	// same instance across source + forks is safe — simpler than
-	// re-parsing patterns for every fork.
-	if src.Network != nil && src.Network.Allowlist != nil {
+	// re-parsing patterns for every fork. Load the handle pointer
+	// once: a concurrent ReprogramNetwork swaps in a fresh handle,
+	// and reading the fields through a single load means we capture
+	// one coherent policy, never a torn mix of old and new.
+	if netH := src.Network; netH != nil && netH.Allowlist != nil {
 		snap.Network = &NetworkConfig{
-			Allowlist:  src.Network.Allowlist,
-			FullEgress: src.Network.FullEgress,
-			CIDRs:      src.Network.CIDRs,
+			Allowlist:  netH.Allowlist,
+			FullEgress: netH.FullEgress,
+			CIDRs:      netH.CIDRs,
 		}
 	}
 

@@ -279,9 +279,10 @@ func buildReflector() *openapi3.Reflector {
 			"instance-defining field (image, cpu/memory, volumes, env, entrypoint, ...) "+
 			"bumps the generation and redeploys the instance, while a change touching only "+
 			"host-side fields (sleep policy, can_call, health, restart policy, metrics "+
-			"scrape, ...) is applied in place with no restart, and an identical spec is a "+
-			"no-op. The response's `redeployed` reports which happened; `spec_revision` "+
-			"moves on every accepted change. Desired running/stopped is retained.",
+			"scrape, egress network policy, ...) is applied in place with no restart, and "+
+			"an identical spec is a no-op. The response's `redeployed` reports which "+
+			"happened; `spec_revision` moves on every accepted change. Desired "+
+			"running/stopped is retained.",
 		updateAppReq{}, api.AppResponse{}, http.StatusOK,
 		http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusNotImplemented)
 	streamOp(http.MethodPost, "/apps/{name}/exec", "appExec", "apps", "Run a command in an app's current instance (streams frames)",

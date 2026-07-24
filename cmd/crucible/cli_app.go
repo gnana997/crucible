@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -486,6 +487,205 @@ func (a *appSpecOpts) build(cmd *cobra.Command, o *globalOpts, name string) (api
 	return spec, nil
 }
 
+// overlay applies ONLY the flags explicitly set on this invocation onto base
+// (the app's current spec), so `app update web --idle-timeout 30m` changes just
+// the idle timeout — every other field keeps its current value, and a host-side
+// -only change stays an in-place update instead of an accidental redeploy
+// (a full rebuild from flag defaults would silently zero unset instance-defining
+// fields like --memory). A given list flag (--env, -p, --volume, --can-call,
+// --internal-port, --secrets) replaces that whole field; composite groups
+// (sleep, health, egress network) keep the current value and update only the
+// subfields whose flags were given.
+func (a *appSpecOpts) overlay(cmd *cobra.Command, o *globalOpts, base api.AppSpec) (api.AppSpec, error) {
+	spec := base
+	ch := cmd.Flags().Changed
+
+	if ch("image") {
+		pull := base.Pull
+		if ch("pull") {
+			pull = a.pull
+		}
+		ref, effPull, err := resolveCreateImage(cmd.Context(), o.client(), a.image, pull, cmd.ErrOrStderr())
+		if err != nil {
+			return api.AppSpec{}, err
+		}
+		spec.Image = &api.ImageRef{OCI: ref}
+		spec.Pull = effPull
+	} else if ch("pull") {
+		spec.Pull = a.pull
+	}
+	if ch("vcpus") {
+		spec.VCPUs = a.vcpus
+	}
+	if ch("memory") {
+		spec.MemoryMiB = a.memory
+	}
+	if ch("disk") {
+		diskBytes, err := parseDiskSize(a.disk)
+		if err != nil {
+			return api.AppSpec{}, err
+		}
+		spec.DiskBytes = diskBytes
+	}
+	if ch("env") {
+		envMap, err := api.ParseEnv(a.env)
+		if err != nil {
+			return api.AppSpec{}, err
+		}
+		spec.Env = envMap
+	}
+	if ch("port") {
+		spec.Port = a.port
+	}
+	if ch("publish-all") {
+		spec.PublishAll = a.publishAll
+	}
+	if ch("metrics-port") {
+		spec.MetricsPort = a.metricsPort
+	}
+	if ch("metrics-path") {
+		spec.MetricsPath = a.metricsPath
+	}
+	if ch("restart") {
+		spec.Restart = wire.RestartPolicy{Policy: a.restart}
+	}
+	if ch("can-call") {
+		spec.CanCall = a.canCall
+	}
+	if ch("tls-mode") {
+		spec.TLSMode = a.tlsMode
+	}
+	if ch("no-https-redirect") {
+		if a.noHTTPSRedirect {
+			off := false
+			spec.HTTPRedirect = &off
+		} else {
+			spec.HTTPRedirect = nil // back to the default (redirect on)
+		}
+	}
+	if ch("secrets") {
+		spec.SecretEnvFrom = a.secrets
+	}
+	if ch("secrets-from") {
+		data, derr := parseDotenv(a.secretsFrom)
+		if derr != nil {
+			return api.AppSpec{}, derr
+		}
+		if len(data) == 0 {
+			return api.AppSpec{}, fmt.Errorf("%s has no KEY=VALUE lines", a.secretsFrom)
+		}
+		bundle := base.Name + "-env"
+		if serr := o.client().SetSecret(cmd.Context(), bundle, data, false); serr != nil {
+			return api.AppSpec{}, fmt.Errorf("store secret bundle %q: %w", bundle, serr)
+		}
+		if !slices.Contains(spec.SecretEnvFrom, bundle) {
+			spec.SecretEnvFrom = append(slices.Clone(spec.SecretEnvFrom), bundle)
+		}
+	}
+	if ch("publish") {
+		spec.Publish = nil
+		for _, p := range a.publish {
+			pm, perr := parsePublish(p)
+			if perr != nil {
+				return api.AppSpec{}, perr
+			}
+			spec.Publish = append(spec.Publish, pm)
+		}
+	}
+	if ch("internal-port") {
+		spec.InternalPorts = nil
+		for _, s := range a.internalPorts {
+			ip, perr := parseInternalPort(s)
+			if perr != nil {
+				return api.AppSpec{}, perr
+			}
+			spec.InternalPorts = append(spec.InternalPorts, ip)
+		}
+	}
+	if ch("volume") {
+		spec.Volumes = nil
+		for _, vspec := range a.volumes {
+			vm, verr := parseVolume(vspec)
+			if verr != nil {
+				return api.AppSpec{}, verr
+			}
+			spec.Volumes = append(spec.Volumes, vm)
+		}
+	}
+	if ch("net-allow") || ch("net-allow-cidr") || ch("net-full-egress") {
+		allow, cidr, full := []string(nil), []string(nil), false
+		if base.Network != nil {
+			allow, cidr, full = base.Network.Allowlist, base.Network.AllowlistCIDR, base.Network.FullEgress
+		}
+		if ch("net-allow") {
+			allow = a.netAllow
+		}
+		if ch("net-allow-cidr") {
+			cidr = a.netAllowCIDR
+		}
+		if ch("net-full-egress") {
+			full = a.netFullEgress
+		}
+		spec.Network = buildNetworkRequest(allow, cidr, full)
+	}
+	if ch("health") && ch("health-cmd") {
+		return api.AppSpec{}, fmt.Errorf("--health and --health-cmd are mutually exclusive")
+	}
+	if ch("health") {
+		if a.health == "" {
+			spec.Health = nil // clear the probe
+		} else {
+			hc, herr := parseHealth(a.health)
+			if herr != nil {
+				return api.AppSpec{}, herr
+			}
+			spec.Health = hc
+		}
+	}
+	if ch("health-cmd") {
+		if a.healthCmd == "" {
+			spec.Health = nil
+		} else {
+			spec.Health = &api.HealthCheck{Type: "exec", Cmd: []string{"/bin/sh", "-c", a.healthCmd}}
+		}
+	}
+	if ch("idle-timeout") || ch("min-scale") || ch("max-scale") ||
+		ch("target-concurrency") || ch("connection-idle-timeout") || ch("keep-connections") {
+		sp := api.SleepPolicy{}
+		if base.Sleep != nil {
+			sp = *base.Sleep
+		}
+		if ch("idle-timeout") {
+			idleSec, err := parseIdleTimeout(a.idleTimeout)
+			if err != nil {
+				return api.AppSpec{}, err
+			}
+			sp.IdleTimeoutSec = idleSec
+		}
+		if ch("connection-idle-timeout") {
+			connIdleSec, err := parseIdleTimeout(a.connIdleTimeout)
+			if err != nil {
+				return api.AppSpec{}, fmt.Errorf("--connection-idle-timeout: %w", err)
+			}
+			sp.ConnIdleTimeoutSec = connIdleSec
+		}
+		if ch("min-scale") {
+			sp.MinScale = a.minScale
+		}
+		if ch("max-scale") {
+			sp.MaxScale = a.maxScale
+		}
+		if ch("target-concurrency") {
+			sp.TargetConcurrency = a.targetConcurrency
+		}
+		if ch("keep-connections") {
+			sp.KeepConnections = a.keepConnections
+		}
+		spec.Sleep = &sp
+	}
+	return spec, nil
+}
+
 // parseIdleTimeout turns a duration string ("30s", "5m") into whole seconds; ""
 // means zero (no idle timeout).
 func parseIdleTimeout(s string) (int, error) {
@@ -546,10 +746,20 @@ func newAppUpdateCmd(o *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update <name>",
 		Short: "Update a durable app's spec (restarts only when required)",
-		Long:  "Replace the app's spec (same flags as create). A change to an instance-defining field (image, cpu/memory, volumes, env, entrypoint, …) redeploys the instance; a change touching only host-side settings (sleep policy, can-call, health checks, restart policy, metrics scrape, …) is applied in place with no restart. The app's name is immutable; desired running/stopped is retained.",
-		Args:  cobra.ExactArgs(1),
+		Long: "Change parts of the app's spec: only the flags you pass are applied — every other " +
+			"field keeps its current value, so `app update web --idle-timeout 30m` changes just " +
+			"the idle timeout. A list flag (-e, -p, --volume, --can-call, --internal-port) replaces " +
+			"that whole list. A change to an instance-defining field (image, cpu/memory, volumes, " +
+			"env, entrypoint, …) redeploys the instance; a change touching only host-side settings " +
+			"(sleep policy, can-call, health checks, restart policy, metrics scrape, …) is applied " +
+			"in place with no restart. The app's name is immutable; desired running/stopped is retained.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			spec, err := opts.build(cmd, o, args[0])
+			cur, err := o.client().GetApp(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			spec, err := opts.overlay(cmd, o, cur.AppSpec)
 			if err != nil {
 				return err
 			}
