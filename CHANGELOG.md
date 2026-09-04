@@ -6,7 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) once it
 reaches `v1.0` — until then, `0.x` releases may change behavior as the design
 settles.
 
-## [Unreleased]
+## [0.9.8] — 2026-09-05
+
+Diff-aware `app update`. A settings change that a running instance does not need a reboot
+to pick up — sleep policy, `--can-call` grants, health checks, restart policy, metrics
+scrape target, proxy port/TLS mode, a scale-to-zero app's published ports, and now the
+**egress policy** — is applied **in place**: same instance, no dropped connections, a
+sleeping app stays asleep. Instance-defining changes still redeploy. Re-submitting an
+identical spec is a no-op. The Go SDK gains `SpecRevision` and `Redeployed` on the app
+response (lockstep tag `sdk/v0.9.8`).
 
 ### Changed
 
