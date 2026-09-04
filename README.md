@@ -2,7 +2,7 @@
 
 > Sandbox runtime for AI coding agents. Firecracker microVMs, a single Go binary, snapshot/fork as first-class primitives.
 
-![Status: v0.9.7](https://img.shields.io/badge/status-v0.9.8-orange)
+![Status: v0.9.8](https://img.shields.io/badge/status-v0.9.8-orange)
 ![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Core: Go](https://img.shields.io/badge/core-Go-00ADD8)
 
